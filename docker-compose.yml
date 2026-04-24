@@ -1,0 +1,14 @@
+services:
+  agent:
+    build: .
+    image: agent-platform:latest
+    restart: unless-stopped
+    ports:
+      # Only bind to localhost by default. To expose, set bind_address in config.json
+      # and an api_auth_token, then expose here as "0.0.0.0:8090:8090".
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - ./agent-data:/app/agent-data
+      - ./modules:/app/modules:ro
+    environment:
+      RUST_LOG: info

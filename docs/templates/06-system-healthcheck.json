@@ -1,0 +1,44 @@
+{
+  "_description": "Cron alle 5min Systemmetriken via shell.exec (df, free, uptime, systemctl). LLM bewertet Schwelle (Disk>90%, RAM>95%, Load>8, failed-service). Notify nur bei Alert. Shell-Whitelist eng, keine Arg-Injection möglich.",
+  "cron_modul": {
+    "id": "cron.health",
+    "typ": "cron",
+    "name": "cron.health",
+    "display_name": "System Healthcheck",
+    "llm_backend": "grok",
+    "backup_llm": null,
+    "berechtigungen": ["aufgaben"],
+    "timeout_s": 60,
+    "retry": 1,
+    "settings": {
+      "schedule": "*/5 * * * *",
+      "cron_typ": "llm",
+      "cron_anweisung": "Prüfe Systemgesundheit via shell.exec: (1) 'df -h /' für Disk, (2) 'free -m' für RAM, (3) 'uptime' für Load, (4) 'systemctl --failed' für Services. Bewerte: Disk-% ≥ 90, RAM-used ≥ 95%, Load1 > 8, oder irgendein failed-service = ALERT. Bei Alert: notify.send mit präziser Beschreibung (welche Metrik + Wert + Empfehlung). Wenn alles ok: keine Notification.",
+      "target_modul": "shell.healthcheck-worker"
+    },
+    "identity": {"bot_name": "Health", "greeting": "", "system_prompt": ""},
+    "rag_pool": null,
+    "linked_modules": ["shell.healthcheck-worker"],
+    "persistent": true
+  },
+  "_worker_modul_required": {
+    "id": "shell.healthcheck-worker",
+    "typ": "shell",
+    "name": "shell.healthcheck-worker",
+    "display_name": "Health Worker",
+    "llm_backend": "grok",
+    "backup_llm": null,
+    "berechtigungen": ["shell", "aufgaben"],
+    "linked_modules": ["notify.ntfy"],
+    "timeout_s": 30,
+    "retry": 0,
+    "settings": {
+      "allowed_commands": ["df", "free", "uptime", "systemctl", "ps", "iostat"],
+      "working_dir": "/tmp"
+    },
+    "identity": {"bot_name": "Health", "greeting": "", "system_prompt": "Du bist System-Healthcheck. Führe nacheinander df, free, uptime, systemctl --failed aus. Antworte strukturiert: KRITISCH/OK pro Metrik. Nutze notify.send NUR bei KRITISCH. Keine Poesie, Fakten."},
+    "rag_pool": null,
+    "persistent": true
+  },
+  "required_linked_modules_hint": "notify-Agent muss verlinkt sein. allowed_commands sind eng gesetzt — nur read-only-Metriken, keine Mutation. shell.exec blockt alle Metazeichen (|;&$()<>{}) automatisch."
+}

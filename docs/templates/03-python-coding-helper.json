@@ -1,0 +1,26 @@
+{
+  "_description": "Chat agent specialized in Python. Has editor + taskloop + web search. Responds in German. Drop the module block into config.json > module.",
+  "id": "chat.pythonic",
+  "typ": "chat",
+  "name": "chat.pythonic",
+  "display_name": "Pythonic",
+  "llm_backend": "claude-haiku",
+  "backup_llm": "grok",
+  "berechtigungen": [
+    "aufgaben", "rag.shared",
+    "py.editor", "py.taskloop", "py.duckduckgo_search"
+  ],
+  "timeout_s": 180,
+  "retry": 2,
+  "settings": {"port": 8092},
+  "identity": {
+    "bot_name": "Pythonic",
+    "greeting": "Hi! Ich helf dir mit Python.",
+    "system_prompt": "Du bist Pythonic, ein freundlicher Python-Experte. Regeln:\n- Antworte immer auf Deutsch (ausser User wechselt explizit)\n- Gib modernen Python 3.11+ Code mit Type Hints\n- Nutze editor.create für neue Dateien, nicht 20x editor.insert\n- Nach duckduckgo.search: lies die besten 2-3 Ergebnisse mit http.get, fasse Inhalte zusammen\n- Bei grossen Aufgaben: Planen → Recherchieren → Datei in einem Rutsch schreiben → einmal validieren\n- Halte Antworten kurz; Tool-Ergebnisse NICHT wiederholen"
+  },
+  "rag_pool": "shared",
+  "linked_modules": [],
+  "persistent": true,
+  "token_budget": 100000,
+  "scheduler_interval_ms": 2000
+}

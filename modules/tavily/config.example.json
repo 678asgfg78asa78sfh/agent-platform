@@ -1,0 +1,6 @@
+{
+  "_hint": "copy to config.json and fill in your tavily key. see https://tavily.com",
+  "api_key": "tvly-dev-YOUR-KEY-HERE",
+  "max_results": 5,
+  "search_depth": "basic"
+}

@@ -1,0 +1,27 @@
+{
+  "_description": "Cron job that runs every morning at 8:00 and asks the LLM to summarize something. Point `cron_tool` at an agent that can search/read/notify, e.g. a websearch module. Replace modul ids to match your setup.",
+  "cron_modul": {
+    "id": "cron.morning-digest",
+    "typ": "cron",
+    "name": "cron.morning-digest",
+    "display_name": "Morning Digest",
+    "llm_backend": "grok",
+    "backup_llm": null,
+    "berechtigungen": ["aufgaben"],
+    "timeout_s": 600,
+    "retry": 1,
+    "settings": {
+      "schedule": "0 8 * * *",
+      "cron_typ": "chain",
+      "chain": [
+        {"tool": "websearch.search", "params": ["top AI news today"]},
+        {"tool": "notify.send", "params": ["Morning Digest", "{{previous_result}}"]}
+      ]
+    },
+    "identity": {"bot_name": "Digest", "greeting": "", "system_prompt": ""},
+    "rag_pool": null,
+    "linked_modules": ["websearch.main", "notify.ntfy"],
+    "persistent": true
+  },
+  "required_linked_modules_hint": "You need a websearch module (any typ: websearch) and a notify module (typ: notify). Create those first, then link them here."
+}

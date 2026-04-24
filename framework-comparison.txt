@@ -1,0 +1,92 @@
+## Your Framework vs. The Landscape
+
+### What You Are
+
+**Language:** Rust (~2,073 LOC + 2,181 LOC frontend)
+**Binary:** 7.1 MB, single process, no Docker required
+**Architecture:** Cycle-first task pipeline — the LLM is a tool, not the orchestrator
+
+---
+
+### Where You Mirror Existing Players
+
+| Feature | You Have It | Who Else |
+|---|---|---|
+| Multi-LLM backends (Ollama/OpenAI/Anthropic) | Yes, with per-module primary+backup fallback | ZeroClaw (22+ LLMs), NanoClaw, OpenClaw |
+| Task pipeline with state machine | Yes (Erstellt→Gestartet→Success/Failed) | Hermes Agent, OpenClaw |
+| Web UI with config/chat/monitor | Yes, embedded single-page app | OpenClaw, NanoClaw |
+| RAG system | Yes (keyword-based, JSON pools) | OpenClaw (vector), NanoClaw |
+| Tool calling with permission checks | Yes (XML `<tool>` tags, whitelist) | All Tier 1 frameworks |
+| Heartbeat/watchdog monitoring | Yes (atomic timestamp + 120s timeout) | Moltis (Prometheus), OpenFang |
+| Crash recovery | Yes (stuck tasks auto-resume) | Hermes Agent |
+| Multi-engine web search | Yes (DDG, Brave, Serper, Google, Grok) | OpenClaw (via skills) |
+| File-based persistence (no DB) | Yes | ZeroClaw, PicoClaw |
+
+---
+
+### Where You Excel
+
+**1. Radical simplicity — ZeroClaw territory but different flavor**
+- ~2K LOC Rust vs ZeroClaw's likely larger codebase. Your entire core logic fits in your head. No framework, no plugins, no WASM, no abstraction layers. This is a genuine advantage for self-hosters who want to understand and modify their agent.
+
+**2. Cycle-first architecture (unique positioning)**
+- Nobody else puts the scheduler first. OpenClaw, NanoClaw, Hermes — they all start from the LLM and add scheduling. You start from the task pipeline and call the LLM when needed. This means lower idle token burn (a real $400/mo pain point in the landscape).
+
+**3. Resource footprint**
+- 7.1 MB binary, JSON file storage, no database, no Docker required. You're in PicoClaw/ZeroClaw territory. Competitive for edge/low-resource deployment.
+
+**4. LLM fallback per module**
+- Primary + backup LLM per module with automatic failover. Most frameworks do this globally, not per-module. A module talking to local Ollama can fall back to Anthropic API independently.
+
+**5. XML tool calling**
+- `<tool>name(params)</tool>` works reliably with weaker/local LLMs that struggle with JSON function calling schemas. Practical advantage for Ollama users.
+
+**6. German-native UX**
+- Niche but real — Aufgaben, Anweisungen, Berechtigungen. No other framework in any tier does this.
+
+---
+
+### What It Lacks (Critical Gaps)
+
+| Gap | Severity | Who Has It | Impact |
+|---|---|---|---|
+| **No auth on web UI/API** | **Critical** | Everyone in Tier 1 | Anyone on your network has full access. NanoClaw's "API-key only" design is specifically praised for this. |
+| **No sandboxing/isolation** | **High** | NanoClaw (Docker), ZeroClaw (Landlock), NanoBot (Bubblewrap), IronClaw (WASM) | Your filesystem whitelist is the only barrier. No process isolation, no syscall filtering. |
+| **No vector RAG** | **High** | OpenClaw, NanoClaw, Hermes Agent | Keyword matching won't scale past ~1000 documents. Every serious competitor uses embeddings. |
+| **No cron/scheduling** | **Medium** | Hermes Agent (core feature), OpenClaw | Listed as TODO in your code. `sofort` + ISO datetime only. |
+| **No plugin/dynamic extensibility** | **Medium** | OpenClaw (13,700 skills), NanoClaw (MCP) | All tools compiled in. Adding a tool = modify Rust code + recompile. |
+| **No MCP support** | **Medium** | NanoClaw (native), NanoBot (native), OpenClaw | MCP is becoming the standard tool protocol. You use custom XML. |
+| **Single instance only** | **Medium** | KiloClaw, MoltWorker | No distributed task queue, no horizontal scaling. |
+| **SMTP not implemented** | **Low** | — | Mail module can read but not send. |
+| **No session/conversation persistence** | **Low** | OpenClaw (session trees), Hermes Agent | Chat history lives only in browser memory. |
+
+---
+
+### Positioning Map
+
+                    Simple ←————————————————→ Complex
+                        |                       |
+           You ●        |                       |
+  Security     ZeroClaw ●                       |
+     ↑         PicoClaw ●                       |
+     |                  |          NanoClaw ●    |
+     |                  |                       |
+     |                  |       Hermes Agent ●   |
+     |                  |                       |
+     |                  |             OpenClaw ● |
+     ↓                  |                       |
+  Insecure              |                       |
+
+You're in the **bottom-left quadrant** — simple and functional, but the missing auth/sandboxing keeps you from competing on the security axis that now defines the market.
+
+---
+
+### Bottom Line
+
+Your framework is closest to **ZeroClaw** in spirit (small, Rust, self-hosted, low-resource) but without its security story (Landlock sandbox). You have a genuinely novel architecture (cycle-first) that solves a real problem (token burn), but three things would need to change to compete seriously:
+
+1. **API key or basic auth** on the web server — table stakes, ~50 lines of middleware
+2. **MCP support** — the ecosystem is converging on this protocol; your XML tool format locks you out
+3. **Vector RAG** — swap keyword matching for an embedding store (even a local one via Ollama embeddings)
+
+The good news: your codebase is small enough that all three are achievable without a rewrite.

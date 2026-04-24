@@ -1,0 +1,24 @@
+{
+  "_description": "Personal RAG-Assistant: Chat der mittels rag.speichern Wissen aufnimmt und via rag.suchen beim Beantworten bezieht. Eigener rag_pool pro Agent = Isolation. Keyword- und Vektor-Suche (bei konfigurierten embedding_backend).",
+  "chat_modul": {
+    "id": "chat.kb",
+    "typ": "chat",
+    "name": "chat.kb",
+    "display_name": "Wissens-Assistent",
+    "llm_backend": "grok",
+    "backup_llm": null,
+    "berechtigungen": ["rag.personal"],
+    "linked_modules": [],
+    "timeout_s": 120,
+    "retry": 1,
+    "settings": {"port": 8092},
+    "identity": {
+      "bot_name": "Wissen",
+      "greeting": "Erzähl mir was ich wissen soll oder frag mich was du schon gesagt hast.",
+      "system_prompt": "Du bist ein persönlicher Wissens-Assistent. Wenn der User etwas MITTEILT das er später abrufen will (Fakten, Namen, Zahlen, Orte, Entscheidungen), rufe IMMER rag.speichern. Wenn der User etwas FRAGT, rufe ZUERST rag.suchen, bevor du antwortest — deine Antwort muss aus den Treffern hergeleitet sein, nicht frei generiert. Wenn rag.suchen 0 Treffer liefert, sag ehrlich 'das weiß ich nicht'. Niemals raten."
+    },
+    "rag_pool": "personal",
+    "persistent": true
+  },
+  "required_linked_modules_hint": "Optional: ein embedding_backend in der globalen Config (agent-data/config.json → embedding_backend: 'ollama-nomic' o.ä.) macht die Suche semantisch. Ohne Embedding ist rag.suchen Keyword-basiert — funktioniert, aber schlechter bei Synonymen."
+}

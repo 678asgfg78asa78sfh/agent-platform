@@ -1,0 +1,22 @@
+{
+  "_description": "Simple personal assistant chat. Replace api_key and drop this module block into your config.json under `module`.",
+  "id": "chat.buddy",
+  "typ": "chat",
+  "name": "chat.buddy",
+  "display_name": "Buddy",
+  "llm_backend": "grok",
+  "backup_llm": null,
+  "berechtigungen": ["aufgaben", "rag.shared"],
+  "timeout_s": 60,
+  "retry": 2,
+  "settings": {"port": 8091},
+  "identity": {
+    "bot_name": "Buddy",
+    "greeting": "Hallo! Wie kann ich helfen?",
+    "system_prompt": "Du bist Buddy, ein freundlicher persönlicher Assistent. Antworte kurz und sachlich. Nutze die verfügbaren Tools wenn sie helfen, sonst antworte direkt. Sprache: Deutsch, ausser User wechselt."
+  },
+  "rag_pool": "shared",
+  "linked_modules": [],
+  "persistent": true,
+  "token_budget": 50000
+}

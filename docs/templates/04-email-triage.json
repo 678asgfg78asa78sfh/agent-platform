@@ -1,0 +1,41 @@
+{
+  "_description": "Cron job that checks mail every 15min, asks LLM to prioritize (SPAM/WICHTIG/NORMAL), sends notify only for WICHTIG. Requires: one IMAP python-module (mail.privat), one notify module. Idempotency protects against double-notify if cron fires twice due to clock drift.",
+  "cron_modul": {
+    "id": "cron.mail-triage",
+    "typ": "cron",
+    "name": "cron.mail-triage",
+    "display_name": "Mail Triage",
+    "llm_backend": "grok",
+    "backup_llm": null,
+    "berechtigungen": ["aufgaben"],
+    "timeout_s": 180,
+    "retry": 1,
+    "settings": {
+      "schedule": "*/15 * * * *",
+      "cron_typ": "llm",
+      "cron_anweisung": "Rufe imap.search mit 'UNSEEN LATEST 10' um die letzten 10 ungelesenen Mails zu holen. Für jede Mail bewerte Dringlichkeit (WICHTIG/NORMAL/SPAM). Sende mit notify.send NUR die als WICHTIG eingestuften (max 3 Mails), Format: 'Von: <absender> | Betreff: <subject> | Grund: <warum wichtig>'. Wenn 0 wichtige → keine Notification senden.",
+      "target_modul": "mail.triage-worker"
+    },
+    "identity": {"bot_name": "MailTriage", "greeting": "", "system_prompt": ""},
+    "rag_pool": null,
+    "linked_modules": ["mail.privat", "notify.ntfy"],
+    "persistent": true
+  },
+  "_worker_modul_required": {
+    "id": "mail.triage-worker",
+    "typ": "mail",
+    "name": "mail.triage-worker",
+    "display_name": "Mail Triage Worker",
+    "llm_backend": "grok",
+    "backup_llm": null,
+    "berechtigungen": [],
+    "linked_modules": ["mail.privat", "notify.ntfy"],
+    "timeout_s": 120,
+    "retry": 0,
+    "settings": {},
+    "identity": {"bot_name": "Triage", "greeting": "", "system_prompt": "Du triagierst Mails. Nutze imap.search um sie zu holen. Bewerte strikt nach Geschäfts-/Privat-Wichtigkeit. SPAM = Werbung/Newsletter. WICHTIG = Deadlines, direkte Fragen an mich, Rechnungen, Bestätigungen. NORMAL = alles andere. Antworte knapp."},
+    "rag_pool": null,
+    "persistent": true
+  },
+  "required_linked_modules_hint": "Du brauchst: (a) ein mail-Modul via Python (imap.* tools), (b) ein notify-Modul (ntfy/gotify/telegram). Der triage-worker ist ein normaler chat-ähnlicher Agent der beide nutzt."
+}

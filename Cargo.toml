@@ -1,0 +1,29 @@
+[package]
+name = "agent"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures-util = "0.3"
+tokio-stream = "0.1"
+rand = "0.10.1"
+async-trait = "0.1.89"
+# SQLite persistence with WAL: atomic task-claim, idempotency, audit, persistent
+# token stats. bundled-Feature vermeidet System-libsqlite3-Abhängigkeit.
+rusqlite = { version = "0.33", features = ["bundled", "chrono"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.26"
+sha2 = "0.10"  # idempotency key hashing
+
+[dev-dependencies]
+tempfile = "3"

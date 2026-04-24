@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Platform — Setup</title>
+<style>
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: linear-gradient(180deg, #060612 0%, #0a0a1a 100%);
+  color: #e0e0f0;
+  font-family: 'Cascadia Code', 'Fira Code', 'SF Mono', Consolas, monospace;
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 2em 1em;
+}
+main { max-width: 820px; width: 100%; }
+h1 {
+  color: #00aaff;
+  font-size: 1.8em;
+  margin-bottom: 0.3em;
+  text-shadow: 0 0 10px rgba(0,170,255,0.4);
+}
+.subtitle { color: #8888aa; margin-bottom: 2em; font-size: 0.95em; line-height: 1.5; }
+.subtitle strong { color: #00ff88; }
+
+.card {
+  background: #10102a;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 1.2em;
+  margin-bottom: 1em;
+  transition: border-color 0.15s;
+}
+.card:hover { border-color: #00aaff55; }
+.card.selected { border-color: #00aaff; box-shadow: 0 0 20px rgba(0,170,255,0.2); }
+
+.card header { display: flex; align-items: center; gap: 0.8em; margin-bottom: 0.5em; }
+.card header h2 { color: #fff; font-size: 1.15em; flex: 1; }
+.badge {
+  font-size: 0.7em;
+  padding: 0.2em 0.6em;
+  border-radius: 10px;
+  background: #1a3050;
+  color: #00aaff;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+.badge.free { background: #0a3020; color: #00ff88; }
+.badge.paid { background: #2a1a30; color: #ff88aa; }
+
+.card .desc { color: #aaa; font-size: 0.85em; line-height: 1.5; margin-bottom: 0.8em; }
+.card .desc a { color: #00aaff; text-decoration: none; }
+.card .desc a:hover { text-decoration: underline; }
+
+.fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6em; margin: 0.8em 0; }
+.fields.wide { grid-template-columns: 1fr; }
+.fields label { display: flex; flex-direction: column; font-size: 0.8em; color: #8888aa; gap: 0.2em; }
+.fields input {
+  background: #0c0c22;
+  border: 1px solid #2a2a4a;
+  color: #e0e0f0;
+  padding: 0.5em 0.7em;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.9em;
+}
+.fields input:focus { outline: none; border-color: #00aaff; }
+
+.actions { display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap; }
+button {
+  background: #00aaff;
+  color: #000;
+  border: none;
+  padding: 0.55em 1.2em;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 0.9em;
+  transition: background 0.15s;
+}
+button:hover { background: #00ccff; }
+button.secondary { background: #1a1a4a; color: #e0e0f0; }
+button.secondary:hover { background: #2a2a5a; }
+button:disabled { background: #333; color: #777; cursor: not-allowed; }
+
+.result {
+  font-size: 0.82em;
+  padding: 0.5em 0.8em;
+  border-radius: 4px;
+  display: none;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.result.ok { background: #0a3020; color: #00ff88; display: block; border-left: 3px solid #00ff88; }
+.result.err { background: #2a0a10; color: #ff5577; display: block; border-left: 3px solid #ff5577; }
+.result.info { background: #1a1a3a; color: #aac; display: block; border-left: 3px solid #8888aa; }
+
+.footer {
+  margin-top: 2em;
+  padding-top: 1em;
+  border-top: 1px solid #2a2a4a;
+  color: #666;
+  font-size: 0.78em;
+  line-height: 1.5;
+}
+.footer a { color: #00aaff; text-decoration: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>⚡ Agent Platform — Setup</h1>
+  <p class="subtitle">
+    Willkommen! Um deinen ersten Agent zu bauen brauchst du ein <strong>LLM-Backend</strong>.
+    Wähl eine der Optionen unten, test, speicher — dauert ~30 Sekunden.
+    Danach steht der KI-Wizard bereit und du erstellst Agenten indem du mit ihm redest.
+  </p>
+
+  <!-- OpenRouter — freier Kredit -->
+  <div class="card" data-preset="openrouter">
+    <header>
+      <h2>🌐 OpenRouter</h2>
+      <span class="badge free">FREI · viele Modelle</span>
+    </header>
+    <div class="desc">
+      OpenRouter ist ein LLM-Aggregator mit dutzenden Modellen (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) hinter <em>einer</em> API.
+      Freie Modelle verfügbar (z.B. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>),
+      kostenpflichtige Top-Modelle on-demand. API-Key holen auf
+      <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (braucht nur Email).
+    </div>
+    <div class="fields">
+      <label>API-Key
+        <input type="password" data-field="api_key" placeholder="sk-or-v1-...">
+      </label>
+      <label>Modell
+        <input type="text" data-field="model" value="deepseek/deepseek-chat-v3-0324:free">
+      </label>
+    </div>
+    <div class="actions">
+      <button class="test" data-preset="openrouter">Testen</button>
+      <button class="save secondary" data-preset="openrouter" disabled>Speichern &amp; weiter</button>
+    </div>
+    <div class="result" data-preset="openrouter"></div>
+  </div>
+
+  <!-- Ollama -->
+  <div class="card" data-preset="ollama">
+    <header>
+      <h2>🦙 Ollama (lokal)</h2>
+      <span class="badge free">KOSTENLOS · läuft lokal</span>
+    </header>
+    <div class="desc">
+      Falls <code>ollama serve</code> auf diesem Rechner läuft: null Setup nötig, voll privat, keine Cloud.
+      Modell vorab ziehen: <code>ollama pull llama3.2</code>. Siehe
+      <a href="https://ollama.com" target="_blank">ollama.com</a>.
+    </div>
+    <div class="fields">
+      <label>URL
+        <input type="text" data-field="url" value="http://localhost:11434">
+      </label>
+      <label>Modell
+        <input type="text" data-field="model" value="llama3.2:latest">
+      </label>
+    </div>
+    <div class="actions">
+      <button class="test" data-preset="ollama">Testen</button>
+      <button class="save secondary" data-preset="ollama" disabled>Speichern &amp; weiter</button>
+    </div>
+    <div class="result" data-preset="ollama"></div>
+  </div>
+
+  <!-- OpenAI -->
+  <div class="card" data-preset="openai">
+    <header>
+      <h2>🤖 OpenAI</h2>
+      <span class="badge paid">BEZAHLT · GPT-5.x</span>
+    </header>
+    <div class="desc">
+      Standard OpenAI API. Key auf <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.
+    </div>
+    <div class="fields">
+      <label>API-Key
+        <input type="password" data-field="api_key" placeholder="sk-...">
+      </label>
+      <label>Modell
+        <input type="text" data-field="model" value="gpt-5.1">
+      </label>
+    </div>
+    <div class="actions">
+      <button class="test" data-preset="openai">Testen</button>
+      <button class="save secondary" data-preset="openai" disabled>Speichern &amp; weiter</button>
+    </div>
+    <div class="result" data-preset="openai"></div>
+  </div>
+
+  <!-- Anthropic -->
+  <div class="card" data-preset="anthropic">
+    <header>
+      <h2>🧠 Anthropic (Claude)</h2>
+      <span class="badge paid">BEZAHLT · Claude 4.x</span>
+    </header>
+    <div class="desc">
+      Direkt bei Anthropic. Key auf <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.
+    </div>
+    <div class="fields">
+      <label>API-Key
+        <input type="password" data-field="api_key" placeholder="sk-ant-...">
+      </label>
+      <label>Modell
+        <input type="text" data-field="model" value="claude-opus-4-7">
+      </label>
+    </div>
+    <div class="actions">
+      <button class="test" data-preset="anthropic">Testen</button>
+      <button class="save secondary" data-preset="anthropic" disabled>Speichern &amp; weiter</button>
+    </div>
+    <div class="result" data-preset="anthropic"></div>
+  </div>
+
+  <!-- llama.cpp -->
+  <div class="card" data-preset="llamacpp">
+    <header>
+      <h2>🐫 llama.cpp server</h2>
+      <span class="badge free">LOKAL · OpenAI-kompatibel</span>
+    </header>
+    <div class="desc">
+      Falls <code>./llama-server</code> läuft (OpenAI-kompatibel auf :8080). Passt für Power-User mit eigenen GGUF-Modellen.
+    </div>
+    <div class="fields">
+      <label>URL
+        <input type="text" data-field="url" value="http://localhost:8080">
+      </label>
+      <label>Modell-Name
+        <input type="text" data-field="model" value="local">
+      </label>
+    </div>
+    <div class="actions">
+      <button class="test" data-preset="llamacpp">Testen</button>
+      <button class="save secondary" data-preset="llamacpp" disabled>Speichern &amp; weiter</button>
+    </div>
+    <div class="result" data-preset="llamacpp"></div>
+  </div>
+
+  <div class="footer">
+    Fortgeschrittene können auch direkt <code>agent-data/config.json</code> editieren — siehe
+    <a href="https://github.com/anthropics/agent-platform">docs/templates/</a>.
+    Nach dem Setup bist du auf <code>/</code> (Admin-UI) und kannst den KI-Wizard starten.
+  </div>
+</main>
+
+<script>
+// Preset → LlmBackend-struct Mapping
+const PRESETS = {
+  openrouter: {
+    id: 'openrouter', name: 'OpenRouter',
+    typ: 'OpenAICompat',
+    url: 'https://openrouter.ai/api',
+    timeout_s: 120,
+    identity: {
+      bot_name: 'Assistent',
+      greeting: 'Hi! Womit kann ich helfen?',
+      system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
+    },
+  },
+  ollama: {
+    id: 'ollama-local', name: 'Ollama (lokal)',
+    typ: 'Ollama',
+    url: 'http://localhost:11434',
+    timeout_s: 120,
+    identity: {
+      bot_name: 'Assistent',
+      greeting: 'Hi! Lokal läuft\'s.',
+      system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
+    },
+  },
+  openai: {
+    id: 'openai', name: 'OpenAI',
+    typ: 'OpenAICompat', url: 'https://api.openai.com/v1', timeout_s: 120,
+    identity: {
+      bot_name: 'Assistent',
+      greeting: 'Hi!',
+      system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
+    },
+  },
+  anthropic: {
+    id: 'anthropic', name: 'Anthropic',
+    typ: 'Anthropic', url: 'https://api.anthropic.com', timeout_s: 120,
+    identity: {
+      bot_name: 'Claude',
+      greeting: 'Hi, Claude hier.',
+      system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
+    },
+  },
+  llamacpp: {
+    id: 'llamacpp', name: 'llama.cpp',
+    typ: 'OpenAICompat', timeout_s: 120,
+    identity: {
+      bot_name: 'Assistent',
+      greeting: 'Hi, lokales Modell.',
+      system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
+    },
+  },
+};
+
+function buildBackend(preset) {
+  const card = document.querySelector('.card[data-preset="'+preset+'"]');
+  const base = JSON.parse(JSON.stringify(PRESETS[preset]));
+  card.querySelectorAll('input[data-field]').forEach(function(inp) {
+    const k = inp.dataset.field;
+    const v = inp.value.trim();
+    if (!v) return;
+    if (k === 'api_key') base.api_key = v;
+    else if (k === 'url') base.url = v;
+    else if (k === 'model') base.model = v;
+  });
+  return base;
+}
+
+function showResult(preset, kind, msg) {
+  const el = document.querySelector('.result[data-preset="'+preset+'"]');
+  el.className = 'result ' + kind;
+  el.textContent = msg;
+}
+
+async function testBackend(preset) {
+  const btn = document.querySelector('.test[data-preset="'+preset+'"]');
+  const saveBtn = document.querySelector('.save[data-preset="'+preset+'"]');
+  const backend = buildBackend(preset);
+  btn.disabled = true;
+  showResult(preset, 'info', 'Teste Verbindung zu ' + (backend.url || 'localhost') + ' mit Modell ' + backend.model + ' ...');
+  try {
+    const res = await fetch('/api/setup/test-backend', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(backend),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showResult(preset, 'ok', '✓ Verbindung OK. Modell-Antwort: "' + (data.sample||'').trim().substring(0,200) + '"');
+      saveBtn.disabled = false;
+    } else {
+      showResult(preset, 'err', '✗ Fehler: ' + (data.error || 'unbekannt'));
+      saveBtn.disabled = true;
+    }
+  } catch (e) {
+    showResult(preset, 'err', '✗ Netzwerk-Fehler: ' + e.message);
+    saveBtn.disabled = true;
+  }
+  btn.disabled = false;
+}
+
+async function saveBackend(preset) {
+  const backend = buildBackend(preset);
+  showResult(preset, 'info', 'Speichere...');
+  try {
+    const res = await fetch('/api/setup/save-backend', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(backend),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showResult(preset, 'ok', '✓ Gespeichert. Weiterleitung zum Dashboard...');
+      setTimeout(function(){ window.location.href = '/'; }, 800);
+    } else {
+      showResult(preset, 'err', '✗ Speichern fehlgeschlagen: ' + (data.error || 'unbekannt'));
+    }
+  } catch (e) {
+    showResult(preset, 'err', '✗ Netzwerk-Fehler: ' + e.message);
+  }
+}
+
+document.querySelectorAll('button.test').forEach(function(b) {
+  b.addEventListener('click', function() { testBackend(b.dataset.preset); });
+});
+document.querySelectorAll('button.save').forEach(function(b) {
+  b.addEventListener('click', function() { saveBackend(b.dataset.preset); });
+});
+</script>
+</body>
+</html>

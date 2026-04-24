@@ -1,0 +1,10 @@
+target
+agent-data
+backups
+.git
+.claude
+.playwright-mcp
+*.png
+*.jpg
+*.jpeg
+node_modules

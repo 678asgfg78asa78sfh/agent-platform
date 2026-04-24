@@ -1,0 +1,41 @@
+{
+  "_description": "Cron checkt alle 10min eine URL, vergleicht Inhalt mit letztem Snapshot im RAG-Pool, notify bei echter Änderung (LLM filtert Rauschen wie Timestamps/IDs raus). Idempotent: wenn derselbe Content zweimal abgerufen wird, wird nur einmal gespeichert + einmal notified.",
+  "cron_modul": {
+    "id": "cron.web-monitor",
+    "typ": "cron",
+    "name": "cron.web-monitor",
+    "display_name": "Web Monitor",
+    "llm_backend": "grok",
+    "backup_llm": null,
+    "berechtigungen": ["aufgaben"],
+    "timeout_s": 120,
+    "retry": 1,
+    "settings": {
+      "schedule": "*/10 * * * *",
+      "cron_typ": "llm",
+      "cron_anweisung": "1. Rufe http.get('https://example.com/changelog') um den aktuellen Inhalt zu holen. 2. Rufe rag.suchen('last_snapshot_changelog') um den vorherigen Stand aus dem RAG-Pool zu lesen. 3. Vergleiche semantisch (ignoriere Timestamps, IDs, Zeilennummern). 4. Wenn ECHTE inhaltliche Änderung: rufe notify.send mit 1-Satz-Zusammenfassung der Änderung. Dann rufe rag.speichern('last_snapshot_changelog', <neuer Content>) um den Stand zu aktualisieren. 5. Wenn keine Änderung: nichts tun.",
+      "target_modul": "web.monitor-worker"
+    },
+    "identity": {"bot_name": "WebMon", "greeting": "", "system_prompt": ""},
+    "rag_pool": null,
+    "linked_modules": ["web.monitor-worker"],
+    "persistent": true
+  },
+  "_worker_modul_required": {
+    "id": "web.monitor-worker",
+    "typ": "websearch",
+    "name": "web.monitor-worker",
+    "display_name": "Web Monitor Worker",
+    "llm_backend": "grok",
+    "backup_llm": null,
+    "berechtigungen": ["websearch", "rag.monitor", "aufgaben"],
+    "linked_modules": ["notify.ntfy"],
+    "timeout_s": 90,
+    "retry": 0,
+    "settings": {"search_backend": "brave"},
+    "identity": {"bot_name": "WebMon", "greeting": "", "system_prompt": "Du überwachst Webseiten auf Änderungen. Lies die URL, vergleiche mit letztem Snapshot aus rag, notify NUR bei echten Änderungen (keine Timestamps/IDs). Sei präzise und leise."},
+    "rag_pool": "monitor",
+    "persistent": true
+  },
+  "required_linked_modules_hint": "Braucht einen notify-Agent (typ: notify) verlinkt. URL in der cron_anweisung anpassen. Der rag_pool 'monitor' hält den letzten Snapshot pro Ziel."
+}

@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="de"><head>
+<meta charset="utf-8">
+<title>Wizard</title>
+<style>
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#111; color:#eee; }
+  .layout { display:grid; grid-template-columns: 45% 55%; height:100vh; }
+  .chat, .preview { overflow-y:auto; padding:12px; box-sizing:border-box; }
+  .chat { border-right:1px solid #333; display:flex; flex-direction:column; }
+  .messages { flex:1; display:flex; flex-direction:column; gap:10px; overflow-y:auto; }
+  .msg { padding:8px 12px; border-radius:8px; max-width:85%; word-wrap:break-word; }
+  .msg.user { background:#2a5; align-self:flex-end; color:#fff; }
+  .msg.assistant { background:#333; align-self:flex-start; }
+  .msg.tool { background:#2d2d47; font-size:12px; font-family: SFMono-Regular, Consolas, monospace;
+              align-self:flex-start; max-width: 95%; }
+  .ask-options { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+  .input-area { padding-top:8px; display:flex; gap:6px; border-top:1px solid #333; }
+  .input-area textarea { flex:1; min-height:40px; background:#222; color:#eee;
+                          border:1px solid #444; border-radius:6px; padding:8px;
+                          font-family: inherit; resize: vertical; }
+  .card { border:1px solid #333; border-radius:8px; padding:12px; margin-bottom:10px; background:#181818; }
+  .card h4 { margin:0 0 8px 0; font-size:14px; color:#aaa; }
+  .field { display:flex; align-items:center; gap:6px; margin:4px 0; }
+  .field label { width:170px; font-size:12px; color:#aaa; }
+  .field input, .field textarea, .field select {
+    flex:1; background:#222; color:#eee; border:1px solid #444; border-radius:4px;
+    padding:4px 6px; font-family: inherit;
+  }
+  .badge { display:inline-block; padding:1px 6px; border-radius:10px; font-size:10px; margin-left:4px; }
+  .badge.wizard { background:#2a4; color:#fff; }
+  .badge.user { background:#666; color:#fff; }
+  .missing { border:1px solid #c33 !important; }
+  .status { font-size:11px; color:#888; padding:4px 0; border-bottom:1px solid #222; margin-bottom:8px; }
+  button { background:#444; color:#eee; border:none; padding:6px 10px; border-radius:4px; cursor:pointer;
+           font-family: inherit; }
+  button:disabled { opacity:0.5; cursor:not-allowed; }
+  .commit-btn { background:#2a5; font-weight:600; padding:10px 16px; margin-top:12px; width:100%; }
+  .ask-options button { background:#1a3; }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+  .chat { border-right: none; border-bottom: 1px solid #333; max-height: 50vh; }
+  .preview { max-height: 50vh; }
+}
+</style>
+</head><body>
+<div class="layout">
+  <div class="chat">
+    <div class="status" id="status">Lade Session...</div>
+    <div class="messages" id="messages"></div>
+    <div class="input-area">
+      <textarea id="user-input" placeholder="Was soll der Agent koennen?"></textarea>
+      <button id="send-btn" onclick="sendTurn()">Senden</button>
+    </div>
+  </div>
+  <div class="preview" id="preview"></div>
+</div>
+<script>
+const qs = new URLSearchParams(location.search);
+let sessionId = qs.get('session');
+const mode = qs.get('mode') || 'new';
+const sourceId = qs.get('source');
+let draft = {};
+let missing = [];
+const overridden = new Set();
+
+function authHeaders() {
+  const t = localStorage.getItem('api_auth_token');
+  const h = {'Content-Type':'application/json'};
+  if (t) h['Authorization'] = 'Bearer ' + t;
+  return h;
+}
+
+async function startSession() {
+  if (sessionId) {
+    // Resume an existing session
+    try {
+      const r = await fetch('/api/wizard/sessions', {headers: authHeaders()});
+      if (r.ok) {
+        const d = await r.json();
+        const s = (d.sessions || []).find(x => x.session_id === sessionId);
+        if (s) {
+          draft = s.draft || {};
+          renderPreview();
+        }
+      }
+    } catch(e) {}
+    document.getElementById('status').textContent = 'Session fortgesetzt: ' + sessionId;
+    return;
+  }
+  const r = await fetch('/api/wizard/start', {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({mode, source_id: sourceId || null}),
+  });
+  if (!r.ok) {
+    document.getElementById('status').textContent = 'Start fehlgeschlagen: ' + r.status;
+    return;
+  }
+  const d = await r.json();
+  sessionId = d.session_id;
+  draft = d.draft || {};
+  missing = d.missing_for_commit || [];
+  renderPreview();
+  document.getElementById('status').textContent = 'Bereit. Beschreib was der Agent koennen soll.';
+}
+
+async function sendTurn() {
+  const text = document.getElementById('user-input').value;
+  if (!text.trim() || !sessionId) return;
+  addMessage('user', text);
+  document.getElementById('user-input').value = '';
+  const btn = document.getElementById('send-btn');
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/wizard/turn', {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({session_id: sessionId, text}),
+    });
+    if (!resp.ok) {
+      const bodyText = await resp.text().catch(() => '');
+      addMessage('tool', 'Turn failed: ' + resp.status + ' ' + bodyText);
+      return;
+    }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        if (!line.trim()) continue;
+        try { handleEvent(JSON.parse(line)); } catch(e) { console.error('bad line', line, e); }
+      }
+    }
+  } finally { btn.disabled = false; }
+}
+
+function handleEvent(ev) {
+  switch (ev.type) {
+    case 'session': break;
+    case 'assistant_text': addMessage('assistant', ev.delta || ''); break;
+    case 'tool_call':
+      addMessage('tool', 'Wizard: ' + ev.tool + '(' + JSON.stringify(ev.arguments) + ')');
+      break;
+    case 'draft_full':
+      draft = ev.draft || {};
+      missing = ev.missing_for_commit || [];
+      renderPreview();
+      break;
+    case 'ask':
+      addAskMessage(ev.question, ev.options || []);
+      break;
+    case 'commit_ok':
+      addMessage('assistant', 'Agent "' + ev.agent_id + '" wurde erstellt.');
+      setTimeout(() => { location.href = '/'; }, 1500);
+      break;
+    case 'commit_error':
+      addMessage('tool', 'Commit fehlgeschlagen: ' + JSON.stringify(ev.errors));
+      break;
+    case 'frozen':
+      document.getElementById('status').textContent = 'Session eingefroren: ' + ev.reason;
+      document.getElementById('send-btn').disabled = true;
+      break;
+    case 'error':
+      addMessage('tool', 'Fehler: ' + ev.message);
+      break;
+    case 'done': break;
+    case 'code_gen_proposal':
+      showCodeGenModal(ev.proposal);
+      break;
+    case 'code_gen_step':
+      addMessage('tool', '[code-gen ' + ev.step + '] ' + ev.status + (ev.output ? ' — ' + ev.output.slice(0, 200) : ''));
+      break;
+  }
+}
+
+function addMessage(role, content) {
+  const m = document.createElement('div');
+  m.className = 'msg ' + role;
+  m.textContent = content;
+  const box = document.getElementById('messages');
+  box.appendChild(m);
+  box.scrollTop = box.scrollHeight;
+}
+
+function addAskMessage(q, opts) {
+  const m = document.createElement('div');
+  m.className = 'msg assistant';
+  m.textContent = q;
+  if (opts.length) {
+    const ob = document.createElement('div'); ob.className = 'ask-options';
+    opts.forEach(o => {
+      const b = document.createElement('button');
+      b.textContent = o;
+      b.onclick = () => {
+        document.getElementById('user-input').value = o;
+        sendTurn();
+      };
+      ob.appendChild(b);
+    });
+    m.appendChild(ob);
+  }
+  const box = document.getElementById('messages');
+  box.appendChild(m);
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderPreview() {
+  const box = document.getElementById('preview');
+  box.innerHTML = '';
+  const sections = [
+    ['Identitaet', [
+      ['identity.bot_name', 'Name', 'text'],
+      ['identity.display_name', 'Display-Name', 'text'],
+      ['identity.language', 'Sprache', 'text'],
+      ['identity.personality', 'Persona', 'text'],
+    ]],
+    ['Typ & Backend', [
+      ['id', 'ID', 'text'],
+      ['typ', 'Typ', 'text'],
+      ['llm_backend', 'LLM-Backend', 'text'],
+    ]],
+    ['Linking & Berechtigungen', [
+      ['linked_modules', 'Linked Modules (komma)', 'csv'],
+      ['berechtigungen', 'Berechtigungen (komma)', 'csv'],
+    ]],
+    ['System-Prompt', [
+      ['identity.system_prompt', 'System-Prompt', 'textarea'],
+    ]],
+    ['Scheduler & Budget', [
+      ['scheduler_interval_ms', 'Interval (ms)', 'number'],
+      ['max_concurrent_tasks', 'Max parallel', 'number'],
+      ['token_budget', 'Token-Budget', 'number'],
+      ['timeout_s', 'Timeout (s)', 'number'],
+    ]],
+  ];
+  sections.forEach(function(sec) {
+    const c = document.createElement('div'); c.className = 'card';
+    const h = document.createElement('h4'); h.textContent = sec[0]; c.appendChild(h);
+    sec[1].forEach(function(f) { c.appendChild(renderField(f[0], f[1], f[2])); });
+    box.appendChild(c);
+  });
+  const btn = document.createElement('button');
+  btn.className = 'commit-btn';
+  btn.textContent = missing.length === 0 ? 'Agent erstellen' : ('Noch fehlt: ' + missing.join(', '));
+  btn.disabled = missing.length > 0;
+  btn.onclick = showCommitDiff;
+  box.appendChild(btn);
+}
+
+function getByPath(obj, path) {
+  return path.split('.').reduce((o, k) => o && o[k], obj);
+}
+
+function renderField(path, label, kind) {
+  const wrap = document.createElement('div'); wrap.className = 'field';
+  const lab = document.createElement('label'); lab.textContent = label; wrap.appendChild(lab);
+  const current = getByPath(draft, path);
+  let input;
+  if (kind === 'textarea') {
+    input = document.createElement('textarea'); input.rows = 4;
+    input.value = current || '';
+  } else if (kind === 'csv') {
+    input = document.createElement('input');
+    input.value = Array.isArray(current) ? current.join(',') : '';
+  } else {
+    input = document.createElement('input');
+    input.type = kind;
+    input.value = (current === undefined || current === null) ? '' : current;
+  }
+  const topKey = path.split('.')[0];
+  if (missing.indexOf(topKey) >= 0) input.classList.add('missing');
+  input.addEventListener('change', function() { sendPatch(path, kind, input.value); });
+  wrap.appendChild(input);
+  const b = document.createElement('span');
+  b.className = 'badge ' + (overridden.has(path) ? 'user' : 'wizard');
+  b.textContent = overridden.has(path) ? 'Du' : 'Wizard';
+  const isEmpty = current === undefined || current === null || current === '' ||
+                  (Array.isArray(current) && current.length === 0) ||
+                  (typeof current === 'object' && !Array.isArray(current) && Object.keys(current).length === 0);
+  if (isEmpty) b.style.display = 'none';
+  wrap.appendChild(b);
+  return wrap;
+}
+
+async function sendPatch(path, kind, raw) {
+  let value;
+  if (kind === 'csv') {
+    value = raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  } else if (kind === 'number') {
+    value = raw === '' ? null : parseInt(raw, 10);
+  } else {
+    value = raw;
+  }
+  const r = await fetch('/api/wizard/patch', {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({session_id: sessionId, field: path, value}),
+  });
+  if (r.ok) {
+    const d = await r.json();
+    draft = d.draft; missing = d.missing_for_commit || [];
+    overridden.add(path);
+    renderPreview();
+  }
+}
+
+function showCommitDiff() {
+  // Build a simple side-by-side diff between `draft` and what's already in the modules list.
+  // For new mode: just show the full draft as "wird angelegt".
+  // For copy/edit mode: fetch the source module and diff.
+  // Use a modal overlay.
+  var existing = null;
+  var modeKind = 'new';
+  // Infer mode from URL query (already set in `mode` + `sourceId` globals).
+  if (mode === 'edit' && sourceId) { modeKind = 'edit'; }
+  else if (mode === 'copy' && sourceId) { modeKind = 'copy'; }
+
+  if ((modeKind === 'edit' || modeKind === 'copy') && sourceId) {
+    fetch('/api/config', {headers: authHeaders()})
+      .then(r => r.ok ? r.json() : null)
+      .then(cfg => {
+        if (cfg) existing = (cfg.module || []).find(m => m.id === sourceId);
+        renderCommitDiff(modeKind, existing);
+      })
+      .catch(() => renderCommitDiff(modeKind, null));
+  } else {
+    renderCommitDiff(modeKind, null);
+  }
+}
+
+function renderCommitDiff(modeKind, existing) {
+  var overlay = document.createElement('div');
+  overlay.id = 'commit-diff-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:1000;display:flex;align-items:center;justify-content:center;';
+  var inner = document.createElement('div');
+  inner.style.cssText = 'background:#181818;border:1px solid #444;border-radius:8px;padding:16px;max-width:900px;width:90%;max-height:80vh;overflow:auto;';
+  var title = modeKind === 'edit' ? 'Agent wird ueberschrieben' : (modeKind === 'copy' ? 'Neuer Agent wird aus Kopie erstellt' : 'Neuer Agent wird erstellt');
+  inner.innerHTML = '<h2 style="margin-top:0;">' + title + '</h2>';
+  var body = document.createElement('div');
+  body.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:12px;';
+
+  // Left column: existing (or "-- leer --" for new mode)
+  var left = document.createElement('div');
+  left.innerHTML = '<h4 style="margin:0 0 4px 0;color:#aaa;">Vorher</h4>';
+  var leftPre = document.createElement('pre');
+  leftPre.style.cssText = 'background:#0d0d0d;padding:8px;border-radius:4px;overflow:auto;max-height:50vh;font-size:11px;';
+  leftPre.textContent = existing ? JSON.stringify(existing, null, 2) : '(nicht vorhanden)';
+  left.appendChild(leftPre);
+
+  // Right column: new config (materialized draft preview)
+  var right = document.createElement('div');
+  right.innerHTML = '<h4 style="margin:0 0 4px 0;color:#2a5;">Nachher</h4>';
+  var rightPre = document.createElement('pre');
+  rightPre.style.cssText = 'background:#0d0d0d;padding:8px;border-radius:4px;overflow:auto;max-height:50vh;font-size:11px;';
+  // Materialize what the backend will do: identity.bot_name + system_prompt, id=name, etc.
+  var preview = materializeDraftPreview();
+  rightPre.textContent = JSON.stringify(preview, null, 2);
+  right.appendChild(rightPre);
+
+  body.appendChild(left);
+  body.appendChild(right);
+  inner.appendChild(body);
+
+  var btns = document.createElement('div');
+  btns.style.cssText = 'margin-top:16px;display:flex;justify-content:flex-end;gap:8px;';
+  var cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Abbrechen';
+  cancelBtn.onclick = function() { document.body.removeChild(overlay); };
+  var confirmBtn = document.createElement('button');
+  confirmBtn.className = 'commit-btn';
+  confirmBtn.style.cssText = 'background:#2a5;padding:8px 16px;';
+  confirmBtn.textContent = 'Ja, jetzt schreiben';
+  confirmBtn.onclick = function() {
+    document.body.removeChild(overlay);
+    doCommit();
+  };
+  btns.appendChild(cancelBtn);
+  btns.appendChild(confirmBtn);
+  inner.appendChild(btns);
+
+  overlay.appendChild(inner);
+  document.body.appendChild(overlay);
+}
+
+function materializeDraftPreview() {
+  // Mirror what wizard::materialize does server-side. Purely for display.
+  var d = draft || {};
+  return {
+    id: d.id || '(fehlt)',
+    typ: d.typ || '(fehlt)',
+    name: d.id || '(fehlt)',
+    display_name: (d.identity && (d.identity.display_name || d.identity.bot_name)) || '',
+    llm_backend: d.llm_backend || '',
+    berechtigungen: d.berechtigungen || [],
+    timeout_s: d.timeout_s || 60,
+    retry: d.retry || 2,
+    linked_modules: d.linked_modules || [],
+    persistent: !!d.persistent,
+    identity: {
+      bot_name: (d.identity && d.identity.bot_name) || '',
+      system_prompt: (d.identity && d.identity.system_prompt) || '',
+    },
+    scheduler_interval_ms: d.scheduler_interval_ms || null,
+    max_concurrent_tasks: d.max_concurrent_tasks || null,
+    token_budget: d.token_budget || null,
+  };
+}
+
+function doCommit() {
+  document.getElementById('user-input').value = 'Bitte committe jetzt den Agent.';
+  sendTurn();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function showCodeGenModal(proposal) {
+  var overlay = document.createElement('div');
+  overlay.id = 'codegen-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:1001;display:flex;align-items:center;justify-content:center;';
+  var inner = document.createElement('div');
+  inner.style.cssText = 'background:#181818;border:2px solid #2a5;border-radius:8px;padding:20px;max-width:1000px;width:95%;max-height:90vh;overflow:auto;';
+  inner.innerHTML = '<h2 style="margin-top:0;color:#2a5;">Wizard moechte neues Py-Modul erstellen: ' + escapeHtml(proposal.module_name) + '</h2>';
+
+  var descBlock = document.createElement('div');
+  descBlock.innerHTML = '<h4>Beschreibung</h4><div>' + escapeHtml(proposal.description || '') + '</div>';
+  inner.appendChild(descBlock);
+
+  var toolsBlock = document.createElement('div');
+  toolsBlock.innerHTML = '<h4>Tools</h4>';
+  (proposal.tools || []).forEach(function(t) {
+    var li = document.createElement('div');
+    li.textContent = '• ' + t.name + (t.description ? ' — ' + t.description : '') + (t.params && t.params.length ? '  (params: ' + t.params.join(', ') + ')' : '');
+    toolsBlock.appendChild(li);
+  });
+  inner.appendChild(toolsBlock);
+
+  var codeBlock = document.createElement('div');
+  codeBlock.innerHTML = '<h4>Source (' + (proposal.source_code || '').length + ' Zeichen)</h4>';
+  var pre = document.createElement('pre');
+  pre.style.cssText = 'background:#0d0d0d;padding:10px;border-radius:4px;overflow:auto;max-height:50vh;font-family:SFMono-Regular,Consolas,monospace;font-size:12px;';
+  pre.textContent = proposal.source_code || '';
+  codeBlock.appendChild(pre);
+  inner.appendChild(codeBlock);
+
+  var ackLabel = document.createElement('label');
+  ackLabel.style.cssText = 'display:block;margin-top:12px;';
+  var ackInput = document.createElement('input');
+  ackInput.type = 'checkbox';
+  ackInput.id = 'codegen-ack';
+  ackLabel.appendChild(ackInput);
+  ackLabel.appendChild(document.createTextNode(' Ich habe den Code ueberflogen und verstehe was er tut'));
+  inner.appendChild(ackLabel);
+
+  var btns = document.createElement('div');
+  btns.style.cssText = 'margin-top:12px;display:flex;gap:8px;justify-content:flex-end;';
+
+  var rejectBtn = document.createElement('button');
+  rejectBtn.textContent = 'Ablehnen';
+  rejectBtn.style.cssText = 'background:#844;color:#fff;';
+  rejectBtn.onclick = function() {
+    var reason = prompt('Warum ablehnen?', '') || '';
+    document.body.removeChild(overlay);
+    fetch('/api/wizard/confirm-code-gen', {
+      method: 'POST', headers: authHeaders(),
+      body: JSON.stringify({session_id: sessionId, approved: false, reason: reason}),
+    }).then(function(resp) {
+      if (resp.ok) {
+        var reader = resp.body.getReader();
+        var dec = new TextDecoder();
+        var buf = '';
+        function pump() {
+          reader.read().then(function(chunk) {
+            if (chunk.done) return;
+            buf += dec.decode(chunk.value, {stream: true});
+            var idx;
+            while ((idx = buf.indexOf('\n')) >= 0) {
+              var line = buf.slice(0, idx); buf = buf.slice(idx + 1);
+              if (!line.trim()) continue;
+              try { handleEvent(JSON.parse(line)); } catch(e) {}
+            }
+            pump();
+          });
+        }
+        pump();
+      }
+    });
+  };
+
+  var approveBtn = document.createElement('button');
+  approveBtn.textContent = 'Approve';
+  approveBtn.style.cssText = 'background:#2a5;color:#fff;';
+  approveBtn.disabled = true;
+  approveBtn.onclick = function() {
+    document.body.removeChild(overlay);
+    confirmCodeGen(true, '');
+  };
+
+  ackInput.addEventListener('change', function(e) {
+    approveBtn.disabled = !e.target.checked;
+  });
+
+  btns.appendChild(rejectBtn);
+  btns.appendChild(approveBtn);
+  inner.appendChild(btns);
+
+  overlay.appendChild(inner);
+  document.body.appendChild(overlay);
+}
+
+async function confirmCodeGen(approved, reason) {
+  var resp = await fetch('/api/wizard/confirm-code-gen', {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({session_id: sessionId, approved: approved, reason: reason || ''}),
+  });
+  if (!resp.ok) {
+    addMessage('tool', 'confirm-code-gen failed: ' + resp.status);
+    return;
+  }
+  var reader = resp.body.getReader();
+  var dec = new TextDecoder();
+  var buf = '';
+  while (true) {
+    var chunk = await reader.read();
+    if (chunk.done) break;
+    buf += dec.decode(chunk.value, {stream: true});
+    var idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      var line = buf.slice(0, idx); buf = buf.slice(idx + 1);
+      if (!line.trim()) continue;
+      try { handleEvent(JSON.parse(line)); } catch(e) {}
+    }
+  }
+}
+
+startSession();
+</script>
+</body></html>

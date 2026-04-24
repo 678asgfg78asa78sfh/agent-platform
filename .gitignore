@@ -1,0 +1,11 @@
+/target
+/agent-data
+/node_modules
+package.json
+package-lock.json
+__pycache__/
+/reviews
+modules/*/config.json
+modules/*/*.env
+modules/*/*.local*
+modules/*/*.backup
