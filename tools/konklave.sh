@@ -1,49 +1,48 @@
 #!/usr/bin/env bash
-# Konklave — multi-LLM program-logic review for the aistuff agent.
+# Konklave — multi-LLM program-logic review for the agent codebase.
 #
-# Sendet den Rust-Codebase (oder einen Diff) parallel an mehrere Top-LLMs
-# via OpenRouter und sammelt pro Modell ein adversariales PROGRAMM-LOGIK-
-# Review ein. Kernfrage: "Ist das Programm als Ganzes geil?"
+# Dispatches the source tree (or a diff) in parallel to several top-tier
+# LLMs via OpenRouter and collects adversarial PROGRAM-LOGIC reviews from
+# each. Core question: "is the program actually good as a whole?"
 #
-# Der Review fokussiert AUSDRÜCKLICH auf:
-#   - Ist die Architektur kohärent? Hält das Konzept in der Praxis?
-#   - Versteckte Logik-Flaws: Races, Fallbacks-die-schweigend-fehlschlagen,
-#     State-Transitions die Daten verlieren, nicht-enforcte Invarianten.
-#   - Was ist das Dümmste und das Klügste im Design?
+# The review explicitly focuses on:
+#   - Is the architecture coherent? Does the concept survive in practice?
+#   - Hidden logic flaws: races, silently-failing fallbacks, state
+#     transitions that lose data, invariants that are not enforced.
+#   - What is the dumbest and the smartest thing in the design?
 #
-# Anthropic-Modelle sind bewusst ausgeschlossen: der menschliche Orchestrator
-# (ich, Claude) synthetisiert die Reviews, ein Claude-Peer bringt keine
-# Perspektiv-Diversität.
+# Anthropic models are deliberately excluded: the human orchestrator
+# (you, the one reading the reports) already uses Claude; a Claude peer
+# would add no perspective diversity.
 #
-# Modell-Auswahl: Das Tool zieht bei jedem Lauf `/v1/models` von OpenRouter,
-# validiert die Preset-Liste dagegen und warnt wenn ein Modell nicht mehr
-# existiert. So bleibt die Liste nicht länger als nötig veraltet. Mit
-# `--models` kann man manuell überschreiben.
+# Model selection: the script pulls /v1/models on every run, validates
+# the preset list against it, and warns if a model is no longer available.
+# That way the list can't silently go stale. Use `--models` to override.
 #
 # Usage:
-#   ./tools/konklave.sh                          # default: core-Layer, general, flagship preset
-#   ./tools/konklave.sh --full                   # inkl. web.rs + wizard.rs
-#   ./tools/konklave.sh --focus concurrency      # fokussierter Review
-#   ./tools/konklave.sh --preset cheap           # günstiger Modell-Mix
+#   ./tools/konklave.sh                          # default: core layer, general, flagship preset
+#   ./tools/konklave.sh --full                   # include web.rs + wizard.rs
+#   ./tools/konklave.sh --focus concurrency      # focused review
+#   ./tools/konklave.sh --preset cheap           # cheaper mix of models
 #   ./tools/konklave.sh --models "openai/gpt-5.4,x-ai/grok-4"
-#   ./tools/konklave.sh --diff HEAD~5..HEAD      # klassischer Diff-Review
-#   ./tools/konklave.sh --list-models            # zeigt aktive Modelle + Preise, exit
+#   ./tools/konklave.sh --diff HEAD~5..HEAD      # diff-style review
+#   ./tools/konklave.sh --list-models            # list currently-chosen jurors, exit
 #
-# Presets (Pro Provider wird MAX EIN Modell gewählt → echte Lab-Diversität):
-#   flagship  (default)  ~$1-2/Review, beste verfügbaren Modelle
-#   balanced             ~$0.30/Review, solide Mischung
-#   cheap                ~$0.05/Review, aggressiv günstig, Reasoning-starke
+# Presets (at most ONE model per provider → real lab diversity):
+#   flagship  (default)  ~$1-2 per review, best available models
+#   balanced             ~$0.30 per review, solid middle-tier mix
+#   cheap                ~$0.05 per review, aggressively cheap but reasoning-capable
 #
-# Focus-Modi:
-#   general       (default) breiter adversarialer Programm-Logik-Review
-#   concurrency   Races, Deadlocks, Watchdog/Scheduler-Timing, Async-Bugs
-#   resilience    Was bricht bei LLM-Down, Disk-Full, Config-Corrupt, Crash-Recovery
-#   security      Tool-Sandbox, Permission-Bypass, Input-Validation, Injection
-#   ux            Nutzer-Flow: Kann er sich festfahren? Recovery? Defaults?
-#   consistency   Invarianten, State-Machine-Korrektheit, Cross-File-Integrität
+# Focus modes:
+#   general       (default) broad adversarial program-logic review
+#   concurrency   races, deadlocks, watchdog/scheduler timing, async bugs
+#   resilience    what breaks under LLM down, disk full, config corrupt, crash recovery
+#   security      tool sandbox, permission bypass, input validation, injection
+#   ux            user flow: can they get stuck? recovery? defaults?
+#   consistency   invariants, state-machine correctness, cross-file integrity
 #
-# Env: OPENROUTER_API_KEY (aus ~/.konklave/env oder ~/.bwdms-review/env)
-# Output: reviews/<ts>_<focus>/<slug>.md + _manifest.md
+# Env: OPENROUTER_API_KEY (from ~/.konklave/env or ~/.bwdms-review/env)
+# Output: reviews/<timestamp>_<focus>/<slug>.md + _manifest.md
 
 set -euo pipefail
 
@@ -59,16 +58,16 @@ if [ -z "${OPENROUTER_API_KEY:-}" ]; then
     done
 fi
 if [ -z "${OPENROUTER_API_KEY:-}" ]; then
-    echo "ERROR: OPENROUTER_API_KEY nicht gesetzt." >&2
-    echo "  → ~/.konklave/env anlegen mit: OPENROUTER_API_KEY=sk-or-..." >&2
+    echo "ERROR: OPENROUTER_API_KEY not set." >&2
+    echo "  → create ~/.konklave/env with: OPENROUTER_API_KEY=sk-or-..." >&2
     exit 2
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-command -v jq   >/dev/null || { echo "ERROR: jq nicht installiert"   >&2; exit 2; }
-command -v curl >/dev/null || { echo "ERROR: curl nicht installiert" >&2; exit 2; }
+command -v jq   >/dev/null || { echo "ERROR: jq not installed"   >&2; exit 2; }
+command -v curl >/dev/null || { echo "ERROR: curl not installed" >&2; exit 2; }
 
 # ===== 1. Arg parsing =======================================================
 
@@ -90,32 +89,31 @@ while [ $# -gt 0 ]; do
         --models)      MODELS_OVERRIDE="$2"; shift 2 ;;
         --list-models) LIST_MODELS_ONLY=true; shift ;;
         -h|--help)     sed -n '1,55p' "$0"; exit 0 ;;
-        *)             echo "ERROR: unbekanntes Argument: $1" >&2; exit 2 ;;
+        *)             echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
 
 case "$PRESET" in
     flagship|balanced|cheap) ;;
-    *) echo "ERROR: --preset muss flagship|balanced|cheap sein" >&2; exit 2 ;;
+    *) echo "ERROR: --preset must be flagship|balanced|cheap" >&2; exit 2 ;;
 esac
 case "$FOCUS" in
     general|concurrency|resilience|security|ux|consistency) ;;
-    *) echo "ERROR: --focus ungültig (general|concurrency|resilience|security|ux|consistency)" >&2; exit 2 ;;
+    *) echo "ERROR: --focus invalid (general|concurrency|resilience|security|ux|consistency)" >&2; exit 2 ;;
 esac
 
-# ===== 2. Modell-Preset-Definitionen ========================================
-# Jede Zeile ist ein Wunsch-Slot PRO PROVIDER. Das Script wählt das beste
-# aktuell-verfügbare Modell pro Slot aus /v1/models (priorität: erste
-# Regex-Gruppe gewinnt pro Provider-Prefix). So bleibt die Liste robust
-# wenn Provider Versionen bumpen (gpt-5.4 → gpt-5.5 etc.).
+# ===== 2. Model preset definitions ==========================================
+# Each line is a slot preference PER PROVIDER. The script picks the best
+# currently-available model per slot from /v1/models (priority: first regex
+# group wins per provider prefix). This keeps the list robust as providers
+# bump versions (gpt-5.4 → gpt-5.5 etc).
 #
-# Diversitäts-Regel: MAX 1 Modell pro Lab. Die Slots unten sind bereits so
-# gewählt dass jedes Slot ein anderes Lab abdeckt.
+# Diversity rule: MAX 1 model per lab. The slots below are chosen so each
+# slot covers a different lab.
 #
-# Prioritäts-Regex pro Slot: Wenn mehrere Modelle matchen, wird nach
-# length(id) DESC sortiert — heuristisch: "qwen3-max-thinking" gewinnt
-# gegen "qwen3-max" (das "thinking" Suffix = bewussteres Reasoning).
-# Dann nach alphabetischer ID (höhere Version gewinnt: gpt-5.4 > gpt-5.1).
+# Priority regex per slot: if multiple models match, the scoring function
+# below sorts — "qwen3-max-thinking" beats "qwen3-max" (explicit reasoning
+# suffix), then alpha DESC (higher version wins: gpt-5.4 > gpt-5.1).
 
 flagship_slots=(
     "^openai/gpt-5(\.|$)"
@@ -150,17 +148,17 @@ case "$PRESET" in
     cheap)     SLOTS=("${cheap_slots[@]}");    MAX_OUT_PRICE=0.000002 ;; # <= $2/M  out
 esac
 
-# ===== 3. OpenRouter: Live-Modelle ziehen + filtern =========================
+# ===== 3. OpenRouter: live model fetch + filter =============================
 
 MODELS_JSON="$(curl -sS https://openrouter.ai/api/v1/models)" || {
-    echo "ERROR: /v1/models fetch fehlgeschlagen" >&2
+    echo "ERROR: /v1/models fetch failed" >&2
     exit 3
 }
 
-# Grundfilter:  Context >= 100k, nicht anthropic/, nicht *:free (rate-limited),
-# hat Preise, keine Pseudomodelle (pricing == -1), Output-Preis <= MAX_OUT_PRICE
-# des gewählten Presets (verhindert dass flagship $180/M Output-Varianten wie
-# gpt-5.4-pro picks).
+# Base filter: context >= 100k, not anthropic/, not *:free (rate-limited),
+# has pricing, no pseudo-models (pricing == -1), output price <= MAX_OUT_PRICE
+# of the chosen preset (prevents flagship picking $180/M output variants like
+# gpt-5.4-pro).
 candidates_json="$(echo "$MODELS_JSON" | jq --argjson max_out "$MAX_OUT_PRICE" '[.data[]
     | select(.context_length >= 100000)
     | select((.id | startswith("anthropic/")) | not)
@@ -176,11 +174,11 @@ candidates_json="$(echo "$MODELS_JSON" | jq --argjson max_out "$MAX_OUT_PRICE" '
       }
     ]')"
 
-# Pro Slot: (a) match slot-regex, (b) Restriktions-Varianten wegfiltern
-# (-mini, -flash, -distill, -vl, date-stamps etc. — die sind kleiner/
-# spezialisierter, nicht das Flagship), (c) Capability-Suffixe belohnen
+# Per slot: (a) match slot regex, (b) filter out restriction variants
+# (-mini, -flash, -distill, -vl, date-stamps etc. — those are smaller/
+# specialised, not the flagship), (c) reward capability suffixes
 # (-thinking, -reasoning, -speciale, -codex, -pro, -max, -plus, -ultra),
-# (d) höchste Version ID-alphabetisch zuletzt gewinnt.
+# (d) alphabetically highest ID wins last.
 pick_for_slot () {
     local rx="$1"
     echo "$candidates_json" | jq -r --arg rx "$rx" '
@@ -191,20 +189,14 @@ pick_for_slot () {
          | select((.id | test("-[0-9]{4}$|-[0-9]{4}-")) | not)
         ]
         | sort_by(
-            # Tier 1 (höchste Priorität): Reasoning-Kombis mit Max/Pro/Codex
             if (.id | test("-(max|pro|codex)-(thinking|reasoning)")) then 6
             elif (.id | test("-(thinking|reasoning)-(max|pro|codex)")) then 6
-            # Tier 2: reines -speciale (DeepSeek-spezifisch für reasoning)
             elif (.id | test("-speciale")) then 5
-            # Tier 3: -thinking / -reasoning solo
             elif (.id | test("-(thinking|reasoning)")) then 4
-            # Tier 4: -codex / -max / -pro / -plus / -ultra solo
             elif (.id | test("-(codex|max|pro|plus|ultra)")) then 3
-            # Tier 5: Basis-ID ohne Suffix (oft das Flagship selbst, z.B. grok-4.20)
             elif ((.id | split("/")[1] | test("-")) | not) then 2
             else 1
             end,
-            # Sekundär: Version ID DESC (gpt-5.4 > gpt-5.3)
             .id
         )
         | reverse
@@ -234,7 +226,7 @@ else
     for slot in "${SLOTS[@]}"; do
         pick="$(pick_for_slot "$slot")"
         if [ -z "$pick" ]; then
-            echo "  ⚠ kein Modell für Slot »$slot« verfügbar, skip" >&2
+            echo "  ⚠ no model available for slot »$slot«, skipping" >&2
             continue
         fi
         SELECTED+=("$pick")
@@ -242,7 +234,7 @@ else
 fi
 
 if [ ${#SELECTED[@]} -eq 0 ]; then
-    echo "ERROR: keine Modelle selektiert. --list-models zum Debuggen." >&2
+    echo "ERROR: no models selected. --list-models to debug." >&2
     exit 3
 fi
 
@@ -259,7 +251,7 @@ if [ "$LIST_MODELS_ONLY" = true ]; then
     exit 0
 fi
 
-# ===== 4. Source-Assembly ===================================================
+# ===== 4. Source assembly ===================================================
 
 TS="$(date +%Y%m%d_%H%M%S)"
 OUT_DIR="reviews/${TS}_${FOCUS}"
@@ -268,10 +260,10 @@ PAYLOAD_FILE="$OUT_DIR/_payload.txt"
 
 CORE_FILES=(
     AGENT.md
-    ARCHITECTURE.md
     src/main.rs
     src/cycle.rs
     src/pipeline.rs
+    src/store.rs
     src/llm.rs
     src/tools.rs
     src/loader.rs
@@ -293,19 +285,18 @@ FULL_EXTRA=(
 
 DOC_ONLY=(
     AGENT.md
-    ARCHITECTURE.md
 )
 
 append_file () {
     local f="$1"
     if [ ! -f "$f" ]; then
-        echo "  ⚠ fehlt: $f" >&2
+        echo "  ⚠ missing: $f" >&2
         return
     fi
     {
         echo
         echo "================================================================"
-        echo "FILE: $f   ($(wc -l <"$f") Zeilen)"
+        echo "FILE: $f   ($(wc -l <"$f") lines)"
         echo "================================================================"
         cat "$f"
     } >> "$PAYLOAD_FILE"
@@ -324,11 +315,11 @@ case "$MODE" in
         for f in "${DOC_ONLY[@]}"; do append_file "$f"; done
         ;;
     diff)
-        if [ -z "$DIFF_RANGE" ]; then echo "ERROR: --diff braucht range" >&2; exit 2; fi
+        if [ -z "$DIFF_RANGE" ]; then echo "ERROR: --diff needs range" >&2; exit 2; fi
         echo "================================================================" >> "$PAYLOAD_FILE"
         echo "GIT DIFF: $DIFF_RANGE"                                              >> "$PAYLOAD_FILE"
         echo "================================================================" >> "$PAYLOAD_FILE"
-        git diff "$DIFF_RANGE" --no-color -- src/ AGENT.md ARCHITECTURE.md       >> "$PAYLOAD_FILE" || true
+        git diff "$DIFF_RANGE" --no-color -- src/ AGENT.md                       >> "$PAYLOAD_FILE" || true
         ;;
 esac
 
@@ -336,263 +327,256 @@ PAYLOAD_BYTES=$(wc -c < "$PAYLOAD_FILE")
 PAYLOAD_LINES=$(wc -l < "$PAYLOAD_FILE")
 echo "→ payload: $PAYLOAD_BYTES bytes, $PAYLOAD_LINES lines"
 
-# Hard cap (alle Reviewer ≥ 128k ctx; 400k chars ≈ 100k tokens passt sicher)
+# Hard cap (all reviewers have ≥ 128k ctx; 400k chars ≈ 100k tokens fits safely)
 MAX_BYTES=400000
 if [ "$PAYLOAD_BYTES" -gt "$MAX_BYTES" ]; then
-    echo "  ⚠ >$((MAX_BYTES/1000))kB, trunciere auf $((MAX_BYTES/1000))kB" >&2
+    echo "  ⚠ >$((MAX_BYTES/1000))kB, truncating to $((MAX_BYTES/1000))kB" >&2
     head -c "$MAX_BYTES" "$PAYLOAD_FILE" > "$PAYLOAD_FILE.tmp"
-    echo -e "\n\n[… TRUNCATED bei ${MAX_BYTES} bytes …]" >> "$PAYLOAD_FILE.tmp"
+    echo -e "\n\n[… TRUNCATED at ${MAX_BYTES} bytes …]" >> "$PAYLOAD_FILE.tmp"
     mv "$PAYLOAD_FILE.tmp" "$PAYLOAD_FILE"
 fi
 echo
 
 # ===== 5. Prompts ===========================================================
-# Gemeinsamer Kontext-Header für alle Focus-Modi: beschreibt was das
-# Programm tut, damit der Reviewer nicht aus dem Code selbst rückwärts
-# rekonstruieren muss.
+# Shared context header for every focus mode: describes what the program
+# does so the reviewer doesn't have to reverse-engineer it.
 
-CONTEXT_HEADER='Du reviewst einen Rust AI-Agent-Orchestrator ("aistuff").
-Der Code unten enthält die Architektur + Kern-Implementierung.
+CONTEXT_HEADER='You are reviewing a Rust AI agent orchestrator ("agent-platform").
+The code below contains the architecture + core implementation.
 
-Kurz was das Programm TUT (aus AGENT.md):
-- Ein Binary, kein Docker, kein Node. Module führen Aufgaben aus, nutzen
-  LLMs als Werkzeug (nicht als Boss). Tasks sind JSON-Dateien auf der
-  Platte in erstellt/ → gestartet/ → erledigt/ (File-basierte State
-  Machine, Crash-Recovery by design).
-- Pro Modul: eigenes LLM + eigene Tool-Permissions + eigener Scheduler.
-- Tool-Call: LLM produziert OpenAI-kompatibles function_call, Cycle
-  validiert gegen Whitelist + Permission, führt aus, pipet Ergebnis
-  zurück ins LLM.
-- Watchdog prüft Heartbeats pro Modul-Scheduler, markiert Dead als busy.
-- Guardrail: Audit-Log + Valid-Rate-Checks + Alert-Threshold mit Cooldown.
-- Embedded HTML/CSS/JS Frontend (keine SPA), NDJSON-Streaming.
-- Config ist ein JSON-File mit 3 rotierenden Backups.
-- Token-Tracker rechnet LLM-Kosten mit, es gibt eine Daily-USD-Cap.
+Brief summary of what the program DOES (from AGENT.md):
+- A single binary. Modules run tasks, use LLMs as a tool (not as boss).
+  Tasks live in a SQLite state machine (status: erstellt → gestartet →
+  success/failed/cancelled) with atomic claim via BEGIN IMMEDIATE.
+- One scheduler per module, each with its own LLM + tool permissions + home dir.
+- Tool call: LLM produces OpenAI-compatible function_call, cycle validates
+  against whitelist + permission, executes, pipes result back to the LLM.
+- Watchdog checks per-scheduler heartbeats, aborts hung tasks, requeues with
+  retry-count.
+- Guardrail: audit-log + valid-rate checks + alert threshold with cooldown.
+- Embedded HTML/CSS/JS frontend (no SPA), NDJSON streaming.
+- Config is a JSON file with 3 rotating backups.
+- Idempotency table deduplicates side-effect tool calls (exactly-once).
+- Anthropic prompt caching active; per-model budget reservation.
 
-Deine Aufgabe: NICHT Code-Style, NICHT Formatierung, NICHT Naming,
-NICHT fehlende Tests. Dein Job ist: **ist das Programm als Ganzes
-*geil*?** Ist die Logik kohärent? Sind versteckte Flaws drin? Würde
-das in echt funktionieren, oder sieht es nur auf dem Papier gut aus?
+Your task: NOT code style, NOT formatting, NOT naming, NOT missing tests.
+Your job is: **is the program as a whole actually good?** Is the logic
+coherent? Are there hidden flaws? Would this hold up in real use, or does
+it only look good on paper?
 
-Sei adversarial. Nicht loben, nicht Füllwerk. Finde was wirklich dran ist.
+Be adversarial. No flattery, no filler. Find what is really there.
 '
 
 GENERAL_PROMPT="$CONTEXT_HEADER"'
-Evaluier das Programm auf diesen Achsen, in dieser Prioritäts-Reihenfolge:
+Evaluate the program on these axes, in this priority order:
 
-1. **Ist das Kern-Konzept tragfähig?** Macht die Architektur Sinn?
-   Hält sie bei 10x Komplexität, oder sind versteckte Brittleness-Punkte
-   drin die ein Rewrite erzwingen werden?
+1. **Is the core concept sound?** Does the architecture make sense?
+   Does it hold at 10x complexity, or are there hidden brittleness
+   points that will force a rewrite?
 
-2. **Versteckte Logik-Flaws** (wichtigster Punkt):
-   - Race-Conditions zwischen Watchdog, Scheduler, Orchestrator
-   - Fallbacks die stumm fehlschlagen (primary down → backup down → ?)
-   - State-Transitions die Tasks verlieren (Crash zwischen tx commits?)
-   - Tool-Permission-Checks die umgehbar sind (Config-Korruption?
-     JSON-Key-Order-Tricks? Path-Traversal?)
-   - Budget-Caps die nichts cappen
-   - Concurrent writes auf gemeinsame State-Files
+2. **Hidden logic flaws** (most important):
+   - Race conditions between watchdog, scheduler, orchestrator
+   - Fallbacks that fail silently (primary down → backup down → ?)
+   - State transitions that lose tasks (crash between tx commits?)
+   - Tool permission checks that can be bypassed (config corruption?
+     JSON-key-order tricks? Path traversal?)
+   - Budget caps that do not actually cap
+   - Concurrent writes on shared state files
 
-3. **Fehlende Invarianten** — was SOLLTE immer gelten aber wird nicht erzwungen?
-   (Jede Mutation → Audit-Log? Jeder Cron-Fire → Dedup? Jeder LLM-Call → Budget-Cap?)
+3. **Missing invariants** — what SHOULD always hold but is not enforced?
+   (Every mutation → audit log? Every cron fire → dedup? Every LLM call → budget cap?)
 
-4. **UX-auf-Logik-Ebene**:
-   - Kann der User sich in einen Zustand klicken aus dem er nicht
-     per UI wieder rauskommt?
-   - Wenn ein LLM-Backend 24h down ist, was ist der Recovery-Pfad?
-   - Gibt es destruktive Aktionen ohne Bestätigung?
+4. **UX at the logic level**:
+   - Can the user click into a state they cannot recover from via UI?
+   - If an LLM backend is down for 24h, what is the recovery path?
+   - Are there destructive actions without confirmation?
 
-5. **Architektur-Smells**:
-   - Over-Abstraction (Abstraktionen mit einer konkreten Impl)
-   - Under-Abstraction (gleiche Logik 5x copy-pasted)
-   - Coupling das invertiert sein sollte (high-level → low-level Details)
+5. **Architectural smells**:
+   - Over-abstraction (abstractions with one concrete impl)
+   - Under-abstraction (same logic copy-pasted in 5 files)
+   - Coupling that should be inverted (high-level depending on low-level internals)
 
-**Output-Format (Markdown):**
+**Output format (Markdown):**
 
 ## Verdict
-Ein Absatz: ist das Programm geil oder nicht? Was ist der dominante Eindruck?
+One paragraph: is the program good? What is the dominant impression?
 
-## Top Stärken (2-3 Bullets, je 1 Satz)
+## Top strengths (2-3 bullets, 1 sentence each)
 
-## Kritische Concerns (max 5, nach Impact sortiert)
-Pro Concern:
-- **Titel**
+## Critical concerns (max 5, sorted by impact)
+Per concern:
+- **Title**
 - Severity: High | Medium | Low
-- Wo: file:line oder Komponenten-Name
-- Warum: 1-2 Sätze mit konkretem Failure-Mode
-- Fix-Richtung: 1 Satz
+- Where: file:line or component name
+- Why: 1-2 sentences with a concrete failure mode
+- Fix direction: 1 sentence
 
-## Fehlende Invarianten (max 3)
-Dinge die immer gelten sollten aber nicht erzwungen werden.
+## Missing invariants (max 3)
+Things that should always hold but are not enforced.
 
-## Dümmste Design-Entscheidung
-Eine Sache. 2 Sätze. Direkt.
+## Dumbest design decision
+One thing. 2 sentences. Blunt.
 
-## Klügste Design-Entscheidung
-Eine Sache. 2 Sätze. Credit where due.
+## Smartest design decision
+One thing. 2 sentences. Credit where due.
 
-Max 1500 Wörter. Kein Preamble, kein "tolles Projekt"-Lob.
+Max 1500 words. No preamble, no "great project" praise.
 ---
 CODE:
 '
 
 CONCURRENCY_PROMPT="$CONTEXT_HEADER"'
-Fokus NUR auf Concurrency, Races, Async-Korrektheit. Ignoriere alles andere.
+Focus ONLY on concurrency, races, async correctness. Ignore everything else.
 
-Konkret zu prüfen:
-- Watchdog (120s Timeout) vs. Tool-Execution (kann länger dauern) —
-  entsteht ein Zombie-Scheduler wenn Tool > 120s läuft?
-- cron_state.json: wer hält es, wie wird atomic geschrieben, was
-  passiert bei gleichzeitigem Write aus zwei Tasks?
-- Pipeline erstellt/ → gestartet/ → erledigt/ — Atomarität der Moves?
-  Was wenn rename() crasht mitten drin? Was wenn eine zweite Instanz
-  dieselbe Datei pickt (claim_atomic)?
-- RwLock<AgentConfig>: await-Points unter read() / write() gehalten?
-  Starvation möglich wenn Web-Thread Write wartet?
-- tokio::spawn Panics — propagieren sie, oder verschluckt sie die
-  Runtime? Wer restartet den Scheduler?
-- Heartbeat-Map: wird wie synchronisiert, hat stale-read-Problem?
-- Shared HashMap caches ohne tenant-prefix (gibts sowas?)
+Concrete things to check:
+- Watchdog (120s timeout) vs tool execution (can take longer) —
+  does a zombie scheduler emerge if a tool runs > 120s?
+- cron_state: who holds it, how is it written atomically, what happens
+  on concurrent write from two tasks?
+- Pipeline erstellt → gestartet → erledigt — atomicity of the moves?
+  What if rename() crashes midway? What if a second instance picks
+  the same file (claim_atomic)?
+- RwLock<AgentConfig>: any await points held under read() / write()?
+  Possible starvation when the web thread waits for write?
+- tokio::spawn panics — do they propagate, or swallowed by runtime?
+  Who restarts the scheduler?
+- Heartbeat map: how is it synchronised, any stale-read problem?
+- Shared HashMap caches without a tenant prefix?
 
-**Output:** `## Races` / `## Deadlock-Risiken` / `## Zombie-States` /
-`## Summary`. Jeder Finding: file:line, exakt welche Timeline zum
-Bug führt, Fix-Ansatz. Max 1200 Wörter.
+**Output:** `## Races` / `## Deadlock risks` / `## Zombie states` /
+`## Summary`. Per finding: file:line, exact timeline that leads to the
+bug, fix approach. Max 1200 words.
 ---
 CODE:
 '
 
 RESILIENCE_PROMPT="$CONTEXT_HEADER"'
-Fokus NUR auf Failure-Modes: was passiert wenn die Welt bricht?
+Focus ONLY on failure modes: what happens when the world breaks?
 
-Szenarien adversarial durchspielen:
-- OpenAI-API down für 6h: bleibt Agent arbeitsfähig (Fallback-Backend)?
-  Was wenn auch Backup down ist — gibt es eine dritte Stufe oder
-  hängt alles?
-- Disk fast voll (99%): kann Pipeline noch State-Transitions machen,
-  oder fällt rename() mit ENOSPC und Task ist für immer im limbo?
-- config.json korrupt (User hat manuell editiert, falsches JSON):
-  lädt main.rs eine Default-Config, oder crasht der Start?
-  Was mit den 3 Backups — werden sie bei Parse-Error automatisch
-  durchprobiert?
-- Python-Subprocess (loader.rs PyProcessPool) stirbt während Tool-Call:
-  wird der Pool restartet? Was sieht der nächste Caller?
-- OS-Kill während commit-Phase von pipeline.rs: ist der Move atomar
-  oder bleibt Task in Zwischenzustand (2 Kopien, oder 0 Kopien)?
-- NTP-Drift um 1 Stunde: crashen die Cron-Dedup-Checks oder feuern
-  sie plötzlich 24 Tasks doppelt?
-- LLM antwortet mit garbage-JSON für einen function_call: parse_openai_
-  tool_call() crashed oder silent-drops?
+Play through adversarial scenarios:
+- OpenAI API down for 6h: does the agent stay functional (fallback backend)?
+  What if the backup is also down — is there a third stage, or does
+  everything hang?
+- Disk almost full (99%): can the pipeline still do state transitions,
+  or does rename() fail with ENOSPC leaving a task in limbo forever?
+- config.json corrupt (user edited manually, invalid JSON):
+  does main.rs load a default config, or does startup crash?
+  What about the 3 backups — are they auto-tried on parse error?
+- Python subprocess (loader.rs PyProcessPool) dies mid tool call:
+  is the pool restarted? What does the next caller see?
+- OS kill during pipeline.rs commit phase: is the move atomic or
+  does the task end up in an intermediate state (2 copies, or 0)?
+- NTP drift by 1 hour: do cron dedup checks crash, or do they suddenly
+  fire 24 tasks twice?
+- LLM returns garbage JSON for a function_call: does parse_openai_
+  tool_call() crash or silent-drop?
 
-**Output:** `## Hart-Failure-Modes` / `## Silent-Failure-Modes` /
-`## Recovery-Gaps` / `## Summary`. Pro Szenario: was passiert, wo
-im Code, wie fix. Max 1200 Wörter.
+**Output:** `## Hard failure modes` / `## Silent failure modes` /
+`## Recovery gaps` / `## Summary`. Per scenario: what happens, where
+in code, how to fix. Max 1200 words.
 ---
 CODE:
 '
 
 SECURITY_PROMPT="$CONTEXT_HEADER"'
-Fokus NUR auf Sicherheit im Programm-Logik-Sinn (nicht Style, nicht XSS
-in Templates — das ist ein separater Run).
+Focus ONLY on security in a program-logic sense (not style, not XSS in
+templates — that is a separate run).
 
-Angriffs-Szenarien:
-- Tool-Permission-Bypass: Kann ein LLM (oder User via Chat-API) ein
-  Tool aufrufen das für sein Modul NICHT whitelisted ist?
-  tools_for_module() / exec_tool_unified() — wo wird gegen was gecheckt?
-- Path-Traversal: files-Modul hat `home/<modul_id>/` als Sandbox.
-  Kann ein "../../etc/passwd" rausbrechen? safe_relative_path() — wie
-  tight ist es? Was mit Symlinks, Windows-style paths, NUL-bytes,
-  Unicode-Tricks (RTL override, fullwidth chars)?
-- Python-Module Injection: loader.rs spawnt Python mit was als Input?
-  shell=True? Argument-Quoting? Kann ein Tool-Parameter Code-Execution
-  triggern?
-- Chat-API ohne Auth? Wer darf /api/chat/*? Kann ein externer
-  Netzteilnehmer (falls web.rs auf 0.0.0.0) Module fernsteuern?
-- Config-API: kann ein nicht-privilegierter Request die Config
-  überschreiben? Wird das config-Secret (API-Keys) in irgendeiner
-  Response geleaked?
-- Rate-Limit: security.rs hat Token-Bucket — ist die Bucket-Key
-  korrekt (IP? User? Modul?)? Kann man sie umgehen via X-Forwarded-For
-  wenn hinter Proxy?
-- Audit-Log: ist es append-only, oder kann eine spätere Mutation
-  frühere Zeilen überschreiben?
-- Secret-Leakage: stehen API-Keys in Logs, in /api/config-Responses,
-  in Frontend-HTML, in Error-Messages?
+Attack scenarios:
+- Tool permission bypass: can an LLM (or a user via chat API) invoke a
+  tool that is NOT whitelisted for its module?
+  tools_for_module() / exec_tool_unified() — where is what checked?
+- Path traversal: files module has `home/<modul_id>/` as a sandbox.
+  Can "../../etc/passwd" escape? safe_relative_path() — how tight is it?
+  What about symlinks, Windows-style paths, NUL bytes, Unicode tricks
+  (RTL override, fullwidth chars)?
+- Python module injection: loader.rs spawns Python with what as input?
+  shell=True? Argument quoting? Can a tool parameter trigger code execution?
+- Chat API without auth? Who may access /api/chat/*? Can an external
+  network peer (if web.rs binds 0.0.0.0) remote-control modules?
+- Config API: can an unprivileged request overwrite the config? Are
+  secrets (API keys) leaked in any response?
+- Rate limit: security.rs uses a token bucket — is the bucket key
+  correct (IP? user? module?)? Can it be bypassed via X-Forwarded-For
+  when behind a proxy?
+- Audit log: is it append-only, or can a later mutation overwrite
+  earlier lines?
+- Secret leakage: are API keys present in logs, in /api/config
+  responses, in frontend HTML, in error messages?
 
 **Output:** `## Critical` / `## High` / `## Medium` / `## Summary`.
-Pro Finding: file:line, Angriffs-Pfad konkret (welches Request was
-triggert), Fix. Max 1200 Wörter.
+Per finding: file:line, concrete attack path (which request triggers
+what), fix. Max 1200 words.
 ---
 CODE:
 '
 
 UX_PROMPT="$CONTEXT_HEADER"'
-Fokus auf **Programm-Logik-UX**, nicht Farben/Schriftgrößen. Also:
-kann der Nutzer sinnvoll mit dem System arbeiten? Wo würde er hängenbleiben?
+Focus on **program-logic UX**, not colours/fonts. I.e. can the user
+actually work with the system? Where would they get stuck?
 
-Szenarien durchgehen:
-- Ein Modul hat Config-Fehler: zeigt die UI einen klaren Fehler,
-  oder nur ein "nichts passiert"? Kann der User sich selbst helfen?
-- Eine Aufgabe ist in gestartet/ steckengeblieben weil Scheduler-Crash:
-  sieht der User das? Kann er manuell re-queuen? Oder ist die einzige
-  Recovery "rm agent-data/gestartet/xxx.json auf der CLI"?
-- User-A stellt Wizard-Config um während Agent gerade Task Y läuft:
-  was passiert? Kontra-Intuitive Effekte?
-- Destruktive Aktionen (Modul löschen, LLM-Backend entfernen, Config-
-  Restore): gibt es Confirmation-Prompts? Backups?
-- Chat-UI: was sieht der User wenn LLM hängt, wenn Tool hängt, wenn
-  NDJSON-Stream abbricht? Kann er abbrechen, oder muss er den Tab
-  schließen?
-- Neu-Onboarding: wie lange vom frischen Start bis erstem laufenden
-  Modul? Ist die Wizard-Flow-Logik konsistent?
-- Error-Messages: sind sie actionable ("XYZ failed because ABC, fix:
-  do Z") oder kryptisch ("error 42")?
-- Default-Werte: sind sie sinnvoll für einen Neu-Nutzer (z.B.
-  Daily-Cap $5, nicht $0 oder $1000)?
+Play through scenarios:
+- A module has a config error: does the UI show a clear error, or just
+  "nothing happens"? Can the user help themselves?
+- A task is stuck in `status='gestartet'` because of a scheduler crash:
+  can the user see it in the dashboard? Can they manually requeue, or
+  is the only recovery a raw UPDATE against the SQLite tasks table?
+- User A changes wizard config while agent is running task Y: what
+  happens? Counter-intuitive effects?
+- Destructive actions (delete module, remove LLM backend, config
+  restore): are there confirmation prompts? Backups?
+- Chat UI: what does the user see when an LLM hangs, when a tool
+  hangs, when the NDJSON stream breaks? Can they cancel, or must
+  they close the tab?
+- Fresh onboarding: how long from fresh start to first running module?
+  Is the wizard flow consistent?
+- Error messages: are they actionable ("XYZ failed because ABC, fix:
+  do Z") or cryptic ("error 42")?
+- Default values: do they make sense for a new user (e.g. daily cap
+  $5, not $0 or $1000)?
 
-**Output:** `## Dead-Ends` (User hängt fest) / `## Silent-Failures`
-(User merkt nicht dass was kaputt ist) / `## Missing-Affordances`
-(sollte existieren, existiert nicht) / `## Summary`.
-Max 1200 Wörter.
+**Output:** `## Dead ends` (user stuck) / `## Silent failures`
+(user does not notice something is broken) / `## Missing affordances`
+(should exist, does not) / `## Summary`.
+Max 1200 words.
 ---
 CODE:
 '
 
 CONSISTENCY_PROMPT="$CONTEXT_HEADER"'
-Fokus auf Invarianten und Zustands-Konsistenz. Was soll immer gelten?
-Was wird wirklich erzwungen?
+Focus on invariants and state consistency. What should always hold?
+What is actually enforced?
 
-Zu prüfen:
-- Jede Aufgabe ist in GENAU EINEM der drei Ordner (erstellt|gestartet|
-  erledigt). Wird das erzwungen, oder gibt es Pfade wo sie in zwei
-  Ordnern gleichzeitig existieren kann?
-- JEDE Mutation → Log-Event? Oder nur manche?
-- Cron dedup: feuert JEDER Cron-Schedule max 1x pro Slot, oder kann
-  eine unglücklich getimte Restart-Sequence doppelt feuern?
-- Token-Tracker: wird JEDER LLM-Call getrackt, oder hat irgendein
-  Pfad (z.B. Streaming-Abort) einen Leak wo Cost unterschlagen wird?
-- Permission-Whitelist: stimmen die beiden Checks (tools_as_openai_
-  json vs. exec_tool_unified) miteinander überein, oder gibt es Drift?
-- LLM-Backend-Liste: wenn User backend X löscht aber ein Modul noch
-  darauf verweist — was passiert beim nächsten Run? Graceful
-  "Fehler-Toast" oder Panic?
-- Daily-Cap: Reset bei UTC-Mitternacht — was wenn Agent über
-  Mitternacht einen laufenden Task hat, wird der gezählt in Tag A
-  oder Tag B oder beiden?
-- Config-Backup-Rotation: immer genau N Backups, oder kann es
-  unter Edge-Cases ∞ viele oder 0 werden?
-- Types-Invarianten: enum-Felder die immer bestimmte Kombinationen
-  sein sollten (z.B. LogTyp::Error braucht Modul-ID) — type-enforced
-  oder nur by-convention?
+To check:
+- Every task is in EXACTLY ONE folder (erstellt|gestartet|erledigt).
+  Is this enforced, or are there paths where it can exist in two
+  folders at once?
+- Every mutation → log event? Or only some?
+- Cron dedup: does every cron slot fire at most once, or can an
+  unlucky restart sequence fire twice?
+- Token tracker: is every LLM call tracked, or does some path (e.g.
+  streaming abort) leak cost without accounting?
+- Permission whitelist: do the two checks (tools_as_openai_json vs
+  exec_tool_unified) agree, or is there drift?
+- LLM backend list: if a user deletes backend X but a module still
+  references it — what happens on the next run? Graceful error toast
+  or panic?
+- Daily cap: reset at UTC midnight — what if the agent has a running
+  task across midnight, is it counted on day A or day B or both?
+- Config backup rotation: always exactly N backups, or can it drift
+  to ∞ or 0 under edge cases?
+- Types invariants: enum fields that should always be certain
+  combinations (e.g. LogTyp::Error needs module ID) — type-enforced
+  or only by convention?
 
-**Output:** `## Gebrochene Invarianten` / `## Implicite Invarianten
-(die man sehen will)` / `## Drift zwischen parallelen Checks` /
-`## Summary`. Pro Finding: file:line, konkreter Zustand der sie bricht,
-Fix. Max 1200 Wörter.
+**Output:** `## Broken invariants` / `## Implicit invariants (should
+be explicit)` / `## Drift between parallel checks` / `## Summary`.
+Per finding: file:line, concrete state that breaks it, fix. Max 1200 words.
 ---
 CODE:
 '
 
-# Prompt nach Focus auswählen
+# Select the prompt based on focus
 case "$FOCUS" in
     general)      PROMPT="$GENERAL_PROMPT" ;;
     concurrency)  PROMPT="$CONCURRENCY_PROMPT" ;;
@@ -602,8 +586,8 @@ case "$FOCUS" in
     consistency)  PROMPT="$CONSISTENCY_PROMPT" ;;
 esac
 
-# Prompt + Payload in gemeinsame Datei schreiben, damit jq sie via
-# --rawfile lesen kann (ARG_MAX-Limit ~128KB, Payload kann größer sein).
+# Write prompt + payload to one file so jq can read it via --rawfile (ARG_MAX
+# limit ~128KB; payload can be larger than that).
 FULL_PROMPT_FILE="$OUT_DIR/_prompt.txt"
 { echo -n "$PROMPT"; cat "$PAYLOAD_FILE"; } > "$FULL_PROMPT_FILE"
 
@@ -617,9 +601,9 @@ send_one () {
     local err="$OUT_DIR/${slug}.err"
     local body_file="$OUT_DIR/${slug}.req.json"
 
-    # max_tokens groß genug für Reasoning-Modelle die intern thinken
-    # + noch echten Output produzieren sollen.
-    # --rawfile statt --arg damit der ARG_MAX nicht limitiert.
+    # max_tokens generous enough for reasoning-heavy models that internally
+    # "think" and still produce real output.
+    # --rawfile instead of --arg so ARG_MAX does not limit us.
     jq -n \
         --arg model  "$model" \
         --rawfile prompt "$FULL_PROMPT_FILE" \
@@ -637,8 +621,8 @@ send_one () {
         -X POST https://openrouter.ai/api/v1/chat/completions \
         -H "Authorization: Bearer $OPENROUTER_API_KEY" \
         -H "Content-Type: application/json" \
-        -H "HTTP-Referer: https://github.com/local/aistuff" \
-        -H "X-Title: Konklave aistuff review" \
+        -H "HTTP-Referer: https://github.com/local/agent-platform" \
+        -H "X-Title: Konklave agent-platform review" \
         --data-binary "@$body_file" 2>"$err") || true
     t1=$(date +%s)
     rm -f "$body_file"
@@ -662,7 +646,7 @@ send_one () {
     printf "  %-40s  http=%s  %ss\n" "$model" "$http_code" "$((t1-t0))"
 }
 
-echo "Dispatching ${#SELECTED[@]} Reviewer parallel:"
+echo "Dispatching ${#SELECTED[@]} reviewers in parallel:"
 for m in "${SELECTED[@]}"; do
     send_one "$m" &
 done
@@ -672,7 +656,7 @@ echo
 # ===== 7. Manifest ==========================================================
 
 {
-    echo "# Konklave Review — $TS"
+    echo "# Konklave review — $TS"
     echo
     echo "- **Focus:**  $FOCUS"
     echo "- **Mode:**   $MODE${DIFF_RANGE:+ ($DIFF_RANGE)}"
@@ -693,8 +677,8 @@ echo
     done
 } > "$OUT_DIR/_manifest.md"
 
-# Zwischenprodukte aufräumen (Payload + Full-Prompt, ~600KB pro Run)
+# Clean up intermediate files (payload + full prompt, ~600kB per run)
 rm -f "$PAYLOAD_FILE" "$FULL_PROMPT_FILE"
 
-echo "✓ fertig — Reviews in $OUT_DIR"
+echo "✓ done — reviews in $OUT_DIR"
 echo "  manifest: $OUT_DIR/_manifest.md"

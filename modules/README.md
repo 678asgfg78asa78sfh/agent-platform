@@ -1,45 +1,50 @@
-# Agent Platform — Python Module
+# Agent Platform — Python Modules
 
-Jedes Modul ist ein Ordner mit einer `module.py` Datei.
+Each module is a directory containing a `module.py` file.
 
-## Struktur
+## Structure
 
 ```
 modules/
-  mein_modul/
-    module.py      <- Pflicht: Standard-Interface
-    ...            <- Optional: weitere Dateien
+  my_module/
+    module.py      <- Required: standard interface
+    ...            <- Optional: additional files
 ```
 
 ## module.py Format
 
 ```python
 MODULE = {
-    "name": "mein_modul",
-    "description": "Was das Modul macht",
+    "name": "my_module",
+    "description": "What the module does",
     "version": "1.0",
     "settings": {
-        "key": {"type": "string|number|bool|list|text|password|select", "label": "Anzeigename", "default": "wert"},
+        "key": {"type": "string|number|bool|list|text|password|select", "label": "Display name", "default": "value"},
     },
     "tools": [
-        {"name": "mein_modul.aktion", "description": "Was es tut", "params": ["param1", "param2"]},
+        {"name": "my_module.action", "description": "What it does", "params": ["param1", "param2"]},
     ],
 }
 
 def handle_tool(tool_name: str, params: list, config: dict) -> dict:
-    """Wird vom Agent aufgerufen wenn das LLM dieses Tool nutzt.
-    Return: {"success": True/False, "data": "Ergebnis-Text"}
+    """Called by the agent when the LLM uses this tool.
+    Return: {"success": True/False, "data": "result text"}
     """
     return {"success": True, "data": "OK"}
 ```
 
-## Kommunikation
+## Communication
 
-Der Rust-Core ruft module.py per stdin/stdout JSON auf:
-- Input:  {"action": "handle_tool", "tool": "name", "params": [...], "config": {...}}
-- Output: {"success": true, "data": "..."}
+The Rust core invokes `module.py` via JSON over stdin/stdout:
+- Input:  `{"action": "handle_tool", "tool": "name", "params": [...], "config": {...}}`
+- Output: `{"success": true, "data": "..."}`
 
-Oder fuer Metadaten:
-- Input:  {"action": "describe"}
-- Output: MODULE dict
-```
+Or for metadata:
+- Input:  `{"action": "describe"}`
+- Output: the `MODULE` dict
+
+## Tips
+
+- Put secrets (API keys, passwords) behind `"type": "password"` so the web UI redacts them in API responses.
+- Emit compact `data` (the LLM pays tokens to read it) and use `success: false` with an error string when something fails — the agent will surface it as a task error.
+- Do not spin up long-running threads inside `handle_tool`; the process is pooled and reused, and leaked threads will outlive a single tool call.

@@ -2,7 +2,7 @@
 
 **Self-hosted AI agents with a conversational setup wizard, live quality dashboard, and hard cost caps — built in Rust as a single binary.**
 
-One binary, embedded SQLite, no cloud. Drop it on your box, point it at an LLM backend (OpenRouter free tier, Ollama, OpenAI, Anthropic, llama.cpp), and configure agents by talking to them. Python is only needed if you want to run plugin modules (IMAP/SMTP/etc.); the Rust core alone is fully functional.
+One binary, embedded SQLite (WAL mode) as the canonical state store, no cloud. Drop it on your box, point it at an LLM backend (OpenRouter free tier, Ollama, OpenAI, Anthropic, llama.cpp), and configure agents by talking to them. Python is only needed if you want to run plugin modules (IMAP/SMTP/etc.); the Rust core alone is fully functional.
 
 ---
 
@@ -137,7 +137,9 @@ Side-effect tools (`shell.exec`, `notify.send`, `files.write`, `smtp.send`, `auf
 
 The audit log (`audit_log` table) records every side-effect tool call and config change with DB triggers that block UPDATE/DELETE — tamper-proof at the storage level.
 
-Previous versions used file-based storage (`erstellt/gestartet/erledigt/` directories). Upgrading instances migrate those files into SQLite at first startup and archive the old directories as `.migrated.*`.
+The task status enum is still labelled in German (`erstellt` / `gestartet` / `erledigt`) because that was the original source language of the project and renaming the column would have forced a breaking migration on existing installs. Internally, `erstellt = created`, `gestartet = running`, `erledigt = done`. These are SQLite enum values, **not** filesystem directories.
+
+Previous versions did use file-based storage under `agent-data/erstellt/`, `gestartet/`, `erledigt/` JSON folders. Upgrading instances migrate those files into SQLite on first startup and rename the old directories to `*.migrated.<timestamp>` — if you see those folders on an existing install, they are frozen legacy state, not the live task queue.
 
 ### Module types
 
@@ -282,10 +284,12 @@ squashed commit — the old history was scrubbed because it contained a
 Tavily API key in `modules/tavily/config.json` that had to be revoked
 before a public push. The squashed commit is the canonical starting point.
 
-Many code comments are in German, reflecting the iterative working notes of
-the author and reviewers; external-facing documentation (README, AGENT.md,
-docs/templates/) is in English. Feel free to open issues if any German
-comment blocks a contribution.
+External-facing surface (README, `AGENT.md`, `docs/templates/`, `modules/README.md`,
+the setup wizard, CLI errors, `tools/konklave.sh`) is English. The task-status
+column names (`erstellt`/`gestartet`/`erledigt`) and a subset of internal Rust
+comments are still in German — that was the original working language and
+renaming them requires a DB migration. German is not a runtime requirement
+anywhere; the UI has a language toggle (EN/DE) in the setup wizard.
 
 ---
 
