@@ -293,4 +293,4 @@ comment blocks a contribution.
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Copyright 2026 Martin Sättele. Free to use, modify, and distribute for any purpose including commercial; attribution required per the license terms.
+Copyright 2026 678asgfg78asa78sfh. Free to use, modify, and distribute for any purpose including commercial; attribution required per the license terms.

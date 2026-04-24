@@ -112,36 +112,43 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
 </head>
 <body>
 <main>
-  <h1>⚡ Agent Platform — Setup</h1>
-  <p class="subtitle">
-    Willkommen! Um deinen ersten Agent zu bauen brauchst du ein <strong>LLM-Backend</strong>.
-    Wähl eine der Optionen unten, test, speicher — dauert ~30 Sekunden.
-    Danach steht der KI-Wizard bereit und du erstellst Agenten indem du mit ihm redest.
+  <div style="display:flex;align-items:flex-start;gap:1em;margin-bottom:0.6em;">
+    <h1 style="flex:1;">⚡ Agent Platform — Setup</h1>
+    <div style="display:flex;gap:0.3em;align-items:center;font-size:0.75em;">
+      <span style="color:#8888aa;">Language:</span>
+      <button class="lang-btn" data-lang="en" style="background:#00aaff;color:#000;border:none;padding:0.25em 0.6em;border-radius:3px;cursor:pointer;font-family:inherit;font-weight:600;">EN</button>
+      <button class="lang-btn" data-lang="de" style="background:#1a1a4a;color:#e0e0f0;border:none;padding:0.25em 0.6em;border-radius:3px;cursor:pointer;font-family:inherit;font-weight:600;">DE</button>
+    </div>
+  </div>
+  <p class="subtitle" data-i18n="intro">
+    Welcome! To build your first agent you need an <strong>LLM backend</strong>.
+    Pick an option below, test it, save — takes about 30 seconds.
+    After that the AI Wizard is ready and you create agents by talking to it.
   </p>
 
-  <!-- OpenRouter — freier Kredit -->
+  <!-- OpenRouter -->
   <div class="card" data-preset="openrouter">
     <header>
       <h2>🌐 OpenRouter</h2>
-      <span class="badge free">FREI · viele Modelle</span>
+      <span class="badge free" data-i18n="badge-openrouter">FREE · many models</span>
     </header>
-    <div class="desc">
-      OpenRouter ist ein LLM-Aggregator mit dutzenden Modellen (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) hinter <em>einer</em> API.
-      Freie Modelle verfügbar (z.B. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>),
-      kostenpflichtige Top-Modelle on-demand. API-Key holen auf
-      <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (braucht nur Email).
+    <div class="desc" data-i18n="desc-openrouter">
+      OpenRouter is an LLM aggregator with dozens of models (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) behind <em>one</em> API.
+      Free models available (e.g. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>),
+      paid flagship models on demand. Get an API key at
+      <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (email only, no card required for free tier).
     </div>
     <div class="fields">
-      <label>API-Key
+      <label data-i18n="lbl-api-key">API key
         <input type="password" data-field="api_key" placeholder="sk-or-v1-...">
       </label>
-      <label>Modell
+      <label data-i18n="lbl-model">Model
         <input type="text" data-field="model" value="deepseek/deepseek-chat-v3-0324:free">
       </label>
     </div>
     <div class="actions">
-      <button class="test" data-preset="openrouter">Testen</button>
-      <button class="save secondary" data-preset="openrouter" disabled>Speichern &amp; weiter</button>
+      <button class="test" data-preset="openrouter" data-i18n="btn-test">Test</button>
+      <button class="save secondary" data-preset="openrouter" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
     <div class="result" data-preset="openrouter"></div>
   </div>
@@ -149,25 +156,25 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
   <!-- Ollama -->
   <div class="card" data-preset="ollama">
     <header>
-      <h2>🦙 Ollama (lokal)</h2>
-      <span class="badge free">KOSTENLOS · läuft lokal</span>
+      <h2>🦙 Ollama (local)</h2>
+      <span class="badge free" data-i18n="badge-ollama">FREE · runs locally</span>
     </header>
-    <div class="desc">
-      Falls <code>ollama serve</code> auf diesem Rechner läuft: null Setup nötig, voll privat, keine Cloud.
-      Modell vorab ziehen: <code>ollama pull llama3.2</code>. Siehe
+    <div class="desc" data-i18n="desc-ollama">
+      If <code>ollama serve</code> runs on this machine: zero setup, fully private, no cloud.
+      Pull a model first: <code>ollama pull llama3.2</code>. See
       <a href="https://ollama.com" target="_blank">ollama.com</a>.
     </div>
     <div class="fields">
-      <label>URL
+      <label data-i18n="lbl-url">URL
         <input type="text" data-field="url" value="http://localhost:11434">
       </label>
-      <label>Modell
+      <label data-i18n="lbl-model">Model
         <input type="text" data-field="model" value="llama3.2:latest">
       </label>
     </div>
     <div class="actions">
-      <button class="test" data-preset="ollama">Testen</button>
-      <button class="save secondary" data-preset="ollama" disabled>Speichern &amp; weiter</button>
+      <button class="test" data-preset="ollama" data-i18n="btn-test">Test</button>
+      <button class="save secondary" data-preset="ollama" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
     <div class="result" data-preset="ollama"></div>
   </div>
@@ -176,22 +183,22 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
   <div class="card" data-preset="openai">
     <header>
       <h2>🤖 OpenAI</h2>
-      <span class="badge paid">BEZAHLT · GPT-5.x</span>
+      <span class="badge paid" data-i18n="badge-openai">PAID · GPT-5.x</span>
     </header>
-    <div class="desc">
-      Standard OpenAI API. Key auf <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.
+    <div class="desc" data-i18n="desc-openai">
+      Standard OpenAI API. Get a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.
     </div>
     <div class="fields">
-      <label>API-Key
+      <label data-i18n="lbl-api-key">API key
         <input type="password" data-field="api_key" placeholder="sk-...">
       </label>
-      <label>Modell
+      <label data-i18n="lbl-model">Model
         <input type="text" data-field="model" value="gpt-5.1">
       </label>
     </div>
     <div class="actions">
-      <button class="test" data-preset="openai">Testen</button>
-      <button class="save secondary" data-preset="openai" disabled>Speichern &amp; weiter</button>
+      <button class="test" data-preset="openai" data-i18n="btn-test">Test</button>
+      <button class="save secondary" data-preset="openai" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
     <div class="result" data-preset="openai"></div>
   </div>
@@ -200,22 +207,22 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
   <div class="card" data-preset="anthropic">
     <header>
       <h2>🧠 Anthropic (Claude)</h2>
-      <span class="badge paid">BEZAHLT · Claude 4.x</span>
+      <span class="badge paid" data-i18n="badge-anthropic">PAID · Claude 4.x</span>
     </header>
-    <div class="desc">
-      Direkt bei Anthropic. Key auf <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.
+    <div class="desc" data-i18n="desc-anthropic">
+      Direct Anthropic API. Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.
     </div>
     <div class="fields">
-      <label>API-Key
+      <label data-i18n="lbl-api-key">API key
         <input type="password" data-field="api_key" placeholder="sk-ant-...">
       </label>
-      <label>Modell
+      <label data-i18n="lbl-model">Model
         <input type="text" data-field="model" value="claude-opus-4-7">
       </label>
     </div>
     <div class="actions">
-      <button class="test" data-preset="anthropic">Testen</button>
-      <button class="save secondary" data-preset="anthropic" disabled>Speichern &amp; weiter</button>
+      <button class="test" data-preset="anthropic" data-i18n="btn-test">Test</button>
+      <button class="save secondary" data-preset="anthropic" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
     <div class="result" data-preset="anthropic"></div>
   </div>
@@ -224,34 +231,101 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
   <div class="card" data-preset="llamacpp">
     <header>
       <h2>🐫 llama.cpp server</h2>
-      <span class="badge free">LOKAL · OpenAI-kompatibel</span>
+      <span class="badge free" data-i18n="badge-llamacpp">LOCAL · OpenAI-compatible</span>
     </header>
-    <div class="desc">
-      Falls <code>./llama-server</code> läuft (OpenAI-kompatibel auf :8080). Passt für Power-User mit eigenen GGUF-Modellen.
+    <div class="desc" data-i18n="desc-llamacpp">
+      If <code>./llama-server</code> runs (OpenAI-compatible on :8080). For power users running their own GGUF models.
     </div>
     <div class="fields">
-      <label>URL
+      <label data-i18n="lbl-url">URL
         <input type="text" data-field="url" value="http://localhost:8080">
       </label>
-      <label>Modell-Name
+      <label data-i18n="lbl-modelname">Model name
         <input type="text" data-field="model" value="local">
       </label>
     </div>
     <div class="actions">
-      <button class="test" data-preset="llamacpp">Testen</button>
-      <button class="save secondary" data-preset="llamacpp" disabled>Speichern &amp; weiter</button>
+      <button class="test" data-preset="llamacpp" data-i18n="btn-test">Test</button>
+      <button class="save secondary" data-preset="llamacpp" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
     <div class="result" data-preset="llamacpp"></div>
   </div>
 
-  <div class="footer">
-    Fortgeschrittene können auch direkt <code>agent-data/config.json</code> editieren — siehe
-    <a href="https://github.com/anthropics/agent-platform">docs/templates/</a>.
-    Nach dem Setup bist du auf <code>/</code> (Admin-UI) und kannst den KI-Wizard starten.
+  <div class="footer" data-i18n="footer">
+    Advanced users can edit <code>agent-data/config.json</code> directly — see
+    <a href="https://github.com/678asgfg78asa78sfh/agent-platform/tree/main/docs/templates">docs/templates/</a>.
+    After setup you land on <code>/</code> (admin UI) and can start the AI Wizard.
   </div>
 </main>
 
 <script>
+// ─── i18n ──────────────────────────────────────────
+// Bilingual UI. English is default. Saved to config so wizard knows
+// which language to use when talking to the user.
+const I18N = {
+  en: {
+    intro: 'Welcome! To build your first agent you need an <strong>LLM backend</strong>. Pick an option below, test it, save — takes about 30 seconds. After that the AI Wizard is ready and you create agents by talking to it.',
+    'lbl-api-key': 'API key', 'lbl-model': 'Model', 'lbl-url': 'URL', 'lbl-modelname': 'Model name',
+    'btn-test': 'Test', 'btn-save': 'Save &amp; continue',
+    'badge-openrouter': 'FREE · many models', 'badge-ollama': 'FREE · runs locally',
+    'badge-openai': 'PAID · GPT-5.x', 'badge-anthropic': 'PAID · Claude 4.x',
+    'badge-llamacpp': 'LOCAL · OpenAI-compatible',
+    'desc-openrouter': 'OpenRouter is an LLM aggregator with dozens of models (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) behind <em>one</em> API. Free models available (e.g. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>), paid flagship models on demand. Get an API key at <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (email only, no card required for free tier).',
+    'desc-ollama': 'If <code>ollama serve</code> runs on this machine: zero setup, fully private, no cloud. Pull a model first: <code>ollama pull llama3.2</code>. See <a href="https://ollama.com" target="_blank">ollama.com</a>.',
+    'desc-openai': 'Standard OpenAI API. Get a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.',
+    'desc-anthropic': 'Direct Anthropic API. Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.',
+    'desc-llamacpp': 'If <code>./llama-server</code> runs (OpenAI-compatible on :8080). For power users running their own GGUF models.',
+    'footer': 'Advanced users can edit <code>agent-data/config.json</code> directly — see <a href="https://github.com/678asgfg78asa78sfh/agent-platform/tree/main/docs/templates">docs/templates/</a>. After setup you land on <code>/</code> (admin UI) and can start the AI Wizard.',
+    'testing': 'Testing connection to ', 'with-model': ' with model ', 'saving': 'Saving...',
+    'save-ok': '✓ Saved. Redirecting to dashboard...', 'save-err': '✗ Save failed: ',
+    'test-ok': '✓ Connection OK. Model response: ', 'test-err': '✗ Error: ',
+    'net-err': '✗ Network error: ',
+  },
+  de: {
+    intro: 'Willkommen! Um deinen ersten Agent zu bauen brauchst du ein <strong>LLM-Backend</strong>. Wähl eine Option unten, teste sie, speichere — dauert ~30 Sekunden. Danach steht der KI-Wizard bereit und du erstellst Agenten indem du mit ihm redest.',
+    'lbl-api-key': 'API-Key', 'lbl-model': 'Modell', 'lbl-url': 'URL', 'lbl-modelname': 'Modell-Name',
+    'btn-test': 'Testen', 'btn-save': 'Speichern &amp; weiter',
+    'badge-openrouter': 'FREI · viele Modelle', 'badge-ollama': 'KOSTENLOS · läuft lokal',
+    'badge-openai': 'BEZAHLT · GPT-5.x', 'badge-anthropic': 'BEZAHLT · Claude 4.x',
+    'badge-llamacpp': 'LOKAL · OpenAI-kompatibel',
+    'desc-openrouter': 'OpenRouter ist ein LLM-Aggregator mit dutzenden Modellen (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) hinter <em>einer</em> API. Freie Modelle verfügbar (z.B. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>), kostenpflichtige Top-Modelle on-demand. API-Key holen auf <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (braucht nur Email, keine Karte für Free-Tier).',
+    'desc-ollama': 'Falls <code>ollama serve</code> auf diesem Rechner läuft: null Setup, voll privat, keine Cloud. Modell vorab ziehen: <code>ollama pull llama3.2</code>. Siehe <a href="https://ollama.com" target="_blank">ollama.com</a>.',
+    'desc-openai': 'Standard OpenAI API. Key holen auf <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.',
+    'desc-anthropic': 'Direkt bei Anthropic. Key auf <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.',
+    'desc-llamacpp': 'Falls <code>./llama-server</code> läuft (OpenAI-kompatibel auf :8080). Für Power-User mit eigenen GGUF-Modellen.',
+    'footer': 'Fortgeschrittene können auch direkt <code>agent-data/config.json</code> editieren — siehe <a href="https://github.com/678asgfg78asa78sfh/agent-platform/tree/main/docs/templates">docs/templates/</a>. Nach dem Setup bist du auf <code>/</code> (Admin-UI) und kannst den KI-Wizard starten.',
+    'testing': 'Teste Verbindung zu ', 'with-model': ' mit Modell ', 'saving': 'Speichere...',
+    'save-ok': '✓ Gespeichert. Weiterleitung zum Dashboard...', 'save-err': '✗ Speichern fehlgeschlagen: ',
+    'test-ok': '✓ Verbindung OK. Modell-Antwort: ', 'test-err': '✗ Fehler: ',
+    'net-err': '✗ Netzwerk-Fehler: ',
+  },
+};
+let CURRENT_LOCALE = localStorage.getItem('setup_locale') || 'en';
+
+function applyLocale(loc) {
+  CURRENT_LOCALE = loc;
+  localStorage.setItem('setup_locale', loc);
+  const strings = I18N[loc];
+  document.documentElement.lang = loc;
+  document.querySelectorAll('[data-i18n]').forEach(function(el) {
+    const key = el.getAttribute('data-i18n');
+    if (strings[key]) el.innerHTML = strings[key];
+  });
+  // Toggle button active state
+  document.querySelectorAll('.lang-btn').forEach(function(btn) {
+    if (btn.dataset.lang === loc) {
+      btn.style.background = '#00aaff'; btn.style.color = '#000';
+    } else {
+      btn.style.background = '#1a1a4a'; btn.style.color = '#e0e0f0';
+    }
+  });
+}
+document.querySelectorAll('.lang-btn').forEach(function(b) {
+  b.addEventListener('click', function() { applyLocale(b.dataset.lang); });
+});
+applyLocale(CURRENT_LOCALE);
+function t(key) { return I18N[CURRENT_LOCALE][key] || I18N.en[key] || key; }
+
 // Preset → LlmBackend-struct Mapping
 const PRESETS = {
   openrouter: {
@@ -330,7 +404,7 @@ async function testBackend(preset) {
   const saveBtn = document.querySelector('.save[data-preset="'+preset+'"]');
   const backend = buildBackend(preset);
   btn.disabled = true;
-  showResult(preset, 'info', 'Teste Verbindung zu ' + (backend.url || 'localhost') + ' mit Modell ' + backend.model + ' ...');
+  showResult(preset, 'info', t('testing') + (backend.url || 'localhost') + t('with-model') + backend.model + ' ...');
   try {
     const res = await fetch('/api/setup/test-backend', {
       method: 'POST',
@@ -339,14 +413,14 @@ async function testBackend(preset) {
     });
     const data = await res.json();
     if (data.ok) {
-      showResult(preset, 'ok', '✓ Verbindung OK. Modell-Antwort: "' + (data.sample||'').trim().substring(0,200) + '"');
+      showResult(preset, 'ok', t('test-ok') + '"' + (data.sample||'').trim().substring(0,200) + '"');
       saveBtn.disabled = false;
     } else {
-      showResult(preset, 'err', '✗ Fehler: ' + (data.error || 'unbekannt'));
+      showResult(preset, 'err', t('test-err') + (data.error || 'unknown'));
       saveBtn.disabled = true;
     }
   } catch (e) {
-    showResult(preset, 'err', '✗ Netzwerk-Fehler: ' + e.message);
+    showResult(preset, 'err', t('net-err') + e.message);
     saveBtn.disabled = true;
   }
   btn.disabled = false;
@@ -354,22 +428,24 @@ async function testBackend(preset) {
 
 async function saveBackend(preset) {
   const backend = buildBackend(preset);
-  showResult(preset, 'info', 'Speichere...');
+  showResult(preset, 'info', t('saving'));
   try {
     const res = await fetch('/api/setup/save-backend', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(backend),
+      // Send chosen locale alongside — server saves it so the wizard speaks
+      // the user's language by default.
+      body: JSON.stringify({backend: backend, locale: CURRENT_LOCALE}),
     });
     const data = await res.json();
     if (data.ok) {
-      showResult(preset, 'ok', '✓ Gespeichert. Weiterleitung zum Dashboard...');
+      showResult(preset, 'ok', t('save-ok'));
       setTimeout(function(){ window.location.href = '/'; }, 800);
     } else {
-      showResult(preset, 'err', '✗ Speichern fehlgeschlagen: ' + (data.error || 'unbekannt'));
+      showResult(preset, 'err', t('save-err') + (data.error || 'unknown'));
     }
   } catch (e) {
-    showResult(preset, 'err', '✗ Netzwerk-Fehler: ' + e.message);
+    showResult(preset, 'err', t('net-err') + e.message);
   }
 }
 

@@ -2342,12 +2342,40 @@ async fn setup_test_backend(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct SetupSavePayload {
+    backend: crate::types::LlmBackend,
+    #[serde(default)]
+    locale: Option<String>,
+}
+
 async fn setup_save_backend(
     State(s): State<Arc<AppState>>,
-    Json(backend): Json<crate::types::LlmBackend>,
+    Json(raw): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
+    // Payload: entweder {backend, locale} (neu) oder direkt LlmBackend (alt) —
+    // akzeptiere beides für Abwärtskompatibilität.
+    let (backend, locale) = if raw.get("backend").is_some() {
+        match serde_json::from_value::<SetupSavePayload>(raw) {
+            Ok(p) => (p.backend, p.locale),
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("payload: {}", e)})),
+        }
+    } else {
+        match serde_json::from_value::<crate::types::LlmBackend>(raw) {
+            Ok(b) => (b, None),
+            Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("payload: {}", e)})),
+        }
+    };
+
     let _lock = s.pipeline.config_write_lock.lock().await;
     let mut cfg = s.config.write().await;
+
+    // Locale übernehmen falls mitgeschickt — wizard nutzt es als Default-Sprache
+    if let Some(loc) = locale {
+        if loc == "en" || loc == "de" {
+            cfg.locale = loc;
+        }
+    }
 
     // Alten Ollama-Placeholder entfernen wenn User ein echtes Backend einrichtet
     if backend.id != "ollama-local" {

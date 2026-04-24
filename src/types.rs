@@ -402,7 +402,14 @@ pub struct AgentConfig {
     /// Resets at UTC midnight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_budget_usd: Option<f64>,
+    /// UI / wizard language. "en" (default) or "de". User sets this in /setup.
+    /// The wizard reads this to decide which language to speak with the user;
+    /// static admin-UI labels are English regardless.
+    #[serde(default = "default_locale")]
+    pub locale: String,
 }
+
+fn default_locale() -> String { "en".into() }
 
 fn default_bind() -> String { "127.0.0.1".into() }
 fn default_body_limit() -> usize { 2 * 1024 * 1024 }
@@ -465,6 +472,7 @@ impl Default for AgentConfig {
             log_retention_days: default_log_retention(),
             wizard: None,  // Wizard wird vom Setup-Flow aktiviert sobald ein Backend funktioniert
             guardrail: Some(GuardrailConfig::default()),
+            locale: "en".into(),
         }
     }
 }
