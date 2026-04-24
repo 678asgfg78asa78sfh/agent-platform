@@ -2,7 +2,7 @@
 
 **Self-hosted AI agents with a conversational setup wizard, live quality dashboard, and hard cost caps — built in Rust as a single binary.**
 
-No Python stack, no database, no cloud. Drop one binary on your box, point it at an LLM backend, and configure agents by talking to them.
+One binary, embedded SQLite, no cloud. Drop it on your box, point it at an LLM backend (OpenRouter free tier, Ollama, OpenAI, Anthropic, llama.cpp), and configure agents by talking to them. Python is only needed if you want to run plugin modules (IMAP/SMTP/etc.); the Rust core alone is fully functional.
 
 ---
 

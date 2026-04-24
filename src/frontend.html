@@ -728,7 +728,7 @@ body::after {
     <!-- TAB 2: AUFGABEN -->
     <div id="tab-aufgaben" class="tab-panel">
       <div class="kanban-toolbar">
-        <h2>Aufgaben Board</h2>
+        <h2>Tasks Board</h2>
         <div style="display:flex;gap:8px">
           <button class="btn btn-sm" id="aufgaben-view-toggle" title="Flow/Kanban">&#x1F504; Flow</button>
           <button class="btn btn-sm" id="aufgaben-refresh">&#x21BB; Refresh</button>
@@ -871,7 +871,7 @@ body::after {
         </label></div>
 
         <div id="guardrail-mini-card" style="margin-top:12px;padding:10px;background:#0d0d0d;border-radius:6px;font-size:13px;">
-          <div><strong>Letzte 24h:</strong> <span id="gml-total">0</span> Calls</div>
+          <div><strong>Last 24h:</strong> <span id="gml-total">0</span> Calls</div>
           <div id="gml-valid-line">-</div>
           <div id="gml-retries-line">-</div>
           <div id="gml-errors-line"></div>
@@ -883,13 +883,13 @@ body::after {
           <input type="number" step="0.01" id="ccfg-budget" style="width:120px;"> $
         </label></div>
         <div id="cost-mini-card" style="margin-top:12px;padding:10px;background:#0d0d0d;border-radius:6px;font-size:13px;">
-          <div><strong>Heute (UTC):</strong> <span id="cost-today">$0.00</span> <span id="cost-bar-wrap" style="display:inline-block;margin-left:8px;"><span id="cost-bar" style="display:inline-block;height:8px;background:#2a5;width:0;border-radius:4px;min-width:2px;"></span></span></div>
+          <div><strong>Today (UTC):</strong> <span id="cost-today">$0.00</span> <span id="cost-bar-wrap" style="display:inline-block;margin-left:8px;"><span id="cost-bar" style="display:inline-block;height:8px;background:#2a5;width:0;border-radius:4px;min-width:2px;"></span></span></div>
           <div>Total seit Start: <span id="cost-total">$0.00</span></div>
           <div style="color:#888;font-size:11px;margin-top:4px;">Preise hardcoded für Claude/GPT/Grok/Ollama-Familien. Unbekannte Modelle kosten 0$.</div>
         </div>
       </section>
       <section style="margin-top:32px;border-top:1px solid #333;padding-top:16px;">
-        <h3>Config-Backups</h3>
+        <h3>Config backups</h3>
         <div id="backups-list" style="font-family:monospace;font-size:12px;background:#0d0d0d;padding:8px;border-radius:6px;"></div>
         <div style="margin-top:6px;color:#888;font-size:11px;">Automatisch bei jedem Save (3 Slots, bak-1 = neueste). Klick auf einen Slot zum Restore.</div>
       </section>
@@ -969,7 +969,7 @@ body::after {
           </div>
         </div>
 
-        <h4 style="margin-top:24px;">Event-Liste</h4>
+        <h4 style="margin-top:24px;">Event list</h4>
         <div id="qt-events" style="max-height:50vh;overflow:auto;font-size:12px;font-family:SFMono-Regular,Consolas,monospace;background:#0d0d0d;padding:8px;border-radius:4px;"></div>
 
         <h4 style="margin-top:24px;">Benchmark</h4>
@@ -978,7 +978,7 @@ body::after {
             <select id="qb-backend"></select>
           </label>
           <input type="text" id="qb-model" placeholder="Model (optional)" style="width:200px;">
-          <button class="btn btn-primary" onclick="runBenchmark()">Benchmark laufen</button>
+          <button class="btn btn-primary" onclick="runBenchmark()">Run benchmark</button>
         </div>
         <div id="qb-output" style="font-family:monospace;font-size:12px;max-height:40vh;overflow:auto;background:#0d0d0d;padding:8px;border-radius:4px;white-space:pre-wrap;"></div>
         <h4 style="margin-top:16px;">A/B Compare</h4>
@@ -999,16 +999,16 @@ body::after {
     <div id="tab-audit" class="tab-panel" style="overflow:hidden;background:var(--bg-base);">
       <div style="padding:14px;display:flex;flex-direction:column;gap:10px;height:100%;overflow:hidden;">
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-          <h2 style="flex:none;">Audit-Trail</h2>
-          <span style="color:var(--text-dim);font-size:11px;flex:none;">Tamper-proof (DB-Trigger verhindern UPDATE/DELETE)</span>
+          <h2 style="flex:none;">Audit trail</h2>
+          <span style="color:var(--text-dim);font-size:11px;flex:none;">Tamper-proof (DB triggers block UPDATE/DELETE)</span>
           <div style="flex:1;"></div>
-          <input id="audit-f-action" placeholder="action prefix (z.B. tool_exec, config)" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-size:12px;width:220px;">
-          <input id="audit-f-actor" placeholder="actor prefix (modul-id)" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-size:12px;width:180px;">
+          <input id="audit-f-action" placeholder="action prefix (e.g. tool_exec, config)" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-size:12px;width:220px;">
+          <input id="audit-f-actor" placeholder="actor prefix (module id)" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-size:12px;width:180px;">
           <select id="audit-f-since" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:3px;font-size:12px;">
-            <option value="3600">letzte Stunde</option>
-            <option value="86400" selected>letzter Tag</option>
-            <option value="604800">letzte 7 Tage</option>
-            <option value="">alles</option>
+            <option value="3600">last hour</option>
+            <option value="86400" selected>last day</option>
+            <option value="604800">last 7 days</option>
+            <option value="">all</option>
           </select>
           <button class="btn btn-primary" onclick="refreshAudit()">Filter</button>
         </div>
@@ -1026,7 +1026,7 @@ body::after {
 <div id="cap-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:2500;align-items:center;justify-content:center;padding:20px;">
   <div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;max-width:880px;max-height:90vh;width:100%;display:flex;flex-direction:column;overflow:hidden;">
     <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;">
-      <h3 id="cap-title" style="color:var(--cyan);flex:1;">Modul-Fähigkeiten</h3>
+      <h3 id="cap-title" style="color:var(--cyan);flex:1;">Module Capabilities</h3>
       <button class="btn" onclick="closeCapModal()" style="padding:4px 10px;">×</button>
     </div>
     <div id="cap-body" style="flex:1;overflow:auto;padding:18px;font-size:12px;line-height:1.5;"></div>
@@ -1055,11 +1055,11 @@ body::after {
 <!-- Aufgabe Edit Modal -->
 <div class="modal-overlay" id="modal-aufgabe-edit">
   <div class="modal">
-    <h3>Aufgabe bearbeiten</h3>
+    <h3>Edit task</h3>
     <div class="form-row"><label>Anweisung</label><textarea id="aufgabe-edit-text" rows="4"></textarea></div>
     <div class="form-actions">
-      <button class="btn" id="modal-aufgabe-edit-cancel">Abbrechen</button>
-      <button class="btn btn-primary" id="aufgabe-edit-submit">Speichern</button>
+      <button class="btn" id="modal-aufgabe-edit-cancel">Cancel</button>
+      <button class="btn btn-primary" id="aufgabe-edit-submit">Save</button>
     </div>
   </div>
 </div>
@@ -1094,7 +1094,7 @@ body::after {
     <div class="form-row"><label>System Prompt</label><textarea id="llm-system-prompt" rows="6" placeholder="Du bist ein hilfreicher Assistent." style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:var(--radius);font-family:var(--font);font-size:12px;resize:vertical;"></textarea></div>
     <div class="form-actions">
       <button class="btn btn-danger" id="llm-delete" style="margin-right:auto;display:none">Delete</button>
-      <button class="btn" id="modal-llm-cancel">Abbrechen</button>
+      <button class="btn" id="modal-llm-cancel">Cancel</button>
       <button class="btn btn-primary" id="llm-submit">Save</button>
     </div>
   </div>
@@ -1172,7 +1172,7 @@ body::after {
       </button>
       <button class="btn btn-primary" style="padding:24px;text-align:left;"
               onclick="closeModal('modal-new-agent-splash');openWizard('new');">
-        <div style="font-size:16px;font-weight:600;">KI-Assistent (empfohlen)</div>
+        <div style="font-size:16px;font-weight:600;">AI Assistant (empfohlen)</div>
         <div style="margin-top:6px;opacity:0.8;">Fuehrt dich im Dialog durch die Konfiguration</div>
       </button>
     </div>
@@ -1182,12 +1182,12 @@ body::after {
 <!-- Module Modal — lädt verfügbare Module aus /api/modules -->
 <div class="modal-overlay" id="modal-module">
   <div class="modal">
-    <h3 id="modal-module-title">Modul hinzufügen</h3>
+    <h3 id="modal-module-title">Add module</h3>
     <div class="form-row"><label>Modul-Typ</label>
       <select id="mod-typ"></select>
       <div id="mod-typ-info" style="font-size:10px;color:var(--text-dim);margin-top:3px;"></div>
     </div>
-    <div class="form-row"><label>Instanz-ID</label><input type="text" id="mod-id" placeholder="z.B. chat.support, shell.deploy" /></div>
+    <div class="form-row"><label>Instance ID</label><input type="text" id="mod-id" placeholder="z.B. chat.support, shell.deploy" /></div>
     <div class="form-row"><label>Display Name</label><input type="text" id="mod-display-name" placeholder="Anzeigename" /></div>
     <div class="form-row"><label>LLM Backend</label><select id="mod-llm-backend"></select></div>
     <input type="hidden" id="mod-perms" />
@@ -1243,7 +1243,7 @@ body::after {
     </div>
     <div class="form-actions">
       <button class="btn btn-danger" id="module-delete" style="margin-right:auto;display:none">Delete</button>
-      <button class="btn" id="modal-module-cancel">Abbrechen</button>
+      <button class="btn" id="modal-module-cancel">Cancel</button>
       <button class="btn btn-primary" id="module-submit">Save</button>
     </div>
   </div>
@@ -1252,12 +1252,12 @@ body::after {
 <!-- Python Module Config Modal -->
 <div class="modal-overlay" id="modal-pymod">
   <div class="modal">
-    <h3 id="modal-pymod-title">Modul Config</h3>
+    <h3 id="modal-pymod-title">Module Config</h3>
     <div id="modal-pymod-info" style="font-size:10px;color:var(--text-dim);margin-bottom:8px;"></div>
     <div id="modal-pymod-fields"></div>
     <div class="form-actions">
-      <button class="btn" id="modal-pymod-cancel">Schliessen</button>
-      <button class="btn btn-primary" id="modal-pymod-save">Speichern</button>
+      <button class="btn" id="modal-pymod-cancel">Close</button>
+      <button class="btn btn-primary" id="modal-pymod-save">Save</button>
     </div>
   </div>
 </div>
@@ -1276,7 +1276,7 @@ body::after {
     </div>
     <div class="form-actions">
       <button class="btn btn-danger" id="rag-delete" style="margin-right:auto;display:none">Delete</button>
-      <button class="btn" id="modal-rag-cancel">Abbrechen</button>
+      <button class="btn" id="modal-rag-cancel">Cancel</button>
       <button class="btn btn-primary" id="rag-submit">Save</button>
     </div>
   </div>
@@ -1562,7 +1562,7 @@ function renderSettingsFields(typName, currentValues) {
   }
 
   if (fields.length === 0) {
-    container.innerHTML = '<div style="color:var(--text-dim);font-size:10px;font-style:italic">Keine typspezifischen Settings</div>';
+    container.innerHTML = '<div style="color:var(--text-dim);font-size:10px;font-style:italic">No type-specific settings</div>';
     return;
   }
   container.innerHTML = '';
@@ -1817,9 +1817,9 @@ function openCapModal(modulId) {
     html += '</div>';
 
     // Permissions-Erklärung
-    html += '<h4 style="color:var(--cyan);margin-bottom:6px;">Berechtigungen</h4>';
+    html += '<h4 style="color:var(--cyan);margin-bottom:6px;">Permissions</h4>';
     if (!c.berechtigungen || !c.berechtigungen.length) {
-      html += '<div style="color:var(--text-dim);margin-bottom:12px;">Keine expliziten Permissions</div>';
+      html += '<div style="color:var(--text-dim);margin-bottom:12px;">No explicit permissions</div>';
     } else {
       html += '<ul style="margin-bottom:12px;list-style:none;padding:0;">';
       c.berechtigungen.forEach(function(p) {
@@ -1920,7 +1920,7 @@ function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
   var container = ge(containerId);
   ge(countId).textContent = tasks.length;
   if (tasks.length === 0) {
-    container.innerHTML = '<div class="kanban-empty">Keine Aufgaben</div>';
+    container.innerHTML = '<div class="kanban-empty">No tasks</div>';
     return;
   }
   container.innerHTML = '';
@@ -2045,7 +2045,7 @@ function openModuleConfig(mod) {
   ge('modal-pymod-title').textContent = mod.name + ' (' + mod.source + ')';
   ge('modal-pymod-info').textContent = mod.description + ' — v' + mod.version + ' — ' + (mod.tools||[]).length + ' tools';
   var fields = ge('modal-pymod-fields');
-  fields.innerHTML = '<div style="color:var(--text-dim);font-size:10px;">Lade Config...</div>';
+  fields.innerHTML = '<div style="color:var(--text-dim);font-size:10px;">Loading config...</div>';
   openModal('modal-pymod');
 
   // Config laden
@@ -2055,7 +2055,7 @@ function openModuleConfig(mod) {
     fields.innerHTML = '';
     var keys = Object.keys(settings);
     if (keys.length === 0 && Object.keys(cfg).length === 0) {
-      fields.innerHTML = '<div style="color:var(--text-dim);font-size:10px;font-style:italic;">Keine konfigurierbaren Settings</div>';
+      fields.innerHTML = '<div style="color:var(--text-dim);font-size:10px;font-style:italic;">No configurable settings</div>';
       return;
     }
     // Settings aus dem Modul-Schema + gespeicherte Werte
@@ -2122,7 +2122,7 @@ function renderFlow(data) {
   var container = ge('aufgaben-flow');
   var all = (data.erledigt || []).concat(data.gestartet || []).concat(data.erstellt || []);
   if (all.length === 0) {
-    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);">Keine Aufgaben</div>';
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);">No tasks</div>';
     return;
   }
 
@@ -2494,7 +2494,7 @@ function renderChatLinks() {
   container.innerHTML = '';
   var chatMods = appConfig.module.filter(function(m) { return m.typ === 'chat'; });
   if (chatMods.length === 0) {
-    container.innerHTML = '<span style="font-size:10px;color:var(--text-dim);font-style:italic">Keine Chat-Module konfiguriert</span>';
+    container.innerHTML = '<span style="font-size:10px;color:var(--text-dim);font-style:italic">No chat modules configured</span>';
     return;
   }
   chatMods.forEach(function(m) {
@@ -2840,8 +2840,8 @@ function renderModuleCards() {
       '<div class="mod-card-actions"><button class="btn btn-sm" data-edit-mod="' + idx + '">Edit</button>' +
       '<button class="btn btn-sm" onclick="openCapModal(\'' + escHtml(m.id) + '\')" title="Was darf + was kann dieser Agent konkret?" style="font-size:10px;">🔍 Details</button>' +
       '<button class="btn btn-sm" onclick="showPromptPreview(\'' + escHtml(m.id) + '\')" title="Preview System Prompt" style="font-size:10px;">Prompt</button>' +
-      '<button class="btn btn-sm" onclick="openWizard(\'edit\',\'' + escHtml(m.id) + '\')" style="font-size:10px;">Mit KI bearbeiten</button>' +
-      '<button class="btn btn-sm" onclick="openWizard(\'copy\',\'' + escHtml(m.id) + '\')" style="font-size:10px;">Kopieren mit KI</button></div>';
+      '<button class="btn btn-sm" onclick="openWizard(\'edit\',\'' + escHtml(m.id) + '\')" style="font-size:10px;">Edit with AI</button>' +
+      '<button class="btn btn-sm" onclick="openWizard(\'copy\',\'' + escHtml(m.id) + '\')" style="font-size:10px;">Copy with AI</button></div>';
 
     grid.appendChild(card);
   });
@@ -2851,7 +2851,7 @@ function renderModuleCards() {
   addCard.textContent = '+ Add Module';
   addCard.addEventListener('click', function() {
     editingModIdx = -1;
-    ge('modal-module-title').textContent = 'Modul hinzufügen';
+    ge('modal-module-title').textContent = 'Add module';
     populateModuleTypDropdown();
     populateLlmDropdown();
     ge('mod-id').value = ''; ge('mod-id').disabled = false;
@@ -3235,7 +3235,7 @@ function generateSystemPrompt(name, lang, personality) {
   var prompts = {
     de: {
       professional: 'Du bist ' + name + ', ein KI-Agent auf der Agent Platform.\nAktuelles Datum: {date}\n\nDU BIST KEIN NORMALER CHATBOT. Du hast Tools die du aktiv nutzen MUSST.\nBehaupte NIEMALS du haettest etwas getan ohne ein Tool aufzurufen.\nAntworte NIEMALS mit Wissen das veraltet sein koennte — nutze IMMER Tools fuer aktuelle Infos.\n\nREGELN:\n- EINEN Tool-Call pro Antwort. Kein Text davor oder danach.\n- VERTRAUE dem Tool-Ergebnis. Erfinde KEINE Ergebnisse.\n- Fuer normale Gespraeche OHNE Tool-Bedarf antworte direkt.\n- Halte Antworten KURZ und PRAEZISE.\n\nTOKEN-EFFIZIENZ:\n- Jeder Tool-Call kostet Geld. MINIMIERE die Anzahl der Calls.\n- NICHT das gleiche mehrfach suchen. Eine Suche pro Thema reicht.',
-      friendly: 'Du bist ' + name + ', ein freundlicher KI-Assistent auf der Agent Platform.\nAktuelles Datum: {date}\n\nDu hast Tools die du nutzen kannst um aktuelle Informationen zu beschaffen.\nBehaupte nie etwas getan zu haben ohne ein Tool zu nutzen.\n\nREGELN:\n- Nutze Tools wenn noetig, antworte direkt wenn kein Tool gebraucht wird.\n- Vertraue den Tool-Ergebnissen.\n- Erklaere was du tust und warum.\n- Sei freundlich und hilfsbereit.\n\nTOKEN-EFFIZIENZ:\n- Minimiere unnoetige Tool-Calls.',
+      friendly: 'Du bist ' + name + ', ein freundlicher AI Assistant auf der Agent Platform.\nAktuelles Datum: {date}\n\nDu hast Tools die du nutzen kannst um aktuelle Informationen zu beschaffen.\nBehaupte nie etwas getan zu haben ohne ein Tool zu nutzen.\n\nREGELN:\n- Nutze Tools wenn noetig, antworte direkt wenn kein Tool gebraucht wird.\n- Vertraue den Tool-Ergebnissen.\n- Erklaere was du tust und warum.\n- Sei freundlich und hilfsbereit.\n\nTOKEN-EFFIZIENZ:\n- Minimiere unnoetige Tool-Calls.',
       minimal: 'Du bist ' + name + '. Datum: {date}\nNutze Tools fuer aktuelle Infos. Kurze Antworten. Kein Smalltalk.',
       expert: 'Du bist ' + name + ', ein Experten-Agent auf der Agent Platform.\nAktuelles Datum: {date}\n\nDU BIST KEIN NORMALER CHATBOT. Du hast Tools die du aktiv nutzen MUSST.\nBehaupte NIEMALS du haettest etwas getan ohne ein Tool aufzurufen.\n\nREGELN:\n- EINEN Tool-Call pro Antwort.\n- VERTRAUE dem Tool-Ergebnis.\n- Gib DETAILLIERTE, TECHNISCHE Antworten.\n- Erklaere Zusammenhaenge und Hintergruende.\n- Nutze Fachbegriffe wo angemessen.\n\nRECHERCHE-WORKFLOW:\n- Nach Web-Suche: lies die besten 2-3 Ergebnisse mit http.get(url).\n- Fasse INHALTE zusammen, nicht nur Snippets.\n\nTOKEN-EFFIZIENZ:\n- Minimiere Tool-Calls. Eine Suche pro Thema reicht.'
     },
