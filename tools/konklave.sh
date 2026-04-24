@@ -88,7 +88,7 @@ while [ $# -gt 0 ]; do
         --diff)        MODE="diff"; DIFF_RANGE="$2"; shift 2 ;;
         --models)      MODELS_OVERRIDE="$2"; shift 2 ;;
         --list-models) LIST_MODELS_ONLY=true; shift ;;
-        -h|--help)     sed -n '1,55p' "$0"; exit 0 ;;
+        -h|--help)     sed -n '1,46p' "$0"; exit 0 ;;
         *)             echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -433,9 +433,10 @@ Concrete things to check:
   does a zombie scheduler emerge if a tool runs > 120s?
 - cron_state: who holds it, how is it written atomically, what happens
   on concurrent write from two tasks?
-- Pipeline erstellt → gestartet → erledigt — atomicity of the moves?
-  What if rename() crashes midway? What if a second instance picks
-  the same file (claim_atomic)?
+- Pipeline `tasks.status` transitions (erstellt → gestartet →
+  success/failed/cancelled) — atomicity of the claim `UPDATE` under
+  `BEGIN IMMEDIATE`? If two schedulers race on the same row, does
+  exactly one win, or can both pick it up before commit?
 - RwLock<AgentConfig>: any await points held under read() / write()?
   Possible starvation when the web thread waits for write?
 - tokio::spawn panics — do they propagate, or swallowed by runtime?
@@ -548,9 +549,11 @@ Focus on invariants and state consistency. What should always hold?
 What is actually enforced?
 
 To check:
-- Every task is in EXACTLY ONE folder (erstellt|gestartet|erledigt).
-  Is this enforced, or are there paths where it can exist in two
-  folders at once?
+- Every task has EXACTLY ONE row in the `tasks` table with a single
+  `status` value ∈ {erstellt, gestartet, success, failed, cancelled}.
+  Is this enforced by schema + atomic transitions, or are there
+  code paths that can produce duplicate rows, ghost rows without
+  a valid status, or rows in an impossible state combination?
 - Every mutation → log event? Or only some?
 - Cron dedup: does every cron slot fire at most once, or can an
   unlucky restart sequence fire twice?

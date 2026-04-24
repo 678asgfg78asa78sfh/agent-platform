@@ -137,7 +137,7 @@ Side-effect tools (`shell.exec`, `notify.send`, `files.write`, `smtp.send`, `auf
 
 The audit log (`audit_log` table) records every side-effect tool call and config change with DB triggers that block UPDATE/DELETE — tamper-proof at the storage level.
 
-The task status enum is still labelled in German (`erstellt` / `gestartet` / `erledigt`) because that was the original source language of the project and renaming the column would have forced a breaking migration on existing installs. Internally, `erstellt = created`, `gestartet = running`, `erledigt = done`. These are SQLite enum values, **not** filesystem directories.
+The `tasks.status` column uses five values: `erstellt` (created), `gestartet` (running), and the terminal states `success`, `failed`, `cancelled`. The first two are still German because that was the original source language and renaming them requires a breaking migration on existing installs; terminal states were added in English during the SQLite migration. These are SQLite enum values, **not** filesystem directories. The word `erledigt` survives only as part of column names like `erledigt_ts` (the timestamp at which a task reached a terminal state).
 
 Previous versions did use file-based storage under `agent-data/erstellt/`, `gestartet/`, `erledigt/` JSON folders. Upgrading instances migrate those files into SQLite on first startup and rename the old directories to `*.migrated.<timestamp>` — if you see those folders on an existing install, they are frozen legacy state, not the live task queue.
 
