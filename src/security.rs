@@ -15,18 +15,23 @@ use axum::{
     response::Response,
 };
 
-use crate::types::AgentConfig;
+use crate::types::{AgentConfig, LlmTyp};
 
 // ─── Path sanitization ────────────────────────────────
 
 /// Reject IDs containing path traversal attempts. Returns sanitized id or None if dangerous.
 pub fn safe_id(id: &str) -> Option<String> {
-    if id.is_empty() || id.len() > 128 { return None; }
+    if id.is_empty() || id.len() > 128 {
+        return None;
+    }
     if id.contains("..") || id.contains('/') || id.contains('\\') || id.contains('\0') {
         return None;
     }
     // Only allow alnum, dot, dash, underscore
-    if !id.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_') {
+    if !id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_')
+    {
         return None;
     }
     Some(id.to_string())
@@ -35,7 +40,9 @@ pub fn safe_id(id: &str) -> Option<String> {
 /// Validate a path segment used inside an already-scoped base directory.
 /// Allows multi-segment relative paths (`sub/file.txt`) but blocks traversal.
 pub fn safe_relative_path(p: &str) -> Option<String> {
-    if p.is_empty() || p.len() > 1024 { return None; }
+    if p.is_empty() || p.len() > 1024 {
+        return None;
+    }
     if p.contains("..") || p.starts_with('/') || p.contains('\0') || p.contains('\\') {
         return None;
     }
@@ -60,8 +67,11 @@ pub fn validate_external_url(url: &str) -> Result<(), String> {
 
     // Block obvious metadata hostnames
     let blocked_hosts = [
-        "localhost", "localhost.localdomain", "metadata.google.internal",
-        "metadata", "instance-data",
+        "localhost",
+        "localhost.localdomain",
+        "metadata.google.internal",
+        "metadata",
+        "instance-data",
     ];
     if blocked_hosts.iter().any(|b| lower == *b) {
         return Err(format!("blockierter Host: {}", host));
@@ -80,7 +90,10 @@ pub fn validate_external_url(url: &str) -> Result<(), String> {
     if let Ok(addrs) = (host.as_str(), 80u16).to_socket_addrs_safe() {
         for addr in addrs {
             if is_blocked_ip(&addr) {
-                return Err(format!("Host '{}' löst auf blockierte IP auf: {}", host, addr));
+                return Err(format!(
+                    "Host '{}' löst auf blockierte IP auf: {}",
+                    host, addr
+                ));
             }
         }
     }
@@ -88,14 +101,80 @@ pub fn validate_external_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate LLM provider URLs before the app makes backend-owned HTTP calls.
+///
+/// Public provider URLs must pass the normal SSRF policy. Local model servers
+/// may additionally use loopback, private LAN, CGNAT/Tailscale and IPv6 ULA
+/// addresses, but only for backend types that are commonly self-hosted.
+pub fn validate_llm_backend_url(typ: &LlmTyp, url: &str) -> Result<(), String> {
+    match validate_external_url(url) {
+        Ok(()) => Ok(()),
+        Err(public_err) => {
+            if is_self_hosted_llm_type(typ) && is_self_hosted_llm_url(url) {
+                Ok(())
+            } else {
+                Err(public_err)
+            }
+        }
+    }
+}
+
+fn is_self_hosted_llm_type(typ: &LlmTyp) -> bool {
+    matches!(
+        typ,
+        LlmTyp::Ollama | LlmTyp::OpenAICompat | LlmTyp::Embedding
+    )
+}
+
+fn is_self_hosted_llm_url(url: &str) -> bool {
+    let Some(host) = extract_host(url) else {
+        return false;
+    };
+    let lower = host.to_lowercase();
+    if lower == "localhost" || lower == "localhost.localdomain" {
+        return true;
+    }
+    if let Ok(ip) = lower.parse::<IpAddr>() {
+        return is_self_hosted_llm_ip(&ip);
+    }
+    if let Ok(addrs) = (host.as_str(), 80u16).to_socket_addrs_safe() {
+        return !addrs.is_empty() && addrs.iter().all(is_self_hosted_llm_ip);
+    }
+    false
+}
+
+fn is_self_hosted_llm_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                // 100.64.0.0/10 is used by CGNAT and overlays like Tailscale.
+                || (o[0] == 100 && (o[1] & 0xC0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                // fc00::/7 unique-local addresses.
+                || (v6.segments()[0] & 0xfe00 == 0xfc00)
+        }
+    }
+}
+
 fn extract_host(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"))?;
-    let host_end = rest.find(|c: char| c == '/' || c == ':' || c == '?' || c == '#')
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
+    let host_end = rest
+        .find(|c: char| c == '/' || c == ':' || c == '?' || c == '#')
         .unwrap_or(rest.len());
     let host = &rest[..host_end];
     // Strip IPv6 brackets
     let host = host.trim_start_matches('[').trim_end_matches(']');
-    if host.is_empty() { None } else { Some(host.to_string()) }
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 fn is_blocked_ip(ip: &IpAddr) -> bool {
@@ -141,8 +220,14 @@ impl ToSocketAddrsSafe for (&str, u16) {
 const REDACTED: &str = "***REDACTED***";
 
 const SECRET_KEYS: &[&str] = &[
-    "api_key", "password", "auth_token", "notify_token",
-    "brave_api_key", "serper_api_key", "google_api_key", "grok_api_key",
+    "api_key",
+    "password",
+    "auth_token",
+    "notify_token",
+    "brave_api_key",
+    "serper_api_key",
+    "google_api_key",
+    "grok_api_key",
     "api_auth_token",
 ];
 
@@ -202,7 +287,9 @@ pub fn restore_redacted(incoming: &mut serde_json::Value, existing: &serde_json:
                     in_item.get("id").and_then(|v| v.as_str()),
                     in_item.is_object(),
                 ) {
-                    ex_arr.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
+                    ex_arr
+                        .iter()
+                        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
                 } else {
                     ex_arr.get(i)
                 };
@@ -221,6 +308,10 @@ pub struct AuthState {
     pub config: Arc<tokio::sync::RwLock<AgentConfig>>,
 }
 
+fn query_token_allowed_path(path: &str) -> bool {
+    path == "/api/chat-stream"
+}
+
 /// Axum middleware: check Bearer token for /api/* routes.
 /// - If api_auth_token configured: require matching header.
 /// - If not configured: only allow 127.0.0.1 / ::1 connections.
@@ -233,10 +324,7 @@ pub async fn auth_middleware(
     let path = req.uri().path();
 
     // Public: static assets, favicon
-    if path == "/favicon.ico"
-        || path == "/"
-        || path.starts_with("/chat/")
-    {
+    if path == "/favicon.ico" || path == "/" || path.starts_with("/chat/") {
         return Ok(next.run(req).await);
     }
 
@@ -258,21 +346,27 @@ pub async fn auth_middleware(
     }
 
     let expected = configured_token.unwrap();
-    let header_ok = req.headers()
+    let header_ok = req
+        .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
         .unwrap_or(false);
 
-    // Also allow token in query string for streaming endpoints that can't set headers
-    let query_ok = req.uri().query()
-        .and_then(|q| {
-            q.split('&')
-                .find_map(|p| p.strip_prefix("token="))
-                .map(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
-        })
-        .unwrap_or(false);
+    // Query-string tokens are only accepted for the streaming endpoint. Other
+    // APIs require the Authorization header so tokens do not leak via logs,
+    // browser history or referrers.
+    let query_ok = query_token_allowed_path(path)
+        && req
+            .uri()
+            .query()
+            .and_then(|q| {
+                q.split('&')
+                    .find_map(|p| p.strip_prefix("token="))
+                    .map(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()))
+            })
+            .unwrap_or(false);
 
     if header_ok || query_ok {
         Ok(next.run(req).await)
@@ -282,7 +376,9 @@ pub async fn auth_middleware(
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() { return false; }
+    if a.len() != b.len() {
+        return false;
+    }
     let mut result: u8 = 0;
     for (x, y) in a.iter().zip(b.iter()) {
         result |= x ^ y;
@@ -312,7 +408,9 @@ impl RateLimiter {
     }
 
     pub async fn check(&self, ip: IpAddr) -> bool {
-        if self.per_minute == 0 { return true; }
+        if self.per_minute == 0 {
+            return true;
+        }
         let now = Instant::now();
         let per_sec = self.per_minute as f64 / 60.0;
         let capacity = self.per_minute as f64;
@@ -390,6 +488,32 @@ mod tests {
     fn test_ssrf_rejects_non_http() {
         assert!(validate_external_url("file:///etc/passwd").is_err());
         assert!(validate_external_url("ftp://example.com").is_err());
+    }
+
+    #[test]
+    fn test_llm_backend_url_policy_allows_self_hosted_network_backends() {
+        assert!(validate_llm_backend_url(&LlmTyp::Ollama, "http://127.0.0.1:11434").is_ok());
+        assert!(validate_llm_backend_url(&LlmTyp::OpenAICompat, "http://localhost:8080").is_ok());
+        assert!(
+            validate_llm_backend_url(&LlmTyp::OpenAICompat, "http://192.168.1.20:8080").is_ok()
+        );
+        assert!(validate_llm_backend_url(&LlmTyp::Ollama, "http://10.0.0.20:11434").is_ok());
+        assert!(validate_llm_backend_url(&LlmTyp::OpenAICompat, "http://100.64.0.20:8080").is_ok());
+        assert!(validate_llm_backend_url(&LlmTyp::Embedding, "http://[fd00::20]:8080").is_ok());
+        assert!(validate_llm_backend_url(&LlmTyp::Grok, "http://127.0.0.1:11434").is_err());
+        assert!(validate_llm_backend_url(&LlmTyp::Grok, "http://192.168.1.20:8080").is_err());
+        assert!(
+            validate_llm_backend_url(&LlmTyp::OpenAICompat, "http://169.254.169.254/latest")
+                .is_err()
+        );
+        assert!(validate_llm_backend_url(&LlmTyp::Grok, "https://api.x.ai").is_ok());
+    }
+
+    #[test]
+    fn test_query_token_only_for_streaming_path() {
+        assert!(query_token_allowed_path("/api/chat-stream"));
+        assert!(!query_token_allowed_path("/api/config"));
+        assert!(!query_token_allowed_path("/api/chat"));
     }
 
     #[test]

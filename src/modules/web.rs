@@ -16,13 +16,21 @@ fn strip_html(html: &str) -> String {
         if !in_tag && chars[i] == '<' {
             // Check for script/style open
             let remaining: String = lower_chars[i..].iter().take(10).collect();
-            if remaining.starts_with("<script") { in_script = true; }
-            if remaining.starts_with("<style") { in_style = true; }
+            if remaining.starts_with("<script") {
+                in_script = true;
+            }
+            if remaining.starts_with("<style") {
+                in_style = true;
+            }
             in_tag = true;
         } else if in_tag && chars[i] == '>' {
             let remaining: String = lower_chars[i.saturating_sub(8)..=i].iter().collect();
-            if remaining.contains("</script") { in_script = false; }
-            if remaining.contains("</style") { in_style = false; }
+            if remaining.contains("</script") {
+                in_script = false;
+            }
+            if remaining.contains("</style") {
+                in_style = false;
+            }
             in_tag = false;
             // Add space after block elements
             if !result.ends_with(' ') && !result.ends_with('\n') {
@@ -109,7 +117,10 @@ pub async fn search(settings: &ModulSettings, query: &str) -> ToolResult {
     // Fallback to DuckDuckGo if primary fails
     match &result {
         r if !r.success && engine != "duckduckgo" => {
-            tracing::warn!("Search engine '{}' failed, falling back to DuckDuckGo", engine);
+            tracing::warn!(
+                "Search engine '{}' failed, falling back to DuckDuckGo",
+                engine
+            );
             search_duckduckgo(query).await
         }
         _ => result,
@@ -122,9 +133,15 @@ async fn search_duckduckgo(query: &str) -> ToolResult {
     let client = build_client(10);
     let url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencod(query));
 
-    let resp = match client.get(&url)
-        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
-        .send().await {
+    let resp = match client
+        .get(&url)
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        )
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => return ToolResult::fail(format!("DuckDuckGo Fehler: {}", e)),
     };
@@ -170,33 +187,54 @@ async fn search_duckduckgo(query: &str) -> ToolResult {
 
                         // Find snippet after this result
                         let snippet_search = &html[title_start..];
-                        let snippet = if let Some(sn_pos) = snippet_search.find("class=\"result-snippet\"") {
-                            let sn_abs = title_start + sn_pos;
-                            if let Some(sn_gt) = html[sn_abs..].find('>') {
-                                let sn_start = sn_abs + sn_gt + 1;
-                                if let Some(sn_end) = html[sn_start..].find("</") {
-                                    strip_html(&html[sn_start..sn_start + sn_end.min(500)])
-                                } else { String::new() }
-                            } else { String::new() }
-                        } else { String::new() };
+                        let snippet =
+                            if let Some(sn_pos) = snippet_search.find("class=\"result-snippet\"") {
+                                let sn_abs = title_start + sn_pos;
+                                if let Some(sn_gt) = html[sn_abs..].find('>') {
+                                    let sn_start = sn_abs + sn_gt + 1;
+                                    if let Some(sn_end) = html[sn_start..].find("</") {
+                                        strip_html(&html[sn_start..sn_start + sn_end.min(500)])
+                                    } else {
+                                        String::new()
+                                    }
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                String::new()
+                            };
 
                         // Skip DDG internal and sponsored links
-                        if !real_url.contains("duckduckgo.com") && !real_url.contains("duck.co")
-                           && !real_url.contains("bing.com/aclick") && !title.is_empty() {
-                            results.push(format!("{}\n  {}\n  {}", title.trim(), real_url, snippet.trim()));
+                        if !real_url.contains("duckduckgo.com")
+                            && !real_url.contains("duck.co")
+                            && !real_url.contains("bing.com/aclick")
+                            && !title.is_empty()
+                        {
+                            results.push(format!(
+                                "{}\n  {}\n  {}",
+                                title.trim(),
+                                real_url,
+                                snippet.trim()
+                            ));
                         }
                     }
                 }
             }
         }
         pos = abs + 20;
-        if results.len() >= 8 { break; }
+        if results.len() >= 8 {
+            break;
+        }
     }
 
     if results.is_empty() {
         ToolResult::ok(format!("DuckDuckGo: Keine Ergebnisse für '{}'", query))
     } else {
-        ToolResult::ok(format!("DuckDuckGo Ergebnisse für '{}':\n\n{}", query, results.join("\n\n")))
+        ToolResult::ok(format!(
+            "DuckDuckGo Ergebnisse für '{}':\n\n{}",
+            query,
+            results.join("\n\n")
+        ))
     }
 }
 
@@ -209,12 +247,18 @@ async fn search_brave(settings: &ModulSettings, query: &str) -> ToolResult {
     };
 
     let client = build_client(10);
-    let url = format!("https://api.search.brave.com/res/v1/web/search?q={}&count=8", urlencod(query));
+    let url = format!(
+        "https://api.search.brave.com/res/v1/web/search?q={}&count=8",
+        urlencod(query)
+    );
 
-    let resp = match client.get(&url)
+    let resp = match client
+        .get(&url)
         .header("X-Subscription-Token", api_key)
         .header("Accept", "application/json")
-        .send().await {
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => return ToolResult::fail(format!("Brave Search Fehler: {}", e)),
     };
@@ -224,19 +268,31 @@ async fn search_brave(settings: &ModulSettings, query: &str) -> ToolResult {
         Err(e) => return ToolResult::fail(format!("Brave Search Parse Fehler: {}", e)),
     };
 
-    let results: Vec<String> = data["web"]["results"].as_array()
-        .map(|arr| arr.iter().take(8).map(|r| {
-            format!("{}\n  {}\n  {}",
-                r["title"].as_str().unwrap_or(""),
-                r["url"].as_str().unwrap_or(""),
-                r["description"].as_str().unwrap_or(""))
-        }).collect())
+    let results: Vec<String> = data["web"]["results"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .take(8)
+                .map(|r| {
+                    format!(
+                        "{}\n  {}\n  {}",
+                        r["title"].as_str().unwrap_or(""),
+                        r["url"].as_str().unwrap_or(""),
+                        r["description"].as_str().unwrap_or("")
+                    )
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     if results.is_empty() {
         ToolResult::ok(format!("Brave: Keine Ergebnisse für '{}'", query))
     } else {
-        ToolResult::ok(format!("Brave Ergebnisse für '{}':\n\n{}", query, results.join("\n\n")))
+        ToolResult::ok(format!(
+            "Brave Ergebnisse für '{}':\n\n{}",
+            query,
+            results.join("\n\n")
+        ))
     }
 }
 
@@ -251,11 +307,14 @@ async fn search_serper(settings: &ModulSettings, query: &str) -> ToolResult {
     let client = build_client(10);
     let body = serde_json::json!({"q": query, "num": 8});
 
-    let resp = match client.post("https://google.serper.dev/search")
+    let resp = match client
+        .post("https://google.serper.dev/search")
         .header("X-API-KEY", api_key)
         .header("Content-Type", "application/json")
         .json(&body)
-        .send().await {
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => return ToolResult::fail(format!("Serper Fehler: {}", e)),
     };
@@ -265,19 +324,31 @@ async fn search_serper(settings: &ModulSettings, query: &str) -> ToolResult {
         Err(e) => return ToolResult::fail(format!("Serper Parse Fehler: {}", e)),
     };
 
-    let results: Vec<String> = data["organic"].as_array()
-        .map(|arr| arr.iter().take(8).map(|r| {
-            format!("{}\n  {}\n  {}",
-                r["title"].as_str().unwrap_or(""),
-                r["link"].as_str().unwrap_or(""),
-                r["snippet"].as_str().unwrap_or(""))
-        }).collect())
+    let results: Vec<String> = data["organic"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .take(8)
+                .map(|r| {
+                    format!(
+                        "{}\n  {}\n  {}",
+                        r["title"].as_str().unwrap_or(""),
+                        r["link"].as_str().unwrap_or(""),
+                        r["snippet"].as_str().unwrap_or("")
+                    )
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     if results.is_empty() {
         ToolResult::ok(format!("Serper: Keine Ergebnisse für '{}'", query))
     } else {
-        ToolResult::ok(format!("Google (via Serper) Ergebnisse für '{}':\n\n{}", query, results.join("\n\n")))
+        ToolResult::ok(format!(
+            "Google (via Serper) Ergebnisse für '{}':\n\n{}",
+            query,
+            results.join("\n\n")
+        ))
     }
 }
 
@@ -290,13 +361,19 @@ async fn search_google(settings: &ModulSettings, query: &str) -> ToolResult {
     };
     let cx = match settings.google_cx.as_deref() {
         Some(c) if !c.is_empty() => c,
-        _ => return ToolResult::fail("Google: google_cx (Search Engine ID) nicht konfiguriert".into()),
+        _ => {
+            return ToolResult::fail(
+                "Google: google_cx (Search Engine ID) nicht konfiguriert".into(),
+            );
+        }
     };
 
     let client = build_client(10);
     let url = format!(
         "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num=8",
-        api_key, cx, urlencod(query)
+        api_key,
+        cx,
+        urlencod(query)
     );
 
     let resp = match client.get(&url).send().await {
@@ -309,19 +386,31 @@ async fn search_google(settings: &ModulSettings, query: &str) -> ToolResult {
         Err(e) => return ToolResult::fail(format!("Google Parse Fehler: {}", e)),
     };
 
-    let results: Vec<String> = data["items"].as_array()
-        .map(|arr| arr.iter().take(8).map(|r| {
-            format!("{}\n  {}\n  {}",
-                r["title"].as_str().unwrap_or(""),
-                r["link"].as_str().unwrap_or(""),
-                r["snippet"].as_str().unwrap_or(""))
-        }).collect())
+    let results: Vec<String> = data["items"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .take(8)
+                .map(|r| {
+                    format!(
+                        "{}\n  {}\n  {}",
+                        r["title"].as_str().unwrap_or(""),
+                        r["link"].as_str().unwrap_or(""),
+                        r["snippet"].as_str().unwrap_or("")
+                    )
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     if results.is_empty() {
         ToolResult::ok(format!("Google: Keine Ergebnisse für '{}'", query))
     } else {
-        ToolResult::ok(format!("Google Ergebnisse für '{}':\n\n{}", query, results.join("\n\n")))
+        ToolResult::ok(format!(
+            "Google Ergebnisse für '{}':\n\n{}",
+            query,
+            results.join("\n\n")
+        ))
     }
 }
 
@@ -343,11 +432,14 @@ async fn search_grok(settings: &ModulSettings, query: &str) -> ToolResult {
         "search_mode": "auto"
     });
 
-    let resp = match client.post("https://api.x.ai/v1/chat/completions")
+    let resp = match client
+        .post("https://api.x.ai/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&body)
-        .send().await {
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => return ToolResult::fail(format!("Grok Fehler: {}", e)),
     };
@@ -357,11 +449,17 @@ async fn search_grok(settings: &ModulSettings, query: &str) -> ToolResult {
         Err(e) => return ToolResult::fail(format!("Grok Parse Fehler: {}", e)),
     };
 
-    let content = data["choices"][0]["message"]["content"].as_str().unwrap_or("");
+    let content = data["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("");
     if content.is_empty() {
         ToolResult::fail("Grok: Leere Antwort".into())
     } else {
-        ToolResult::ok(format!("Grok Web Search für '{}':\n\n{}", query, truncate(content, 4000)))
+        ToolResult::ok(format!(
+            "Grok Web Search für '{}':\n\n{}",
+            query,
+            truncate(content, 4000)
+        ))
     }
 }
 
@@ -397,9 +495,9 @@ fn urldecod(s: &str) -> String {
     let mut i = 0;
     while i < raw.len() {
         if raw[i] == b'%' && i + 2 < raw.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&raw[i+1..i+3]).unwrap_or(""), 16
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&raw[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 bytes.push(byte);
                 i += 3;
                 continue;
@@ -428,8 +526,12 @@ fn urlencod(s: &str) -> String {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max { return s.to_string(); }
+    if s.len() <= max {
+        return s.to_string();
+    }
     let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
     format!("{}... [abgeschnitten, {} chars total]", &s[..end], s.len())
 }

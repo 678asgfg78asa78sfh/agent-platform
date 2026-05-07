@@ -1,6 +1,6 @@
-use crate::types::{ModulConfig, AgentConfig, Aufgabe};
-use crate::pipeline::Pipeline;
 use crate::modules;
+use crate::pipeline::Pipeline;
+use crate::types::{AgentConfig, Aufgabe, ModulConfig};
 use crate::util;
 
 /// Result of a tool execution: always SUCCESS or FAILED
@@ -11,8 +11,18 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
-    pub fn ok(data: String) -> Self { Self { success: true, data } }
-    pub fn fail(msg: String) -> Self { Self { success: false, data: msg } }
+    pub fn ok(data: String) -> Self {
+        Self {
+            success: true,
+            data,
+        }
+    }
+    pub fn fail(msg: String) -> Self {
+        Self {
+            success: false,
+            data: msg,
+        }
+    }
 }
 
 /// Describes a tool that a module can use
@@ -37,16 +47,19 @@ pub fn tools_for_module(modul: &ModulConfig) -> Vec<ToolDef> {
                     params: vec!["modul".into(), "anweisung".into(), "wann".into()],
                 });
             }
-            // RAG tools if permission includes any rag.*
-            if perms.iter().any(|p| p.starts_with("rag.")) {
+            // RAG tools if permission includes any rag.* OR a persistent module
+            // is explicitly connected to a RAG pool in the UI.
+            if has_rag_access(modul) {
                 tools.push(ToolDef {
                     name: "rag.suchen".into(),
-                    description: "Durchsucht das Wissens-Archiv nach relevanten Informationen".into(),
+                    description: "Durchsucht das Wissens-Archiv nach relevanten Informationen"
+                        .into(),
                     params: vec!["query".into()],
                 });
                 tools.push(ToolDef {
                     name: "rag.speichern".into(),
-                    description: "Speichert eine Information im Wissens-Archiv zum späteren Abruf".into(),
+                    description: "Speichert eine Information im Wissens-Archiv zum späteren Abruf"
+                        .into(),
                     params: vec!["text".into()],
                 });
             }
@@ -121,7 +134,9 @@ pub fn tools_for_module(modul: &ModulConfig) -> Vec<ToolDef> {
     // Injection-Angriff gegen jedes beliebige Modul (Chat, Websearch, Notify)
     // automatisch Filesystem-Zugriff — das war das "dümmste-Design" Finding.
     if modul.typ != "filesystem" {
-        let has_files_perm = perms.iter().any(|p| p == "files" || p == "files.home" || p == "files.*");
+        let has_files_perm = perms
+            .iter()
+            .any(|p| p == "files" || p == "files.home" || p == "files.*");
         if has_files_perm {
             tools.push(ToolDef {
                 name: "files.read".into(),
@@ -145,7 +160,10 @@ pub fn tools_for_module(modul: &ModulConfig) -> Vec<ToolDef> {
 }
 
 /// Baut die OpenAI-kompatible tools[] JSON-Liste fuer den API-Call
-pub fn tools_as_openai_json(modul: &ModulConfig, py_modules: &[crate::loader::PyModuleMeta]) -> Vec<serde_json::Value> {
+pub fn tools_as_openai_json(
+    modul: &ModulConfig,
+    py_modules: &[crate::loader::PyModuleMeta],
+) -> Vec<serde_json::Value> {
     let mut result = vec![];
 
     // Rust-Tools
@@ -153,7 +171,10 @@ pub fn tools_as_openai_json(modul: &ModulConfig, py_modules: &[crate::loader::Py
         let mut props = serde_json::Map::new();
         let mut required = vec![];
         for p in &t.params {
-            props.insert(p.clone(), serde_json::json!({"type": "string", "description": p}));
+            props.insert(
+                p.clone(),
+                serde_json::json!({"type": "string", "description": p}),
+            );
             required.push(serde_json::json!(p));
         }
         result.push(serde_json::json!({
@@ -173,7 +194,10 @@ pub fn tools_as_openai_json(modul: &ModulConfig, py_modules: &[crate::loader::Py
     // Python-Tools — permission derived from linked modules OR legacy berechtigungen
     for py_mod in py_modules {
         let perm_key = format!("py.{}", py_mod.name);
-        let has_perm = modul.berechtigungen.iter().any(|p| p == &perm_key || p == "py.*")
+        let has_perm = modul
+            .berechtigungen
+            .iter()
+            .any(|p| p == &perm_key || p == "py.*")
             || modul.linked_modules.iter().any(|link_id| {
                 // Exact match OR "<py_name>.<instance>" prefix. Früher war hier
                 // `link_id.contains(&py_mod.name)` — das gab einem Link
@@ -183,13 +207,18 @@ pub fn tools_as_openai_json(modul: &ModulConfig, py_modules: &[crate::loader::Py
                 // "<name>." anfangen.
                 link_id == &py_mod.name || link_id.starts_with(&format!("{}.", py_mod.name))
             });
-        if !has_perm { continue; }
+        if !has_perm {
+            continue;
+        }
 
         for tool in &py_mod.tools {
             let mut props = serde_json::Map::new();
             let mut required = vec![];
             for p in &tool.params {
-                props.insert(p.clone(), serde_json::json!({"type": "string", "description": p}));
+                props.insert(
+                    p.clone(),
+                    serde_json::json!({"type": "string", "description": p}),
+                );
                 required.push(serde_json::json!(p));
             }
             result.push(serde_json::json!({
@@ -235,15 +264,17 @@ pub fn parse_openai_tool_call_with_schema(
     data: &serde_json::Value,
     schema_required: Option<&[String]>,
 ) -> Option<(String, Vec<String>)> {
-    let tool_calls = data.pointer("/choices/0/message/tool_calls")
+    let tool_calls = data
+        .pointer("/choices/0/message/tool_calls")
         .and_then(|v| v.as_array());
-    let ollama_calls = data.pointer("/choices/0/message/tool_calls")
+    let ollama_calls = data
+        .pointer("/choices/0/message/tool_calls")
         .or_else(|| data.pointer("/message/tool_calls"))
         .and_then(|v| v.as_array());
 
     let calls = tool_calls.or(ollama_calls)?;
     let call = calls.first()?;
-    let name = call["function"]["name"].as_str()?.to_string();
+    let raw_name = call["function"]["name"].as_str()?.to_string();
 
     let args: serde_json::Value = match &call["function"]["arguments"] {
         serde_json::Value::String(s) => serde_json::from_str(s).unwrap_or_default(),
@@ -252,32 +283,61 @@ pub fn parse_openai_tool_call_with_schema(
     };
 
     fn unescape_html(s: &str) -> String {
-        s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-         .replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ")
+        s.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&#39;", "'")
+            .replace("&nbsp;", " ")
     }
+
+    let mut embedded_params: Option<Vec<String>> = None;
+    let name =
+        if let Some((recovered_name, recovered_params)) = parse_braced_named_tool_call(&raw_name) {
+            embedded_params = Some(recovered_params);
+            recovered_name
+        } else if is_valid_tool_name(&raw_name) {
+            raw_name
+        } else {
+            return None;
+        };
 
     let params = if let Some(obj) = args.as_object() {
         if obj.is_empty() {
-            vec![]
+            embedded_params.unwrap_or_default()
         } else if let Some(required) = schema_required {
             // AUTORITATIVE Reihenfolge aus Schema. Jedes required-Feld wird in der
             // Schema-Reihenfolge geholt (leerer String falls LLM es wegließ).
             // Extra-Args außerhalb des Schemas werden hinten angehängt — sie haben
             // keine definierte Position, aber Tool-Handler die Positions-
             // basiert arbeiten ignorieren sie sowieso.
-            let mut result: Vec<String> = required.iter().map(|k| {
-                obj.get(k)
-                    .map(|v| if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() })
-                    .map(|s| unescape_html(&s))
-                    .unwrap_or_default()
-            }).collect();
+            let mut result: Vec<String> = required
+                .iter()
+                .map(|k| {
+                    obj.get(k)
+                        .map(|v| {
+                            if let Some(s) = v.as_str() {
+                                s.to_string()
+                            } else {
+                                v.to_string()
+                            }
+                        })
+                        .map(|s| unescape_html(&s))
+                        .unwrap_or_default()
+                })
+                .collect();
             // Extra keys NICHT im Schema — hinten anhängen, aber in stabiler Reihenfolge
             let required_set: std::collections::HashSet<&str> =
                 required.iter().map(|s| s.as_str()).collect();
-            let mut extras: Vec<(String, String)> = obj.iter()
+            let mut extras: Vec<(String, String)> = obj
+                .iter()
                 .filter(|(k, _)| !required_set.contains(k.as_str()))
                 .map(|(k, v)| {
-                    let raw = if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() };
+                    let raw = if let Some(s) = v.as_str() {
+                        s.to_string()
+                    } else {
+                        v.to_string()
+                    };
                     (k.clone(), unescape_html(&raw))
                 })
                 .collect();
@@ -288,15 +348,35 @@ pub fn parse_openai_tool_call_with_schema(
             // Fallback-Heuristik ohne Schema. Weniger sicher, aber besser als
             // reine Insertion-Order — wenn das Tool in der path_keys-Liste steht,
             // kommen path-artige Args zuerst.
-            let path_keys = ["path", "pfad", "pfad_und_bereich", "pfad_und_zeile",
-                             "file", "datei", "url", "name", "modul_name", "modul",
-                             "query", "to", "wann", "loop_id", "basis_modul",
-                             "ziel", "kriterien", "command"];
+            let path_keys = [
+                "path",
+                "pfad",
+                "pfad_und_bereich",
+                "pfad_und_zeile",
+                "file",
+                "datei",
+                "url",
+                "name",
+                "modul_name",
+                "modul",
+                "query",
+                "to",
+                "wann",
+                "loop_id",
+                "basis_modul",
+                "ziel",
+                "kriterien",
+                "command",
+            ];
             let mut ordered = Vec::new();
             let mut remaining = Vec::new();
 
             for (k, v) in obj.iter() {
-                let raw = if let Some(s) = v.as_str() { s.to_string() } else { v.to_string() };
+                let raw = if let Some(s) = v.as_str() {
+                    s.to_string()
+                } else {
+                    v.to_string()
+                };
                 let val = unescape_html(&raw);
                 if path_keys.contains(&k.to_lowercase().as_str()) {
                     ordered.push((k.clone(), val));
@@ -306,7 +386,10 @@ pub fn parse_openai_tool_call_with_schema(
             }
 
             ordered.sort_by_key(|(k, _)| {
-                path_keys.iter().position(|pk| pk == &k.to_lowercase().as_str()).unwrap_or(999)
+                path_keys
+                    .iter()
+                    .position(|pk| pk == &k.to_lowercase().as_str())
+                    .unwrap_or(999)
             });
 
             let mut result: Vec<String> = ordered.into_iter().map(|(_, v)| v).collect();
@@ -329,9 +412,13 @@ pub fn schema_required_for(
     py_modules: &[crate::loader::PyModuleMeta],
 ) -> Option<Vec<String>> {
     for t in tools_as_openai_json(modul, py_modules) {
-        let name = t.pointer("/function/name").and_then(|v| v.as_str())?.to_string();
+        let name = t
+            .pointer("/function/name")
+            .and_then(|v| v.as_str())?
+            .to_string();
         if name == tool_name {
-            let req = t.pointer("/function/parameters/required")?
+            let req = t
+                .pointer("/function/parameters/required")?
                 .as_array()?
                 .iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -343,21 +430,34 @@ pub fn schema_required_for(
 }
 
 /// Ergaenzt Python-Tool-Beschreibungen wenn das Modul die passende Berechtigung hat
-pub fn append_python_tools(prompt: &mut String, modul: &ModulConfig, py_modules: &[crate::loader::PyModuleMeta]) {
+pub fn append_python_tools(
+    prompt: &mut String,
+    modul: &ModulConfig,
+    py_modules: &[crate::loader::PyModuleMeta],
+) {
     for py_mod in py_modules {
         // Berechtigung: "py.modulname" oder "py.*" OR linked to a module of that type.
         // Exact match statt substring, siehe tools_as_openai_json für Begründung.
         let perm_key = format!("py.{}", py_mod.name);
-        let has_perm = modul.berechtigungen.iter().any(|p| p == &perm_key || p == "py.*")
+        let has_perm = modul
+            .berechtigungen
+            .iter()
+            .any(|p| p == &perm_key || p == "py.*")
             || modul.linked_modules.iter().any(|link_id| {
                 link_id == &py_mod.name || link_id.starts_with(&format!("{}.", py_mod.name))
             });
-        if !has_perm { continue; }
+        if !has_perm {
+            continue;
+        }
 
         for tool in &py_mod.tools {
             let params_str = tool.params.join(", ");
-            prompt.push_str(&format!("[TOOL:{name}({params})]\n  {desc}\n\n",
-                name = tool.name, params = params_str, desc = tool.description));
+            prompt.push_str(&format!(
+                "[TOOL:{name}({params})]\n  {desc}\n\n",
+                name = tool.name,
+                params = params_str,
+                desc = tool.description
+            ));
         }
     }
 }
@@ -372,11 +472,17 @@ pub fn tools_prompt(modul: &ModulConfig) -> String {
     let mut prompt = String::from("\n\nDu hast folgende Tools zur Verfügung:\n\n");
     for t in &tools {
         let params_str = t.params.join(", ");
-        prompt.push_str(&format!("[TOOL:{name}({params})]\n  {desc}\n\n",
-            name = t.name, params = params_str, desc = t.description));
+        prompt.push_str(&format!(
+            "[TOOL:{name}({params})]\n  {desc}\n\n",
+            name = t.name,
+            params = params_str,
+            desc = t.description
+        ));
     }
     prompt.push_str(
         "WICHTIG - So benutzt du Tools:\n\
+         Du darfst nur Tools verwenden oder als verfuegbar nennen, die in diesem Systemprompt als [TOOL:...] stehen. \
+         Erfinde keine globalen Plattform-Tools. Wenn du nach deinen Faehigkeiten gefragt wirst, nutze agent.capabilities falls dieses Tool verfuegbar ist.\n\
          Wenn du ein Tool nutzen willst, antworte AUSSCHLIESSLICH mit dem Tool-Call und NICHTS ANDEREM:\n\
          <tool>name(param1, param2)</tool>\n\n\
          EXAKTE SYNTAX: <tool> dann Toolname, dann Klammer auf, Parameter, Klammer zu, dann </tool>\n\
@@ -403,24 +509,28 @@ pub fn tools_prompt(modul: &ModulConfig) -> String {
             prompt.push_str(
                 "Beispiele:\n\
                  - 'suche nach Rust' → <tool>web.search(Rust programming)</tool>\n\
-                 - 'öffne URL' → <tool>http.get(https://example.com)</tool>\n\n");
+                 - 'öffne URL' → <tool>http.get(https://example.com)</tool>\n\n",
+            );
         }
         "mail" => {
             prompt.push_str(
                 "Beispiele:\n\
                  - 'suche Mails von Chef' → <tool>imap.search(FROM chef)</tool>\n\
-                 - 'lies Mail 42' → <tool>imap.read(42)</tool>\n\n");
+                 - 'lies Mail 42' → <tool>imap.read(42)</tool>\n\n",
+            );
         }
         "shell" => {
             prompt.push_str(
                 "Beispiele:\n\
                  - 'zeige Festplatten' → <tool>shell.exec(df -h)</tool>\n\
-                 - 'git status' → <tool>shell.exec(git status)</tool>\n\n");
+                 - 'git status' → <tool>shell.exec(git status)</tool>\n\n",
+            );
         }
         "notify" => {
             prompt.push_str(
                 "Beispiele:\n\
-                 - 'sag Bescheid' → <tool>notify.send(Aufgabe erledigt)</tool>\n\n");
+                 - 'sag Bescheid' → <tool>notify.send(Aufgabe erledigt)</tool>\n\n",
+            );
         }
         _ => {}
     }
@@ -429,6 +539,7 @@ pub fn tools_prompt(modul: &ModulConfig) -> String {
         "REGELN:\n\
          - Wenn du ein Tool brauchst, antworte NUR mit dem <tool>...</tool> Tag. Kein Text davor oder danach.\n\
          - Du bekommst das Tool-Ergebnis zurück und antwortest dann dem User basierend auf dem Ergebnis.\n\
+         - Wenn ein Tool FAILED meldet, entscheide im nächsten Schritt: korrigiert erneut versuchen, ein anderes erlaubtes Tool nutzen, oder ehrlich sagen warum es nicht geht.\n\
          - Für normale Gespräche ohne Tool-Bedarf antworte direkt ohne Tool-Call.\n\
          - VERTRAUE dem Tool-Ergebnis! Wenn das Tool SUCCESS meldet, hat es funktioniert. Erfinde KEINE Fehler.\n"
     );
@@ -448,6 +559,15 @@ pub fn parse_tool_call(text: &str) -> Option<(String, Vec<String>)> {
         }
     }
 
+    // Some local models emit an XML-ish function-call dialect:
+    // <tool=tavily.search(query)
+    // <parameter=query>...</parameter>
+    // </tool_call>
+    // Treat the first such block as one tool call instead of leaking it to chat.
+    if let Some(call) = parse_tool_equals_call(text) {
+        return Some(call);
+    }
+
     // Gemma4 alternative: <tool:name(params)/> or <tool:name(key="value")/>
     if let Some(start) = text.find("<tool:") {
         let after = &text[start + 6..];
@@ -460,9 +580,74 @@ pub fn parse_tool_call(text: &str) -> Option<(String, Vec<String>)> {
     None
 }
 
+pub fn looks_like_malformed_tool_call(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    (lower.contains("<tool") || lower.contains("</tool_call>") || lower.contains("<tool_call"))
+        && parse_tool_call(text).is_none()
+}
+
+fn parse_tool_equals_call(text: &str) -> Option<(String, Vec<String>)> {
+    let start = text.find("<tool=")?;
+    let after = &text[start + 6..];
+    let head_end = after
+        .find('\n')
+        .or_else(|| after.find('\r'))
+        .or_else(|| after.find('>'))
+        .unwrap_or(after.len());
+    let header = after[..head_end].trim().trim_end_matches('>').trim();
+    if let Some(call) = parse_braced_named_tool_call(header) {
+        return Some(call);
+    }
+    let paren_start = header.find('(')?;
+    let name = header[..paren_start].trim().to_string();
+    if !is_valid_tool_name(&name) {
+        return None;
+    }
+
+    let body_end = after
+        .find("</tool_call>")
+        .or_else(|| after.find("</tool>"))
+        .unwrap_or(after.len());
+    let body = &after[head_end..body_end];
+    let params = parse_parameter_blocks(body);
+    if !params.is_empty() {
+        return Some((name, params));
+    }
+
+    parse_tool_inner(header)
+}
+
+fn parse_parameter_blocks(mut text: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    while let Some(start) = text.find("<parameter") {
+        let after_start = &text[start + "<parameter".len()..];
+        let Some(open_end) = after_start.find('>') else {
+            break;
+        };
+        let value_start = start + "<parameter".len() + open_end + 1;
+        let after_value_start = &text[value_start..];
+        let Some(close_start) = after_value_start.find("</parameter>") else {
+            break;
+        };
+        let value = after_value_start[..close_start].trim();
+        if !value.is_empty() {
+            params.push(value.to_string());
+        }
+        text = &after_value_start[close_start + "</parameter>".len()..];
+    }
+    params
+}
+
 fn parse_tool_inner(inner: &str) -> Option<(String, Vec<String>)> {
+    if let Some(call) = parse_braced_named_tool_call(inner) {
+        return Some(call);
+    }
+
     let paren_start = inner.find('(')?;
     let name = inner[..paren_start].trim().to_string();
+    if !is_valid_tool_name(&name) {
+        return None;
+    }
     let paren_end = inner.rfind(')')?;
     let params_str = &inner[paren_start + 1..paren_end];
 
@@ -488,7 +673,7 @@ fn parse_tool_inner(inner: &str) -> Option<(String, Vec<String>)> {
             return Some((name, parts));
         } else {
             // Sieht nach Code/HTML aus → NICHT splitten, roh lassen
-            rest.to_string()
+            clean_param(rest)
         };
         vec![first, rest]
     } else {
@@ -499,17 +684,63 @@ fn parse_tool_inner(inner: &str) -> Option<(String, Vec<String>)> {
     Some((name, params))
 }
 
+fn parse_braced_named_tool_call(inner: &str) -> Option<(String, Vec<String>)> {
+    let brace_start = inner.find('{')?;
+    if inner
+        .find('(')
+        .is_some_and(|paren_start| paren_start < brace_start)
+    {
+        return None;
+    }
+    let name = inner[..brace_start].trim().to_string();
+    if !is_valid_tool_name(&name) {
+        return None;
+    }
+
+    let mut body = inner[brace_start + 1..].trim();
+    body = body.trim_end_matches("<tool_call|>").trim();
+    body = body.trim_end_matches("</tool>").trim();
+    body = body.trim_end_matches('}').trim();
+    if body.is_empty() {
+        return Some((name, vec![]));
+    }
+
+    Some((name, vec![clean_llm_delimiters(&clean_param(body))]))
+}
+
+fn is_valid_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+        && !name.contains("..")
+}
+
+fn clean_llm_delimiters(s: &str) -> String {
+    s.replace("<|\"|>", "\"")
+        .replace("<|'|>", "'")
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
 fn clean_param(s: &str) -> String {
+    fn simple_key(key: &str) -> bool {
+        !key.is_empty() && key.chars().all(|c| c.is_alphanumeric() || c == '_')
+    }
+
     // key=value strippen (z.B. query="Alpha" → Alpha)
-    let s = if let Some(eq_pos) = s.find('=') {
-        let after = s[eq_pos + 1..].trim();
-        // Nur strippen wenn der Key ein einfaches Wort ist (kein HTML-Attribut)
-        let key = s[..eq_pos].trim();
-        if key.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            after
-        } else {
-            s // HTML-Attribut wie style="..." → nicht anfassen
-        }
+    let s = if let Some(eq_pos) = s.find('=').filter(|pos| simple_key(s[..*pos].trim())) {
+        s[eq_pos + 1..].trim()
+    // key: value strippen (lokale Modelle machen oft `pfad: modules/x.py`)
+    } else if let Some(colon_pos) = s.find(':').filter(|pos| simple_key(s[..*pos].trim())) {
+        let after = s[colon_pos + 1..].trim();
+        if !after.starts_with("//") { after } else { s }
     } else {
         s
     };
@@ -528,14 +759,25 @@ pub async fn execute_tool(
     // Unbekannte Tools fallen durch zum "Unbekanntes Tool" default,
     // damit der Python-Fallback in cycle.rs/web.rs greifen kann.
     // Python-Tool Permissions werden dort via has_permission_with_py geprueft.
-    let is_known_rust_tool = matches!(tool_name,
-        "rag.suchen" | "rag.speichern" | "aufgaben.erstellen" |
-        "files.read" | "files.write" | "files.list" |
-        "web.search" | "http.get" | "shell.exec" | "notify.send" |
-        "agent.spawn"
+    let is_known_rust_tool = matches!(
+        tool_name,
+        "rag.suchen"
+            | "rag.speichern"
+            | "aufgaben.erstellen"
+            | "files.read"
+            | "files.write"
+            | "files.list"
+            | "web.search"
+            | "http.get"
+            | "shell.exec"
+            | "notify.send"
+            | "agent.spawn"
     );
     if is_known_rust_tool && !has_permission(modul, tool_name) {
-        return ToolResult::fail(format!("DENIED: Modul '{}' hat keine Berechtigung für Tool '{}'", modul.name, tool_name));
+        return ToolResult::fail(format!(
+            "DENIED: Modul '{}' hat keine Berechtigung für Tool '{}'",
+            modul.name, tool_name
+        ));
     }
 
     match tool_name {
@@ -563,13 +805,20 @@ pub async fn execute_tool(
                 // Only one param given — treat it as anweisung for own module
                 let aufgabe = Aufgabe::neu(&modul.id, target_modul, wann, &modul.name);
                 match pipeline.speichern(&aufgabe) {
-                    Ok(_) => ToolResult::ok(format!("Aufgabe erstellt: {} fuer Modul '{}'", aufgabe.id, modul.id)),
+                    Ok(_) => ToolResult::ok(format!(
+                        "Aufgabe erstellt: {} fuer Modul '{}'",
+                        aufgabe.id, modul.id
+                    )),
                     Err(e) => ToolResult::fail(format!("Aufgabe erstellen fehlgeschlagen: {}", e)),
                 }
             } else if anweisung.is_empty() {
                 ToolResult::fail("aufgaben.erstellen braucht mindestens eine Anweisung".into())
             } else {
-                let target = if target_modul.is_empty() { &modul.id } else { target_modul };
+                let target = if target_modul.is_empty() {
+                    &modul.id
+                } else {
+                    target_modul
+                };
                 // Linking check: target must be in linked_modules (or be self)
                 if target != &modul.id {
                     if !modul.linked_modules.contains(&target.to_string()) {
@@ -581,7 +830,10 @@ pub async fn execute_tool(
                 }
                 let aufgabe = Aufgabe::neu(target, anweisung, wann, &modul.name);
                 match pipeline.speichern(&aufgabe) {
-                    Ok(_) => ToolResult::ok(format!("Aufgabe erstellt: {} fuer Modul '{}'", aufgabe.id, target)),
+                    Ok(_) => ToolResult::ok(format!(
+                        "Aufgabe erstellt: {} fuer Modul '{}'",
+                        aufgabe.id, target
+                    )),
                     Err(e) => ToolResult::fail(format!("Aufgabe erstellen fehlgeschlagen: {}", e)),
                 }
             }
@@ -632,7 +884,10 @@ pub async fn execute_tool(
         // Shell tools — kein sh -c! Direkter Aufruf ohne Shell-Interpretation.
         "shell.exec" => {
             let command = params.first().map(|s| s.as_str()).unwrap_or("");
-            let allowed = modul.settings.allowed_commands.as_ref()
+            let allowed = modul
+                .settings
+                .allowed_commands
+                .as_ref()
                 .map(|v| v.iter().map(|s| s.as_str()).collect::<Vec<_>>())
                 .unwrap_or_default();
             let working_dir = modul.settings.working_dir.as_deref().unwrap_or(".");
@@ -640,20 +895,31 @@ pub async fn execute_tool(
                 ToolResult::fail("Kein Befehl angegeben".into())
             } else {
                 // Shell-Metazeichen blocken um Injection zu verhindern
-                let dangerous = [';', '|', '&', '`', '$', '(', ')', '<', '>', '{', '}', '!', '\\', '\n'];
+                let dangerous = [
+                    ';', '|', '&', '`', '$', '(', ')', '<', '>', '{', '}', '!', '\\', '\n',
+                ];
                 if command.chars().any(|c| dangerous.contains(&c)) {
-                    ToolResult::fail(format!("DENIED: Befehl enthält unerlaubte Zeichen: {}", command))
+                    ToolResult::fail(format!(
+                        "DENIED: Befehl enthält unerlaubte Zeichen: {}",
+                        command
+                    ))
                 } else {
                     let parts: Vec<&str> = command.split_whitespace().collect();
                     let cmd_name = parts.first().copied().unwrap_or("");
                     if allowed.is_empty() || !allowed.contains(&cmd_name) {
-                        ToolResult::fail(format!("DENIED: Befehl '{}' nicht in der Whitelist: {:?}", cmd_name, allowed))
+                        ToolResult::fail(format!(
+                            "DENIED: Befehl '{}' nicht in der Whitelist: {:?}",
+                            cmd_name, allowed
+                        ))
                     } else if args_touch_sensitive_paths(&parts[1..]) {
                         // Whitelist gilt nur für command-name. Zusätzlich: Args
                         // dürfen nicht auf sensible System-Pfade zeigen. `cat`
                         // whitelisted → `cat /etc/shadow` würde sonst laufen.
                         // GLM-Finding Run SQLite-4.
-                        ToolResult::fail(format!("DENIED: shell.exec-Argument zeigt auf geschützten Pfad (/etc/, /root/, ~/.ssh, /sys/, /proc/k*). command: {}", command))
+                        ToolResult::fail(format!(
+                            "DENIED: shell.exec-Argument zeigt auf geschützten Pfad (/etc/, /root/, ~/.ssh, /sys/, /proc/k*). command: {}",
+                            command
+                        ))
                     } else {
                         let output = tokio::process::Command::new(cmd_name)
                             .args(&parts[1..])
@@ -664,9 +930,16 @@ pub async fn execute_tool(
                             Ok(o) => {
                                 let stdout = String::from_utf8_lossy(&o.stdout);
                                 let stderr = String::from_utf8_lossy(&o.stderr);
-                                let text = format!("exit: {}\nstdout:\n{}\nstderr:\n{}", o.status, stdout, stderr);
+                                let text = format!(
+                                    "exit: {}\nstdout:\n{}\nstderr:\n{}",
+                                    o.status, stdout, stderr
+                                );
                                 let truncated = util::safe_truncate_owned(&text, 4000);
-                                if o.status.success() { ToolResult::ok(truncated) } else { ToolResult::fail(truncated) }
+                                if o.status.success() {
+                                    ToolResult::ok(truncated)
+                                } else {
+                                    ToolResult::fail(truncated)
+                                }
                             }
                             Err(e) => ToolResult::fail(format!("Shell Fehler: {}", e)),
                         }
@@ -695,7 +968,11 @@ pub async fn execute_tool(
             let result = match notify_type {
                 "ntfy" => {
                     let endpoint = format!("{}/{}", url.trim_end_matches('/'), topic);
-                    client.post(&endpoint).body(message.to_string()).send().await
+                    client
+                        .post(&endpoint)
+                        .body(message.to_string())
+                        .send()
+                        .await
                 }
                 "gotify" => {
                     let endpoint = format!("{}/message?token={}", url.trim_end_matches('/'), token);
@@ -705,15 +982,21 @@ pub async fn execute_tool(
                 }
                 "telegram" => {
                     let endpoint = format!("https://api.telegram.org/bot{}/sendMessage", token);
-                    client.post(&endpoint)
+                    client
+                        .post(&endpoint)
                         .json(&serde_json::json!({"chat_id": topic, "text": message}))
-                        .send().await
+                        .send()
+                        .await
                 }
                 _ => return ToolResult::fail(format!("Unbekannter notify_type: {}", notify_type)),
             };
             match result {
-                Ok(resp) if resp.status().is_success() => ToolResult::ok(format!("Benachrichtigung gesendet via {}", notify_type)),
-                Ok(resp) => ToolResult::fail(format!("Notify fehlgeschlagen: HTTP {}", resp.status())),
+                Ok(resp) if resp.status().is_success() => {
+                    ToolResult::ok(format!("Benachrichtigung gesendet via {}", notify_type))
+                }
+                Ok(resp) => {
+                    ToolResult::fail(format!("Notify fehlgeschlagen: HTTP {}", resp.status()))
+                }
                 Err(e) => ToolResult::fail(format!("Notify Fehler: {}", e)),
             }
         }
@@ -724,16 +1007,23 @@ pub async fn execute_tool(
             let aufgabe_text = params.get(2).map(|s| s.as_str()).unwrap_or("");
 
             if basis_id.is_empty() || prompt.is_empty() || aufgabe_text.is_empty() {
-                return ToolResult::fail("agent.spawn braucht: basis_modul, system_prompt, aufgabe".into());
+                return ToolResult::fail(
+                    "agent.spawn braucht: basis_modul, system_prompt, aufgabe".into(),
+                );
             }
 
             // Check: caller must not be a temp agent spawning more temp agents
             if !modul.persistent {
-                return ToolResult::fail("DENIED: Temp-Agenten koennen keine weiteren Agenten spawnen".into());
+                return ToolResult::fail(
+                    "DENIED: Temp-Agenten koennen keine weiteren Agenten spawnen".into(),
+                );
             }
 
             // Find basis module
-            let basis = config.module.iter().find(|m| m.id == basis_id || m.name == basis_id);
+            let basis = config
+                .module
+                .iter()
+                .find(|m| m.id == basis_id || m.name == basis_id);
             let Some(basis) = basis else {
                 return ToolResult::fail(format!("Basis-Modul '{}' nicht gefunden", basis_id));
             };
@@ -753,19 +1043,24 @@ pub async fn execute_tool(
             // zum Creator — dafür braucht der Temp-Agent keine aufgaben-Permission.
             let safe_inherit: std::collections::HashSet<&str> =
                 ["rag", "rag.*", "websearch"].into_iter().collect();
-            let stripped_perms: Vec<String> = modul.berechtigungen.iter()
+            let stripped_perms: Vec<String> = modul
+                .berechtigungen
+                .iter()
                 .filter(|p| {
                     let s: &str = p;
-                    safe_inherit.contains(s)
-                        || s.starts_with("rag.")
-                        // keine "aufgaben" — sonst Task-Routing-Privilege-Escalation
-                        // keine "files*", "shell*", "notify*", "agent.*", "py.*" — siehe oben
+                    safe_inherit.contains(s) || s.starts_with("rag.")
+                    // keine "aufgaben" — sonst Task-Routing-Privilege-Escalation
+                    // keine "files*", "shell*", "notify*", "agent.*", "py.*" — siehe oben
                 })
                 .cloned()
                 .collect();
 
             // Create temp module config
-            let temp_id = format!("temp.{}.{}", modul.id, &uuid::Uuid::new_v4().to_string()[..8]);
+            let temp_id = format!(
+                "temp.{}.{}",
+                modul.id,
+                &uuid::Uuid::new_v4().to_string()[..8]
+            );
             let temp_modul = crate::types::ModulConfig {
                 id: temp_id.clone(),
                 typ: basis.typ.clone(),
@@ -774,7 +1069,7 @@ pub async fn execute_tool(
                 llm_backend: basis.llm_backend.clone(),
                 backup_llm: basis.backup_llm.clone(),
                 berechtigungen: stripped_perms, // sichere Teilmenge, nicht full-inherit
-                linked_modules: vec![modul.id.clone()],       // only link back to creator
+                linked_modules: vec![modul.id.clone()], // only link back to creator
                 persistent: false,
                 spawned_by: Some(modul.id.clone()),
                 spawn_ttl_s: Some(300), // 5 min default
@@ -796,7 +1091,9 @@ pub async fn execute_tool(
 
             // Create the task for the temp agent
             let aufgabe = crate::types::Aufgabe::llm_call(
-                aufgabe_text, &temp_id, &modul.id,
+                aufgabe_text,
+                &temp_id,
+                &modul.id,
                 Some(modul.id.clone()), // route result back to creator
             );
             let aufgabe_id = aufgabe.id.clone();
@@ -812,13 +1109,29 @@ pub async fn execute_tool(
             });
             let spec_json = match serde_json::to_string_pretty(&spec) {
                 Ok(j) => j,
-                Err(e) => return ToolResult::fail(format!("Temp-Agent serialisieren fehlgeschlagen: {}", e)),
+                Err(e) => {
+                    return ToolResult::fail(format!(
+                        "Temp-Agent serialisieren fehlgeschlagen: {}",
+                        e
+                    ));
+                }
             };
             match crate::util::atomic_write(&spec_path, spec_json.as_bytes()) {
                 Ok(_) => {
-                    pipeline.log("agent.spawn", Some(&aufgabe_id), crate::types::LogTyp::Info,
-                        &format!("Temp-Agent {} gespawnt (basis: {}, ttl: 300s)", temp_id, basis_id));
-                    ToolResult::ok(format!("Temp-Agent '{}' erstellt. Task '{}' wird ausgefuehrt, Ergebnis kommt zurueck.", temp_id, &aufgabe_id[..8]))
+                    pipeline.log(
+                        "agent.spawn",
+                        Some(&aufgabe_id),
+                        crate::types::LogTyp::Info,
+                        &format!(
+                            "Temp-Agent {} gespawnt (basis: {}, ttl: 300s)",
+                            temp_id, basis_id
+                        ),
+                    );
+                    ToolResult::ok(format!(
+                        "Temp-Agent '{}' erstellt. Task '{}' wird ausgefuehrt, Ergebnis kommt zurueck.",
+                        temp_id,
+                        &aufgabe_id[..8]
+                    ))
                 }
                 Err(e) => ToolResult::fail(format!("Temp-Agent erstellen fehlgeschlagen: {}", e)),
             }
@@ -826,7 +1139,10 @@ pub async fn execute_tool(
 
         _ => {
             // Kein Rust-Tool gefunden → Python-Module checken
-            ToolResult::fail(format!("Unbekanntes Tool: {} (kein Rust-Modul, Python-Fallback wird vom Cycle gehandled)", tool_name))
+            ToolResult::fail(format!(
+                "Unbekanntes Tool: {} (kein Rust-Modul, Python-Fallback wird vom Cycle gehandled)",
+                tool_name
+            ))
         }
     }
 }
@@ -849,7 +1165,7 @@ fn args_touch_sensitive_paths(args: &[&str]) -> bool {
         "/proc/kmsg",
         "/dev/mem",
         "/dev/kmem",
-        "/boot/",      // kernel + initramfs
+        "/boot/", // kernel + initramfs
     ];
     const BLOCKED_SUFFIXES: &[&str] = &[
         "/.ssh",
@@ -862,7 +1178,10 @@ fn args_touch_sensitive_paths(args: &[&str]) -> bool {
     ];
     for arg in args {
         let a = arg.trim_matches(|c: char| c == '"' || c == '\'');
-        if BLOCKED_PREFIXES.iter().any(|p| a.starts_with(p) || a.contains(&format!("={}", p))) {
+        if BLOCKED_PREFIXES
+            .iter()
+            .any(|p| a.starts_with(p) || a.contains(&format!("={}", p)))
+        {
             return true;
         }
         if BLOCKED_SUFFIXES.iter().any(|s| a.contains(s)) {
@@ -880,11 +1199,16 @@ fn args_touch_sensitive_paths(args: &[&str]) -> bool {
 /// noch auditiert (OpenAI-Finding Run SQLite-4).
 fn tool_has_side_effect(tool_name: &str) -> bool {
     const PURE_READS: &[&str] = &[
-        "files.read", "files.list",
-        "web.search", "http.get",
+        "files.read",
+        "files.list",
+        "web.search",
+        "http.get",
         "rag.suchen",
-        "imap.search", "imap.read", "imap.list",  // mail reads
-        "pop3.list", "pop3.read",
+        "imap.search",
+        "imap.read",
+        "imap.list", // mail reads
+        "pop3.list",
+        "pop3.read",
     ];
     !PURE_READS.contains(&tool_name)
 }
@@ -928,15 +1252,35 @@ pub async fn exec_tool_unified(
     let idempotency_key = match task_id {
         Some(tid) if tool_has_side_effect(tool_name) => {
             let key = crate::store::idempotency_key(tid, tool_name, params);
-            if let Ok(Some((success, data))) = crate::store::idempotency_get(&pipeline.store.pool, &key) {
+            if let Ok(Some((success, data))) =
+                crate::store::idempotency_get(&pipeline.store.pool, &key)
+            {
                 if data == crate::store::IDEMPOTENCY_IN_PROGRESS {
                     pipeline.log(modul_id, Some(tid), crate::types::LogTyp::Warning,
                         &format!("Idempotency: {} vorheriger Versuch unterbrochen (crash/abort mid-execute). FAIL — manuelles Resolve nötig, dann Idempotency-Key {} löschen.", tool_name, &key[..16]));
-                    return (false, format!("AMBIGUOUS: Vorherige Ausführung von {} wurde unterbrochen. Unklar ob der Seiteneffekt stattfand. Manuelle Prüfung nötig; Retry nach DELETE FROM idempotency WHERE key='{}...'.", tool_name, &key[..16]));
+                    return (
+                        false,
+                        format!(
+                            "AMBIGUOUS: Vorherige Ausführung von {} wurde unterbrochen. Unklar ob der Seiteneffekt stattfand. Manuelle Prüfung nötig; Retry nach DELETE FROM idempotency WHERE key='{}...'.",
+                            tool_name,
+                            &key[..16]
+                        ),
+                    );
                 }
-                tracing::info!("Idempotency cache-hit für {} ({}): skip re-execute", tool_name, &key[..16]);
-                pipeline.log(modul_id, Some(tid), crate::types::LogTyp::Info,
-                    &format!("Idempotency: {} bereits ausgeführt, return cached", tool_name));
+                tracing::info!(
+                    "Idempotency cache-hit für {} ({}): skip re-execute",
+                    tool_name,
+                    &key[..16]
+                );
+                pipeline.log(
+                    modul_id,
+                    Some(tid),
+                    crate::types::LogTyp::Info,
+                    &format!(
+                        "Idempotency: {} bereits ausgeführt, return cached",
+                        tool_name
+                    ),
+                );
                 return (success, data);
             }
             // Pre-Mark IN_PROGRESS, BEVOR wir den side-effecting Call machen.
@@ -951,22 +1295,35 @@ pub async fn exec_tool_unified(
     // Die Tabelle hat UPDATE/DELETE-Trigger die Modifikation verweigern —
     // append-only by DB-constraint, nicht by convention.
     if tool_has_side_effect(tool_name) {
-        let params_preview = params.iter()
+        let params_preview = params
+            .iter()
             .map(|p| crate::util::safe_truncate(p, 200))
             .collect::<Vec<_>>()
             .join(", ");
         pipeline.audit(
             "tool_exec",
             modul_id,
-            &format!("{}({})", tool_name, crate::util::safe_truncate(&params_preview, 600)),
+            &format!(
+                "{}({})",
+                tool_name,
+                crate::util::safe_truncate(&params_preview, 600)
+            ),
         );
     }
 
     // Eigentliche Tool-Execution in einer inner-fn damit wir am Ende einen
     // einzigen Exit-Punkt haben für idempotency_store.
     let result = exec_tool_unified_inner(
-        tool_name, params, modul_id, pipeline, llm, py_modules, py_pool, config_snapshot,
-    ).await;
+        tool_name,
+        params,
+        modul_id,
+        pipeline,
+        llm,
+        py_modules,
+        py_pool,
+        config_snapshot,
+    )
+    .await;
 
     // ══════ Idempotency-Commit ══════
     // Pre-Mark wurde oben gesetzt. Jetzt:
@@ -987,6 +1344,60 @@ pub async fn exec_tool_unified(
 
 /// Inner Dispatcher ohne Idempotency/Audit — wird vom Wrapper `exec_tool_unified`
 /// umhüllt. Getrennt damit der Idempotency-Commit am Ende in EINEM Exit-Pfad passiert.
+fn py_module_name_for_tool<'a>(
+    tool_name: &str,
+    py_modules: &'a [crate::loader::PyModuleMeta],
+) -> Option<&'a str> {
+    py_modules
+        .iter()
+        .find(|py_mod| py_mod.tools.iter().any(|tool| tool.name == tool_name))
+        .map(|py_mod| py_mod.name.as_str())
+}
+
+fn link_id_matches_py_module(link_id: &str, py_name: &str) -> bool {
+    link_id == py_name || link_id.starts_with(&format!("{}.", py_name))
+}
+
+fn linked_py_settings_module<'a>(
+    caller: Option<&ModulConfig>,
+    tool_name: &str,
+    config_snapshot: &'a AgentConfig,
+    py_modules: &[crate::loader::PyModuleMeta],
+) -> Option<&'a ModulConfig> {
+    let caller = caller?;
+    let py_name = py_module_name_for_tool(tool_name, py_modules)?;
+    let caller_in_snapshot = config_snapshot
+        .module
+        .iter()
+        .find(|m| m.id == caller.id || m.name == caller.name);
+
+    if let Some(m) = caller_in_snapshot {
+        if m.typ == py_name || link_id_matches_py_module(&m.id, py_name) {
+            return Some(m);
+        }
+    }
+
+    for link_id in &caller.linked_modules {
+        if !link_id_matches_py_module(link_id, py_name) {
+            continue;
+        }
+        if let Some(linked) = config_snapshot
+            .module
+            .iter()
+            .find(|m| m.id == *link_id || m.name == *link_id)
+        {
+            return Some(linked);
+        }
+        if link_id == py_name {
+            if let Some(linked) = config_snapshot.module.iter().find(|m| m.typ == py_name) {
+                return Some(linked);
+            }
+        }
+    }
+
+    None
+}
+
 async fn exec_tool_unified_inner(
     tool_name: &str,
     params: &[String],
@@ -999,7 +1410,9 @@ async fn exec_tool_unified_inner(
 ) -> (bool, String) {
     // For RAG tools, pre-compute embedding if configured
     if tool_name == "rag.speichern" || tool_name == "rag.suchen" {
-        let pool = config_snapshot.module.iter()
+        let pool = config_snapshot
+            .module
+            .iter()
             .find(|m| m.id == modul_id || m.name == modul_id)
             .and_then(|m| m.rag_pool.as_deref())
             .unwrap_or("shared")
@@ -1009,22 +1422,39 @@ async fn exec_tool_unified_inner(
             if tool_name == "rag.speichern" {
                 let embedding = match llm.embed(&embed_id, text).await {
                     Ok(v) => Some(v),
-                    Err(e) => { tracing::warn!("Embed: {}", e); None }
+                    Err(e) => {
+                        tracing::warn!("Embed: {}", e);
+                        None
+                    }
                 };
-                let result = crate::modules::rag::speichern(&pipeline.base, &pool, text, embedding, Some(embed_id)).await;
+                let result = crate::modules::rag::speichern(
+                    &pipeline.base,
+                    &pool,
+                    text,
+                    embedding,
+                    Some(embed_id),
+                )
+                .await;
                 return (result.success, result.data);
             } else {
                 let query_vec = match llm.embed(&embed_id, text).await {
                     Ok(v) => Some(v),
-                    Err(e) => { tracing::warn!("Embed: {}", e); None }
+                    Err(e) => {
+                        tracing::warn!("Embed: {}", e);
+                        None
+                    }
                 };
-                let result = crate::modules::rag::suchen(&pipeline.base, &pool, text, query_vec.as_deref()).await;
+                let result =
+                    crate::modules::rag::suchen(&pipeline.base, &pool, text, query_vec.as_deref())
+                        .await;
                 return (result.success, result.data);
             }
         }
     }
 
-    let modul = config_snapshot.module.iter()
+    let modul = config_snapshot
+        .module
+        .iter()
         .find(|m| m.id == modul_id || m.name == modul_id)
         .cloned();
 
@@ -1037,17 +1467,58 @@ async fn exec_tool_unified_inner(
 
     if let Some(ref m) = modul {
         if !has_permission_with_py(m, tool_name, py_modules) {
-            return (false, format!("DENIED: Modul '{}' hat keine Berechtigung für Tool '{}'", m.id, tool_name));
+            return (
+                false,
+                format!(
+                    "DENIED: Modul '{}' hat keine Berechtigung für Tool '{}'",
+                    m.id, tool_name
+                ),
+            );
         }
     }
-    let mut instance_config = modul.as_ref()
+    let settings_module =
+        linked_py_settings_module(modul.as_ref(), tool_name, config_snapshot, py_modules);
+    let mut instance_config = settings_module
+        .or(modul.as_ref())
         .map(|m| serde_json::to_value(&m.settings).unwrap_or_default())
         .unwrap_or_default();
     let home = pipeline.home_dir(modul_id);
     if let serde_json::Value::Object(ref mut map) = instance_config {
         map.insert("home_dir".into(), serde_json::json!(home.to_string_lossy()));
+        map.insert(
+            "data_dir".into(),
+            serde_json::json!(pipeline.base.to_string_lossy()),
+        );
+        if let Some(module_config) = modul.as_ref() {
+            map.insert("modul_id".into(), serde_json::json!(module_config.id));
+            if let Some(rag_pool) = module_config.rag_pool.as_deref() {
+                map.insert("rag_pool".into(), serde_json::json!(rag_pool));
+            }
+        }
+        if let Some(tool_module) = settings_module {
+            map.insert("tool_modul_id".into(), serde_json::json!(tool_module.id));
+            map.insert("tool_modul_typ".into(), serde_json::json!(tool_module.typ));
+        }
+        let project_root = pipeline.base.parent().unwrap_or(&pipeline.base);
+        map.insert(
+            "project_root".into(),
+            serde_json::json!(project_root.to_string_lossy()),
+        );
+        map.insert(
+            "modules_dir".into(),
+            serde_json::json!(project_root.join("modules").to_string_lossy()),
+        );
     }
-    if let Some(py_result) = execute_python_tool(tool_name, params, py_modules, &instance_config, py_pool).await {
+    if let Some(py_result) = execute_python_tool(
+        tool_name,
+        params,
+        py_modules,
+        &instance_config,
+        py_pool,
+        config_snapshot,
+    )
+    .await
+    {
         return (py_result.success, py_result.data);
     }
 
@@ -1061,23 +1532,79 @@ pub async fn execute_python_tool(
     py_modules: &[crate::loader::PyModuleMeta],
     instance_config: &serde_json::Value,
     py_pool: &crate::loader::PyProcessPool,
+    config_snapshot: &AgentConfig,
 ) -> Option<ToolResult> {
     for py_mod in py_modules {
         for tool in &py_mod.tools {
             if tool.name == tool_name {
-                match py_pool.call(&py_mod.path, &py_mod.name, tool_name, params, instance_config).await {
+                let platform_config = if py_mod.name == "agent_meta" {
+                    let mut cfg = instance_config.clone();
+                    if !cfg.is_object() {
+                        cfg = serde_json::json!({});
+                    }
+                    if let serde_json::Value::Object(ref mut map) = cfg {
+                        map.entry("admin_port")
+                            .or_insert_with(|| serde_json::json!(config_snapshot.web_port));
+                        if let Some(token) = config_snapshot
+                            .api_auth_token
+                            .as_deref()
+                            .filter(|t| !t.is_empty())
+                        {
+                            map.insert("api_auth_token".into(), serde_json::json!(token));
+                        }
+                        map.insert(
+                            "modules_snapshot".into(),
+                            build_agent_meta_modules_snapshot(py_modules),
+                        );
+                        map.insert(
+                            "instances_snapshot".into(),
+                            build_agent_meta_instances_snapshot(config_snapshot),
+                        );
+                    }
+                    Some(cfg)
+                } else {
+                    None
+                };
+                let call_config = platform_config.as_ref().unwrap_or(instance_config);
+
+                match py_pool
+                    .call(&py_mod.path, &py_mod.name, tool_name, params, call_config)
+                    .await
+                {
                     Ok((success, data)) => {
-                        return Some(if success { ToolResult::ok(data) } else { ToolResult::fail(data) });
+                        return Some(if success {
+                            ToolResult::ok(data)
+                        } else {
+                            ToolResult::fail(data)
+                        });
                     }
                     Err(e) => {
                         // Pool call failed — fall back to one-shot spawn
-                        match crate::loader::call_python_tool(&py_mod.path, tool_name, params, instance_config).await {
+                        match crate::loader::call_python_tool(
+                            &py_mod.path,
+                            tool_name,
+                            params,
+                            call_config,
+                        )
+                        .await
+                        {
                             Ok((success, data)) => {
-                                return Some(if success { ToolResult::ok(data) } else { ToolResult::fail(data) });
+                                return Some(if success {
+                                    ToolResult::ok(data)
+                                } else {
+                                    ToolResult::fail(data)
+                                });
                             }
                             Err(e2) => {
-                                tracing::warn!("Python pool failed ({}), one-shot also failed: {}", e, e2);
-                                return Some(ToolResult::fail(format!("Python-Modul Fehler: {}", e2)));
+                                tracing::warn!(
+                                    "Python pool failed ({}), one-shot also failed: {}",
+                                    e,
+                                    e2
+                                );
+                                return Some(ToolResult::fail(format!(
+                                    "Python-Modul Fehler: {}",
+                                    e2
+                                )));
                             }
                         }
                     }
@@ -1088,9 +1615,94 @@ pub async fn execute_python_tool(
     None // Kein Python-Modul hat dieses Tool
 }
 
+fn build_agent_meta_modules_snapshot(
+    py_modules: &[crate::loader::PyModuleMeta],
+) -> serde_json::Value {
+    let mut modules = vec![
+        serde_json::json!({
+            "name": "chat", "description": "Chat-Interface mit Tool-Calling", "version": "built-in", "source": "rust",
+            "settings": {"port":{"type":"number","label":"Port","default":8091}},
+            "tools": [{"name":"rag.suchen","description":"Durchsucht das Wissens-Archiv","params":["query"]},
+                      {"name":"rag.speichern","description":"Speichert im Wissens-Archiv","params":["text"]},
+                      {"name":"aufgaben.erstellen","description":"Erstellt eine Aufgabe","params":["modul","anweisung","wann"]}]
+        }),
+        serde_json::json!({
+            "name": "filesystem", "description": "Dateisystem-Zugriff (lesen/schreiben/listen)", "version": "built-in", "source": "rust",
+            "settings": {"allowed_paths":{"type":"list","label":"Erlaubte Pfade","default":[]},
+                         "max_file_size":{"type":"number","label":"Max Dateigröße (bytes)","default":4000},
+                         "allow_write":{"type":"bool","label":"Schreibzugriff","default":true}},
+            "tools": [{"name":"files.read","description":"Liest eine Datei","params":["path"]},
+                      {"name":"files.write","description":"Schreibt eine Datei","params":["path","content"]},
+                      {"name":"files.list","description":"Listet ein Verzeichnis","params":["path"]}]
+        }),
+        serde_json::json!({
+            "name": "websearch", "description": "Web-Suche (DuckDuckGo, Brave, Google, Grok)", "version": "built-in", "source": "rust",
+            "settings": {"search_engine":{"type":"select","label":"Suchmaschine","default":"duckduckgo","options":["duckduckgo","brave","serper","google","grok"]},
+                         "brave_api_key":{"type":"password","label":"Brave API Key","default":""},
+                         "serper_api_key":{"type":"password","label":"Serper API Key","default":""},
+                         "google_api_key":{"type":"password","label":"Google API Key","default":""},
+                         "google_cx":{"type":"string","label":"Google CX","default":""},
+                         "grok_api_key":{"type":"password","label":"Grok API Key","default":""},
+                         "max_results":{"type":"number","label":"Max Ergebnisse","default":8}},
+            "tools": [{"name":"web.search","description":"Web-Suche","params":["query"]},
+                      {"name":"http.get","description":"URL abrufen","params":["url"]}]
+        }),
+        serde_json::json!({
+            "name": "shell", "description": "Shell-Befehle ausfuehren (Whitelist)", "version": "built-in", "source": "rust",
+            "settings": {"allowed_commands":{"type":"list","label":"Erlaubte Befehle","default":[]},
+                         "working_dir":{"type":"string","label":"Arbeitsverzeichnis","default":"."}},
+            "tools": [{"name":"shell.exec","description":"Fuehrt einen Befehl aus","params":["command"]}]
+        }),
+        serde_json::json!({
+            "name": "notify", "description": "Push-Benachrichtigungen (ntfy/gotify/telegram)", "version": "built-in", "source": "rust",
+            "settings": {"notify_type":{"type":"select","label":"Typ","default":"ntfy","options":["ntfy","gotify","telegram"]},
+                         "notify_url":{"type":"string","label":"URL","default":""},
+                         "notify_token":{"type":"password","label":"Token","default":""},
+                         "notify_topic":{"type":"string","label":"Topic/Chat-ID","default":"agent"}},
+            "tools": [{"name":"notify.send","description":"Sendet eine Benachrichtigung","params":["message"]}]
+        }),
+    ];
+    modules.extend(py_modules.iter().map(|m| {
+        serde_json::json!({
+            "name": m.name,
+            "description": m.description,
+            "version": m.version,
+            "settings": m.settings,
+            "tools": m.tools,
+            "source": "python",
+        })
+    }));
+    serde_json::json!({ "modules": modules })
+}
+
+fn build_agent_meta_instances_snapshot(config_snapshot: &AgentConfig) -> serde_json::Value {
+    let modules: Vec<serde_json::Value> = config_snapshot
+        .module
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "typ": m.typ,
+                "llm_backend": m.llm_backend,
+                "port": m.settings.port,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "name": config_snapshot.name,
+        "web_port": config_snapshot.web_port,
+        "llm_backends": config_snapshot.llm_backends.len(),
+        "module": modules,
+    })
+}
+
 /// Check if a module has permission to use a tool
 /// py_modules wird gebraucht um Tool→Modulname aufzuloesen
-pub fn has_permission_with_py(modul: &ModulConfig, tool_name: &str, py_modules: &[crate::loader::PyModuleMeta]) -> bool {
+pub fn has_permission_with_py(
+    modul: &ModulConfig,
+    tool_name: &str,
+    py_modules: &[crate::loader::PyModuleMeta],
+) -> bool {
     let perms = &modul.berechtigungen;
     // Fuer Python-Tools: finde den Modulnamen der dieses Tool hat
     for py_mod in py_modules {
@@ -1122,22 +1734,18 @@ fn has_permission(modul: &ModulConfig, tool_name: &str) -> bool {
     let typ_grants = modul.persistent;
 
     match tool_name {
-        "rag.suchen" | "rag.speichern" => {
-            perms.iter().any(|p| p.starts_with("rag."))
-        }
-        "aufgaben.erstellen" => {
-            perms.iter().any(|p| p == "aufgaben")
-        }
+        "rag.suchen" | "rag.speichern" => has_rag_access(modul),
+        "aufgaben.erstellen" => perms.iter().any(|p| p == "aufgaben"),
         "files.read" | "files.write" | "files.list" => {
             (typ_grants && modul.typ == "filesystem")
-                || perms.iter().any(|p| p == "files" || p == "files.home" || p == "files.*")
+                || perms
+                    .iter()
+                    .any(|p| p == "files" || p == "files.home" || p == "files.*")
         }
         "web.search" | "http.get" => {
             (typ_grants && modul.typ == "websearch") || perms.iter().any(|p| p == "websearch")
         }
-        "shell.exec" => {
-            (typ_grants && modul.typ == "shell") || perms.iter().any(|p| p == "shell")
-        }
+        "shell.exec" => (typ_grants && modul.typ == "shell") || perms.iter().any(|p| p == "shell"),
         "notify.send" => {
             (typ_grants && modul.typ == "notify") || perms.iter().any(|p| p == "notify")
         }
@@ -1149,10 +1757,19 @@ fn has_permission(modul: &ModulConfig, tool_name: &str) -> bool {
     }
 }
 
+fn has_rag_access(modul: &ModulConfig) -> bool {
+    modul.berechtigungen.iter().any(|p| p.starts_with("rag."))
+        || (modul.persistent
+            && modul
+                .rag_pool
+                .as_deref()
+                .is_some_and(|pool| !pool.trim().is_empty()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ModulSettings, ModulIdentity};
+    use crate::types::{ModulIdentity, ModulSettings};
 
     fn make_modul(typ: &str, berechtigungen: Vec<String>) -> ModulConfig {
         ModulConfig {
@@ -1205,6 +1822,14 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_tool_call_tool_equals_parameter_format() {
+        let input = "<tool=tavily.search(query)\n<parameter=query>\nAngela Merkel aktuelle Nachrichten\n</parameter>\n</function>\n</tool_call>\n<tool=tavily.search(query)\n<parameter=query>\nAngela Merkel 2024\n</parameter>\n</function>\n</tool_call>";
+        let (name, params) = parse_tool_call(input).unwrap();
+        assert_eq!(name, "tavily.search");
+        assert_eq!(params, vec!["Angela Merkel aktuelle Nachrichten"]);
+    }
+
+    #[test]
     fn test_parse_tool_call_two_params() {
         let input = "<tool>files.write(/tmp/test.txt, hello world)</tool>";
         let (name, params) = parse_tool_call(input).unwrap();
@@ -1212,6 +1837,26 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert_eq!(params[0], "/tmp/test.txt");
         assert_eq!(params[1], "hello world");
+    }
+
+    #[test]
+    fn test_parse_tool_call_strips_colon_named_params() {
+        let input = "<tool>editor.replace(pfad: modules/deepdive/module.py, aenderung: ALT===REPLACE===NEU)</tool>";
+        let (name, params) = parse_tool_call(input).unwrap();
+        assert_eq!(name, "editor.replace");
+        assert_eq!(
+            params,
+            vec!["modules/deepdive/module.py", "ALT===REPLACE===NEU"]
+        );
+    }
+
+    #[test]
+    fn test_parse_tool_call_strips_colon_named_raw_code_param() {
+        let input = "<tool>editor.overwrite(pfad: modules/deepdive/module.py, inhalt: def handle_tool(tool_name, params, config):\n    return {\"success\": True, \"data\": \"ok\"})</tool>";
+        let (name, params) = parse_tool_call(input).unwrap();
+        assert_eq!(name, "editor.overwrite");
+        assert_eq!(params[0], "modules/deepdive/module.py");
+        assert!(params[1].starts_with("def handle_tool"));
     }
 
     #[test]
@@ -1229,6 +1874,24 @@ mod tests {
     }
 
     #[test]
+    fn test_malformed_tool_call_is_detected() {
+        let input = r#"Ich starte jetzt.
+<tool>editor.replace{aenderung:<|"|>x<|"|>,pfad:modules/DEEPDIVE/module.py}<tool_call|>"#;
+        assert!(parse_tool_call(input).is_none());
+        assert!(looks_like_malformed_tool_call(input));
+    }
+
+    #[test]
+    fn test_parse_braced_named_source_note_recovers() {
+        let input = r#"<tool>deepdive.source_note{source:<|"|>Quelle: tagesschau.de(https://www.tagesschau.de/thema/friedrich_merz). Datum: 2026-05-07}</tool>"#;
+        let (name, params) = parse_tool_call(input).unwrap();
+        assert_eq!(name, "deepdive.source_note");
+        assert_eq!(params.len(), 1);
+        assert!(params[0].starts_with("Quelle: tagesschau.de"));
+        assert!(params[0].contains("2026-05-07"));
+    }
+
+    #[test]
     fn test_parse_openai_tool_call_basic() {
         let data = serde_json::json!({
             "choices": [{"message": {"tool_calls": [{"id": "call_1", "function": {
@@ -1239,6 +1902,20 @@ mod tests {
         let (name, params) = parse_openai_tool_call(&data).unwrap();
         assert_eq!(name, "files.read");
         assert_eq!(params, vec!["/tmp/test.txt"]);
+    }
+
+    #[test]
+    fn test_parse_openai_braced_function_name_recovers() {
+        let data = serde_json::json!({
+            "choices": [{"message": {"tool_calls": [{"id": "call_1", "function": {
+                "name": "deepdive.source_note{source:<|\"|>Quelle: tagesschau.de(https://www.tagesschau.de/thema/friedrich_merz). Datum: 2026-05-07}",
+                "arguments": "{}"
+            }}]}}]
+        });
+        let (name, params) = parse_openai_tool_call(&data).unwrap();
+        assert_eq!(name, "deepdive.source_note");
+        assert_eq!(params.len(), 1);
+        assert!(params[0].starts_with("Quelle: tagesschau.de"));
     }
 
     #[test]
@@ -1271,7 +1948,10 @@ mod tests {
         });
         let schema = vec!["path".to_string(), "content".to_string()];
         let (_, params) = parse_openai_tool_call_with_schema(&data, Some(&schema)).unwrap();
-        assert_eq!(params[0], "/tmp/x.txt", "path muss erster Parameter sein (schema order)");
+        assert_eq!(
+            params[0], "/tmp/x.txt",
+            "path muss erster Parameter sein (schema order)"
+        );
         assert_eq!(params[1], "hello");
     }
 
@@ -1302,7 +1982,10 @@ mod tests {
         });
         let schema = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let (_, params) = parse_openai_tool_call_with_schema(&data, Some(&schema)).unwrap();
-        assert_eq!(params, vec!["one".to_string(), String::new(), String::new()]);
+        assert_eq!(
+            params,
+            vec!["one".to_string(), String::new(), String::new()]
+        );
     }
 
     #[test]
@@ -1311,6 +1994,28 @@ mod tests {
         assert!(has_permission(&modul, "rag.suchen"));
         assert!(has_permission(&modul, "rag.speichern"));
         assert!(!has_permission(&modul, "shell.exec"));
+    }
+
+    #[test]
+    fn test_persistent_chat_with_rag_pool_gets_rag_tools() {
+        let mut modul = make_modul("chat", vec![]);
+        modul.rag_pool = Some("DeepDive".into());
+        modul.persistent = true;
+        assert!(has_permission(&modul, "rag.suchen"));
+        let names: Vec<String> = tools_for_module(&modul)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(&"rag.suchen".to_string()));
+        assert!(names.contains(&"rag.speichern".to_string()));
+    }
+
+    #[test]
+    fn test_temp_agent_rag_pool_does_not_grant_rag_without_permission() {
+        let mut modul = make_modul("chat", vec![]);
+        modul.rag_pool = Some("DeepDive".into());
+        modul.persistent = false;
+        assert!(!has_permission(&modul, "rag.suchen"));
     }
 
     #[test]
@@ -1341,11 +2046,14 @@ mod tests {
             description: "test".into(),
             version: "1.0".into(),
             settings: Default::default(),
-            tools: tool_names.iter().map(|n| crate::loader::PyToolDef {
-                name: (*n).into(),
-                description: "t".into(),
-                params: vec![],
-            }).collect(),
+            tools: tool_names
+                .iter()
+                .map(|n| crate::loader::PyToolDef {
+                    name: (*n).into(),
+                    description: "t".into(),
+                    params: vec![],
+                })
+                .collect(),
             path: std::path::PathBuf::new(),
         }
     }
@@ -1358,8 +2066,10 @@ mod tests {
         modul.linked_modules = vec!["chat.mail".into()]; // NOT a link to py_mod "mail"
 
         let py_mods = vec![py_mod("mail", &["mail.send"])];
-        assert!(!has_permission_with_py(&modul, "mail.send", &py_mods),
-            "chat.mail link must NOT grant access to py.mail tools");
+        assert!(
+            !has_permission_with_py(&modul, "mail.send", &py_mods),
+            "chat.mail link must NOT grant access to py.mail tools"
+        );
     }
 
     #[test]
@@ -1368,8 +2078,10 @@ mod tests {
         let mut modul = make_modul("chat", vec![]);
         modul.linked_modules = vec!["mailadmin.inst1".into()];
         let py_mods = vec![py_mod("mail", &["mail.send"])];
-        assert!(!has_permission_with_py(&modul, "mail.send", &py_mods),
-            "'mailadmin' link must NOT match py_mod 'mail'");
+        assert!(
+            !has_permission_with_py(&modul, "mail.send", &py_mods),
+            "'mailadmin' link must NOT match py_mod 'mail'"
+        );
     }
 
     #[test]
@@ -1397,40 +2109,87 @@ mod tests {
     }
 
     #[test]
+    fn test_modul_settings_preserves_python_extra_fields() {
+        let settings: ModulSettings =
+            serde_json::from_value(serde_json::json!({"max_sources": 8, "python_timeout_s": 90}))
+                .unwrap();
+        let val = serde_json::to_value(&settings).unwrap();
+        assert_eq!(val["max_sources"], serde_json::json!(8));
+        assert_eq!(val["python_timeout_s"], serde_json::json!(90));
+    }
+
+    #[test]
+    fn test_linked_py_settings_module_uses_linked_instance() {
+        let mut caller = make_modul("chat", vec![]);
+        caller.id = "chat.llamacpp".into();
+        caller.name = "chat.llamacpp".into();
+        caller.rag_pool = Some("DeepDive".into());
+        caller.linked_modules = vec!["deepdive.default".into()];
+
+        let mut deepdive = make_modul("deepdive", vec![]);
+        deepdive.id = "deepdive.default".into();
+        deepdive.name = "deepdive.default".into();
+        deepdive.settings =
+            serde_json::from_value(serde_json::json!({"max_total_pages": 14})).unwrap();
+
+        let mut cfg = crate::types::AgentConfig::default();
+        cfg.module = vec![caller.clone(), deepdive];
+        let py_mods = vec![py_mod("deepdive", &["deepdive.crawl"])];
+
+        let source =
+            linked_py_settings_module(Some(&caller), "deepdive.crawl", &cfg, &py_mods).unwrap();
+        assert_eq!(source.id, "deepdive.default");
+        let val = serde_json::to_value(&source.settings).unwrap();
+        assert_eq!(val["max_total_pages"], serde_json::json!(14));
+    }
+
+    #[test]
     fn test_typ_permission_does_not_leak_to_temp_agents() {
         // Regression: Temp-Agents (persistent=false) dürfen keine typ-basierten
         // impliziten Permission-Grants bekommen — sonst wäre der stripped_perms-
         // Schutz in agent.spawn wertlos für shell/filesystem/websearch/notify.
         // GLM-Finding Run SQLite-6.
         let mut temp_shell = make_modul("shell", vec![]);
-        temp_shell.persistent = false;  // Temp-Agent
-        assert!(!has_permission(&temp_shell, "shell.exec"),
-            "Temp-Agent mit typ=shell ohne berechtigungen darf shell.exec NICHT");
+        temp_shell.persistent = false; // Temp-Agent
+        assert!(
+            !has_permission(&temp_shell, "shell.exec"),
+            "Temp-Agent mit typ=shell ohne berechtigungen darf shell.exec NICHT"
+        );
 
         let mut temp_fs = make_modul("filesystem", vec![]);
         temp_fs.persistent = false;
-        assert!(!has_permission(&temp_fs, "files.read"),
-            "Temp-Agent mit typ=filesystem ohne berechtigungen darf files.read NICHT");
+        assert!(
+            !has_permission(&temp_fs, "files.read"),
+            "Temp-Agent mit typ=filesystem ohne berechtigungen darf files.read NICHT"
+        );
 
         let mut temp_web = make_modul("websearch", vec![]);
         temp_web.persistent = false;
-        assert!(!has_permission(&temp_web, "web.search"),
-            "Temp-Agent mit typ=websearch ohne berechtigungen darf web.search NICHT");
+        assert!(
+            !has_permission(&temp_web, "web.search"),
+            "Temp-Agent mit typ=websearch ohne berechtigungen darf web.search NICHT"
+        );
 
         let mut temp_notify = make_modul("notify", vec![]);
         temp_notify.persistent = false;
-        assert!(!has_permission(&temp_notify, "notify.send"),
-            "Temp-Agent mit typ=notify ohne berechtigungen darf notify.send NICHT");
+        assert!(
+            !has_permission(&temp_notify, "notify.send"),
+            "Temp-Agent mit typ=notify ohne berechtigungen darf notify.send NICHT"
+        );
 
         // Persistent (User-konfiguriert) ist OK
-        let persistent_shell = make_modul("shell", vec![]);  // default persistent=true
-        assert!(has_permission(&persistent_shell, "shell.exec"),
-            "Persistent shell-Modul darf via typ shell.exec");
+        let persistent_shell = make_modul("shell", vec![]); // default persistent=true
+        assert!(
+            has_permission(&persistent_shell, "shell.exec"),
+            "Persistent shell-Modul darf via typ shell.exec"
+        );
 
         // Temp-Agent MIT expliziter Permission darf trotzdem
         let mut temp_explicit = make_modul("chat", vec!["shell".into()]);
         temp_explicit.persistent = false;
-        assert!(has_permission(&temp_explicit, "shell.exec"),
-            "Temp-Agent mit expliziter shell-Permission darf");
+        assert!(
+            has_permission(&temp_explicit, "shell.exec"),
+            "Temp-Agent mit expliziter shell-Permission darf"
+        );
     }
 }

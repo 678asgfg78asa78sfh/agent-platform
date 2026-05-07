@@ -4,8 +4,10 @@
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::types::{AgentConfig, LlmBackend, BenchmarkCase, BenchmarkExpectation, BenchmarkResult, BenchmarkReport};
-use crate::guardrail::{validate_response, ValidatorContext};
+use crate::guardrail::{ValidatorContext, validate_response};
+use crate::types::{
+    AgentConfig, BenchmarkCase, BenchmarkExpectation, BenchmarkReport, BenchmarkResult, LlmBackend,
+};
 
 #[derive(serde::Deserialize)]
 struct Suite {
@@ -23,10 +25,21 @@ pub fn load_suite() -> Result<Vec<BenchmarkCase>, String> {
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum BenchmarkEvent {
-    CaseStart { case_id: String, prompt: String, n: usize, of: usize },
-    CaseResult { result: BenchmarkResult },
-    Report { report: BenchmarkReport },
-    Error { message: String },
+    CaseStart {
+        case_id: String,
+        prompt: String,
+        n: usize,
+        of: usize,
+    },
+    CaseResult {
+        result: BenchmarkResult,
+    },
+    Report {
+        report: BenchmarkReport,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Run the benchmark suite against `backend`. Uses `run_modul_id` as the calling
@@ -37,26 +50,38 @@ pub async fn run_benchmark(
     cfg_snapshot: AgentConfig,
     py_modules: Vec<crate::loader::PyModuleMeta>,
     llm: Arc<crate::llm::LlmRouter>,
+    tokens: Option<crate::web::TokenTracker>,
+    store_pool: Option<crate::store::SqlitePool>,
     tx: mpsc::Sender<BenchmarkEvent>,
 ) {
     let cases = match load_suite() {
         Ok(c) => c,
-        Err(e) => { let _ = tx.send(BenchmarkEvent::Error { message: e }).await; return; }
+        Err(e) => {
+            let _ = tx.send(BenchmarkEvent::Error { message: e }).await;
+            return;
+        }
     };
     let total = cases.len();
     let mut report = BenchmarkReport {
-        backend: backend.id.clone(), model: backend.model.clone(),
+        backend: backend.id.clone(),
+        model: backend.model.clone(),
         started_at: chrono::Utc::now().timestamp(),
-        total_cases: total, passed: 0, failed: 0, denied: 0,
-        total_latency_ms: 0, results: Vec::with_capacity(total),
+        total_cases: total,
+        passed: 0,
+        failed: 0,
+        denied: 0,
+        total_latency_ms: 0,
+        results: Vec::with_capacity(total),
     };
 
     let modul = match cfg_snapshot.module.iter().find(|m| m.id == run_modul_id) {
         Some(m) => m,
         None => {
-            let _ = tx.send(BenchmarkEvent::Error {
-                message: format!("run_modul_id '{}' not found in config", run_modul_id),
-            }).await;
+            let _ = tx
+                .send(BenchmarkEvent::Error {
+                    message: format!("run_modul_id '{}' not found in config", run_modul_id),
+                })
+                .await;
             return;
         }
     };
@@ -64,27 +89,70 @@ pub async fn run_benchmark(
     let tools_json = crate::tools::tools_as_openai_json(modul, &py_modules);
 
     for (i, c) in cases.iter().enumerate() {
-        let _ = tx.send(BenchmarkEvent::CaseStart {
-            case_id: c.id.clone(), prompt: c.prompt.clone(), n: i + 1, of: total,
-        }).await;
+        let _ = tx
+            .send(BenchmarkEvent::CaseStart {
+                case_id: c.id.clone(),
+                prompt: c.prompt.clone(),
+                n: i + 1,
+                of: total,
+            })
+            .await;
 
         let messages = vec![serde_json::json!({"role": "user", "content": c.prompt})];
         let t_start = std::time::Instant::now();
-        let raw = match llm.chat_with_tools_adhoc(&backend, &messages, &tools_json).await {
-            Ok((_text, raw)) => raw,
+        if let (Some(tr), Some(pool)) = (&tokens, &store_pool) {
+            let _ = tr;
+            if let Err(hit) =
+                crate::web::check_llm_cap(pool, &cfg_snapshot, &backend.id, &messages, false).await
+            {
+                let _ = tx
+                    .send(BenchmarkEvent::Error {
+                        message: hit.message(),
+                    })
+                    .await;
+                break;
+            }
+        }
+        let raw = match llm
+            .chat_with_tools_adhoc(&backend, &messages, &tools_json)
+            .await
+        {
+            Ok((_text, raw)) => {
+                if let (Some(tr), Some(pool)) = (&tokens, &store_pool) {
+                    crate::web::track_tokens(
+                        pool,
+                        tr,
+                        &cfg_snapshot,
+                        &backend.id,
+                        &backend.model,
+                        &run_modul_id,
+                        &raw,
+                    )
+                    .await;
+                }
+                raw
+            }
             Err(e) => {
+                if let (Some(tr), Some(pool)) = (&tokens, &store_pool) {
+                    crate::web::release_reservation(pool, tr, &cfg_snapshot, &backend.model).await;
+                }
                 let r = BenchmarkResult {
-                    case_id: c.id.clone(), prompt: c.prompt.clone(),
-                    passed: false, actual_tool: None,
+                    case_id: c.id.clone(),
+                    prompt: c.prompt.clone(),
+                    passed: false,
+                    actual_tool: None,
                     errors: vec![crate::types::ValidationError {
-                        field: "network".into(), code: "backend_error".into(),
+                        field: "network".into(),
+                        code: "backend_error".into(),
                         human_message_de: e,
                     }],
                     latency_ms: t_start.elapsed().as_millis() as u64,
                 };
                 report.failed += 1;
                 report.total_latency_ms += r.latency_ms;
-                let _ = tx.send(BenchmarkEvent::CaseResult { result: r.clone() }).await;
+                let _ = tx
+                    .send(BenchmarkEvent::CaseResult { result: r.clone() })
+                    .await;
                 report.results.push(r);
                 continue;
             }
@@ -106,7 +174,11 @@ pub async fn run_benchmark(
                 let ok = first.as_deref() == Some(tool_name.as_str());
                 (ok, first, vec![])
             }
-            (BenchmarkExpectation::NoToolCall, Ok(calls)) => (calls.is_empty(), calls.first().map(|p| p.tool_name.clone()), vec![]),
+            (BenchmarkExpectation::NoToolCall, Ok(calls)) => (
+                calls.is_empty(),
+                calls.first().map(|p| p.tool_name.clone()),
+                vec![],
+            ),
             (BenchmarkExpectation::Denied, Err(errs)) => {
                 let denied = errs.iter().any(|e| e.code == "no_permission");
                 (denied, None, errs.clone())
@@ -116,15 +188,27 @@ pub async fn run_benchmark(
         };
 
         let is_denied_expected = matches!(c.expected, BenchmarkExpectation::Denied);
-        if passed { report.passed += 1; } else { report.failed += 1; }
-        if is_denied_expected && passed { report.denied += 1; }
+        if passed {
+            report.passed += 1;
+        } else {
+            report.failed += 1;
+        }
+        if is_denied_expected && passed {
+            report.denied += 1;
+        }
         report.total_latency_ms += latency_ms;
 
         let r = BenchmarkResult {
-            case_id: c.id.clone(), prompt: c.prompt.clone(),
-            passed, actual_tool, errors, latency_ms,
+            case_id: c.id.clone(),
+            prompt: c.prompt.clone(),
+            passed,
+            actual_tool,
+            errors,
+            latency_ms,
         };
-        let _ = tx.send(BenchmarkEvent::CaseResult { result: r.clone() }).await;
+        let _ = tx
+            .send(BenchmarkEvent::CaseResult { result: r.clone() })
+            .await;
         report.results.push(r);
     }
     let _ = tx.send(BenchmarkEvent::Report { report }).await;
@@ -133,10 +217,21 @@ pub async fn run_benchmark(
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CompareEvent {
-    SideStart { side: String, backend: String, model: String },
-    SideCaseResult { side: String, result: crate::types::BenchmarkResult },
-    Report { report: crate::types::BenchmarkCompareReport },
-    Error { message: String },
+    SideStart {
+        side: String,
+        backend: String,
+        model: String,
+    },
+    SideCaseResult {
+        side: String,
+        result: crate::types::BenchmarkResult,
+    },
+    Report {
+        report: crate::types::BenchmarkCompareReport,
+    },
+    Error {
+        message: String,
+    },
 }
 
 pub async fn run_compare(
@@ -146,14 +241,24 @@ pub async fn run_compare(
     cfg_snapshot: crate::types::AgentConfig,
     py_modules: Vec<crate::loader::PyModuleMeta>,
     llm: std::sync::Arc<crate::llm::LlmRouter>,
+    tokens: Option<crate::web::TokenTracker>,
+    store_pool: Option<crate::store::SqlitePool>,
     tx: tokio::sync::mpsc::Sender<CompareEvent>,
 ) {
-    let _ = tx.send(CompareEvent::SideStart {
-        side: "A".into(), backend: backend_a.id.clone(), model: backend_a.model.clone(),
-    }).await;
-    let _ = tx.send(CompareEvent::SideStart {
-        side: "B".into(), backend: backend_b.id.clone(), model: backend_b.model.clone(),
-    }).await;
+    let _ = tx
+        .send(CompareEvent::SideStart {
+            side: "A".into(),
+            backend: backend_a.id.clone(),
+            model: backend_a.model.clone(),
+        })
+        .await;
+    let _ = tx
+        .send(CompareEvent::SideStart {
+            side: "B".into(),
+            backend: backend_b.id.clone(),
+            model: backend_b.model.clone(),
+        })
+        .await;
 
     let (tx_a, mut rx_a) = tokio::sync::mpsc::channel::<BenchmarkEvent>(64);
     let (tx_b, mut rx_b) = tokio::sync::mpsc::channel::<BenchmarkEvent>(64);
@@ -161,16 +266,26 @@ pub async fn run_compare(
     let cfg_a = cfg_snapshot.clone();
     let py_a = py_modules.clone();
     let llm_a = llm.clone();
+    let tokens_a = tokens.clone();
+    let store_a = store_pool.clone();
     let modul_a = run_modul_id.clone();
     let a_handle = tokio::spawn(async move {
-        run_benchmark(backend_a, modul_a, cfg_a, py_a, llm_a, tx_a).await;
+        run_benchmark(
+            backend_a, modul_a, cfg_a, py_a, llm_a, tokens_a, store_a, tx_a,
+        )
+        .await;
     });
     let cfg_b = cfg_snapshot.clone();
     let py_b = py_modules.clone();
     let llm_b = llm.clone();
+    let tokens_b = tokens.clone();
+    let store_b = store_pool.clone();
     let modul_b = run_modul_id.clone();
     let b_handle = tokio::spawn(async move {
-        run_benchmark(backend_b, modul_b, cfg_b, py_b, llm_b, tx_b).await;
+        run_benchmark(
+            backend_b, modul_b, cfg_b, py_b, llm_b, tokens_b, store_b, tx_b,
+        )
+        .await;
     });
 
     let tx_fwd_a = tx.clone();
@@ -179,9 +294,16 @@ pub async fn run_compare(
         while let Some(ev) = rx_a.recv().await {
             match ev {
                 BenchmarkEvent::CaseResult { result } => {
-                    let _ = tx_fwd_a.send(CompareEvent::SideCaseResult { side: "A".into(), result }).await;
+                    let _ = tx_fwd_a
+                        .send(CompareEvent::SideCaseResult {
+                            side: "A".into(),
+                            result,
+                        })
+                        .await;
                 }
-                BenchmarkEvent::Report { report: r } => { report = Some(r); }
+                BenchmarkEvent::Report { report: r } => {
+                    report = Some(r);
+                }
                 _ => {}
             }
         }
@@ -193,9 +315,16 @@ pub async fn run_compare(
         while let Some(ev) = rx_b.recv().await {
             match ev {
                 BenchmarkEvent::CaseResult { result } => {
-                    let _ = tx_fwd_b.send(CompareEvent::SideCaseResult { side: "B".into(), result }).await;
+                    let _ = tx_fwd_b
+                        .send(CompareEvent::SideCaseResult {
+                            side: "B".into(),
+                            result,
+                        })
+                        .await;
                 }
-                BenchmarkEvent::Report { report: r } => { report = Some(r); }
+                BenchmarkEvent::Report { report: r } => {
+                    report = Some(r);
+                }
                 _ => {}
             }
         }
@@ -221,12 +350,18 @@ pub async fn run_compare(
                 }
             }
             let report = crate::types::BenchmarkCompareReport {
-                report_a: a, report_b: b, winner_per_case: winners,
+                report_a: a,
+                report_b: b,
+                winner_per_case: winners,
             };
             let _ = tx.send(CompareEvent::Report { report }).await;
         }
         _ => {
-            let _ = tx.send(CompareEvent::Error { message: "one or both benchmark reports missing".into() }).await;
+            let _ = tx
+                .send(CompareEvent::Error {
+                    message: "one or both benchmark reports missing".into(),
+                })
+                .await;
         }
     }
 }

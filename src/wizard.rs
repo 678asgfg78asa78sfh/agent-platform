@@ -4,7 +4,10 @@
 
 use std::path::PathBuf;
 
-use crate::types::{AgentConfig, DraftAgent, ValidationError, WizardMessage, WizardMode, WizardSession, WizardToolCall};
+use crate::types::{
+    AgentConfig, DraftAgent, ValidationError, WizardMessage, WizardMode, WizardSession,
+    WizardToolCall,
+};
 
 // ─── Session storage paths ─────────────────────────
 
@@ -73,7 +76,10 @@ pub async fn load_session(data_root: &std::path::Path, session_id: &str) -> Opti
     serde_json::from_slice::<WizardSession>(&raw).ok()
 }
 
-pub async fn save_session(data_root: &std::path::Path, session: &WizardSession) -> std::io::Result<()> {
+pub async fn save_session(
+    data_root: &std::path::Path,
+    session: &WizardSession,
+) -> std::io::Result<()> {
     let path = session_path(data_root, &session.session_id);
     let json = serde_json::to_vec_pretty(session)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -111,7 +117,12 @@ pub async fn list_active_sessions(data_root: &std::path::Path) -> Vec<WizardSess
         Err(_) => return out,
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
-        if entry.file_type().await.map(|t| t.is_file()).unwrap_or(false) {
+        if entry
+            .file_type()
+            .await
+            .map(|t| t.is_file())
+            .unwrap_or(false)
+        {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 if let Ok(bytes) = tokio::fs::read(&path).await {
@@ -130,10 +141,7 @@ pub async fn list_active_sessions(data_root: &std::path::Path) -> Vec<WizardSess
 
 /// Delete sessions older than `timeout_secs` (based on last_activity).
 /// Returns count of deleted sessions.
-pub async fn cleanup_expired(
-    data_root: &std::path::Path,
-    timeout_secs: u64,
-) -> usize {
+pub async fn cleanup_expired(data_root: &std::path::Path, timeout_secs: u64) -> usize {
     let cutoff = chrono::Utc::now().timestamp() - (timeout_secs as i64);
     let mut count = 0;
     for s in list_active_sessions(data_root).await {
@@ -172,7 +180,8 @@ pub fn validate_for_commit(
     if !id.is_empty() {
         if id.len() > 64 {
             errs.push(ValidationError {
-                field: "id".into(), code: "too_long".into(),
+                field: "id".into(),
+                code: "too_long".into(),
                 human_message_de: "ID darf höchstens 64 Zeichen haben.".into(),
             });
         }
@@ -185,7 +194,8 @@ pub fn validate_for_commit(
         let allow_same = matches!(mode, WizardMode::Edit { target_id } if target_id == id);
         if !allow_same && cfg.module.iter().any(|m| m.id == id) {
             errs.push(ValidationError {
-                field: "id".into(), code: "collision".into(),
+                field: "id".into(),
+                code: "collision".into(),
                 human_message_de: format!("Ein Agent mit der ID '{}' existiert schon.", id),
             });
         }
@@ -194,12 +204,20 @@ pub fn validate_for_commit(
     // 2. typ
     match draft.typ.as_deref() {
         None | Some("") => errs.push(ValidationError {
-            field: "typ".into(), code: "missing".into(),
-            human_message_de: "Der Agent braucht einen Typ (chat, filesystem, websearch, shell, notify, cron).".into(),
+            field: "typ".into(),
+            code: "missing".into(),
+            human_message_de:
+                "Der Agent braucht einen Typ (chat, filesystem, websearch, shell, notify, cron)."
+                    .into(),
         }),
         Some(t) if !KNOWN_TYPES.contains(&t) => errs.push(ValidationError {
-            field: "typ".into(), code: "unknown_type".into(),
-            human_message_de: format!("Unbekannter Typ '{}'. Erlaubt: {}", t, KNOWN_TYPES.join(", ")),
+            field: "typ".into(),
+            code: "unknown_type".into(),
+            human_message_de: format!(
+                "Unbekannter Typ '{}'. Erlaubt: {}",
+                t,
+                KNOWN_TYPES.join(", ")
+            ),
         }),
         _ => {}
     }
@@ -208,11 +226,13 @@ pub fn validate_for_commit(
     if draft.typ.as_deref() == Some("chat") {
         match draft.llm_backend.as_deref() {
             None | Some("") => errs.push(ValidationError {
-                field: "llm_backend".into(), code: "missing".into(),
+                field: "llm_backend".into(),
+                code: "missing".into(),
                 human_message_de: "Chat-Agenten brauchen einen LLM-Backend.".into(),
             }),
             Some(b) if !cfg.llm_backends.iter().any(|x| x.id == b) => errs.push(ValidationError {
-                field: "llm_backend".into(), code: "unknown_backend".into(),
+                field: "llm_backend".into(),
+                code: "unknown_backend".into(),
                 human_message_de: format!("LLM-Backend '{}' ist nicht konfiguriert.", b),
             }),
             _ => {}
@@ -222,20 +242,29 @@ pub fn validate_for_commit(
     // 4. ranges
     if let Some(tb) = draft.token_budget {
         if tb == 0 {
-            errs.push(ValidationError { field: "token_budget".into(), code: "out_of_range".into(),
-                human_message_de: "token_budget muss > 0 sein.".into() });
+            errs.push(ValidationError {
+                field: "token_budget".into(),
+                code: "out_of_range".into(),
+                human_message_de: "token_budget muss > 0 sein.".into(),
+            });
         }
     }
     if let Some(si) = draft.scheduler_interval_ms {
         if si < 500 {
-            errs.push(ValidationError { field: "scheduler_interval_ms".into(), code: "out_of_range".into(),
-                human_message_de: "scheduler_interval_ms muss >= 500 sein.".into() });
+            errs.push(ValidationError {
+                field: "scheduler_interval_ms".into(),
+                code: "out_of_range".into(),
+                human_message_de: "scheduler_interval_ms muss >= 500 sein.".into(),
+            });
         }
     }
     if let Some(mc) = draft.max_concurrent_tasks {
         if mc == 0 {
-            errs.push(ValidationError { field: "max_concurrent_tasks".into(), code: "out_of_range".into(),
-                human_message_de: "max_concurrent_tasks muss >= 1 sein.".into() });
+            errs.push(ValidationError {
+                field: "max_concurrent_tasks".into(),
+                code: "out_of_range".into(),
+                human_message_de: "max_concurrent_tasks muss >= 1 sein.".into(),
+            });
         }
     }
 
@@ -243,7 +272,8 @@ pub fn validate_for_commit(
     for lm in &draft.linked_modules {
         if !cfg.module.iter().any(|m| &m.id == lm) {
             errs.push(ValidationError {
-                field: "linked_modules".into(), code: "unknown_module".into(),
+                field: "linked_modules".into(),
+                code: "unknown_module".into(),
                 human_message_de: format!("Verlinktes Modul '{}' existiert nicht.", lm),
             });
         }
@@ -254,8 +284,12 @@ pub fn validate_for_commit(
     for p in &draft.berechtigungen {
         if !allowed.contains(p.as_str()) {
             errs.push(ValidationError {
-                field: "berechtigungen".into(), code: "not_allowed".into(),
-                human_message_de: format!("Berechtigung '{}' ist nicht aus den verlinkten Modulen ableitbar.", p),
+                field: "berechtigungen".into(),
+                code: "not_allowed".into(),
+                human_message_de: format!(
+                    "Berechtigung '{}' ist nicht aus den verlinkten Modulen ableitbar.",
+                    p
+                ),
             });
         }
     }
@@ -263,22 +297,26 @@ pub fn validate_for_commit(
     // 7. identity.bot_name, system_prompt
     match draft.identity.bot_name.as_deref() {
         None | Some("") => errs.push(ValidationError {
-            field: "identity.bot_name".into(), code: "missing".into(),
+            field: "identity.bot_name".into(),
+            code: "missing".into(),
             human_message_de: "Der Agent braucht einen Namen.".into(),
         }),
         Some(n) if n.len() > 64 => errs.push(ValidationError {
-            field: "identity.bot_name".into(), code: "too_long".into(),
+            field: "identity.bot_name".into(),
+            code: "too_long".into(),
             human_message_de: "Name darf höchstens 64 Zeichen haben.".into(),
         }),
         _ => {}
     }
     match draft.identity.system_prompt.as_deref() {
         None | Some("") => errs.push(ValidationError {
-            field: "identity.system_prompt".into(), code: "missing".into(),
+            field: "identity.system_prompt".into(),
+            code: "missing".into(),
             human_message_de: "Der System-Prompt darf nicht leer sein.".into(),
         }),
         Some(p) if p.chars().count() > 20_000 => errs.push(ValidationError {
-            field: "identity.system_prompt".into(), code: "too_long".into(),
+            field: "identity.system_prompt".into(),
+            code: "too_long".into(),
             human_message_de: "System-Prompt darf höchstens 20.000 Zeichen haben.".into(),
         }),
         _ => {}
@@ -309,15 +347,25 @@ fn derive_allowed_permissions(
     for lm in linked {
         if let Some(m) = cfg.module.iter().find(|m| &m.id == lm) {
             match m.typ.as_str() {
-                "filesystem" => { out.insert("files"); }
-                "websearch"  => { out.insert("web"); }
-                "shell"      => { out.insert("shell"); }
-                "notify"     => { out.insert("notify"); }
+                "filesystem" => {
+                    out.insert("files");
+                }
+                "websearch" => {
+                    out.insert("web");
+                }
+                "shell" => {
+                    out.insert("shell");
+                }
+                "notify" => {
+                    out.insert("notify");
+                }
                 _ => {}
             }
         }
     }
-    if typ == Some("cron") { out.insert("cron.fire"); }
+    if typ == Some("cron") {
+        out.insert("cron.fire");
+    }
     out
 }
 
@@ -463,16 +511,28 @@ pub fn apply_propose(
         "identity.display_name" => draft.identity.display_name = value.as_str().map(str::to_string),
         "identity.language" => draft.identity.language = value.as_str().map(str::to_string),
         "identity.personality" => draft.identity.personality = value.as_str().map(str::to_string),
-        "identity.system_prompt" => draft.identity.system_prompt = value.as_str().map(str::to_string),
+        "identity.system_prompt" => {
+            draft.identity.system_prompt = value.as_str().map(str::to_string)
+        }
         "display_name" => draft.identity.display_name = value.as_str().map(str::to_string),
         "identity" => {
             // Whole-identity object patch: merge into draft.identity
             if let Some(obj) = value.as_object() {
-                if let Some(v) = obj.get("bot_name").and_then(|v| v.as_str()) { draft.identity.bot_name = Some(v.to_string()); }
-                if let Some(v) = obj.get("display_name").and_then(|v| v.as_str()) { draft.identity.display_name = Some(v.to_string()); }
-                if let Some(v) = obj.get("language").and_then(|v| v.as_str()) { draft.identity.language = Some(v.to_string()); }
-                if let Some(v) = obj.get("personality").and_then(|v| v.as_str()) { draft.identity.personality = Some(v.to_string()); }
-                if let Some(v) = obj.get("system_prompt").and_then(|v| v.as_str()) { draft.identity.system_prompt = Some(v.to_string()); }
+                if let Some(v) = obj.get("bot_name").and_then(|v| v.as_str()) {
+                    draft.identity.bot_name = Some(v.to_string());
+                }
+                if let Some(v) = obj.get("display_name").and_then(|v| v.as_str()) {
+                    draft.identity.display_name = Some(v.to_string());
+                }
+                if let Some(v) = obj.get("language").and_then(|v| v.as_str()) {
+                    draft.identity.language = Some(v.to_string());
+                }
+                if let Some(v) = obj.get("personality").and_then(|v| v.as_str()) {
+                    draft.identity.personality = Some(v.to_string());
+                }
+                if let Some(v) = obj.get("system_prompt").and_then(|v| v.as_str()) {
+                    draft.identity.system_prompt = Some(v.to_string());
+                }
                 // "greeting" is a ModulIdentity field but not a DraftIdentity field — silently ignore.
             } else {
                 return Err("identity must be an object".into());
@@ -502,7 +562,11 @@ fn as_string_vec(v: &serde_json::Value) -> Result<Vec<String>, String> {
     v.as_array()
         .ok_or("expected array")?
         .iter()
-        .map(|e| e.as_str().map(str::to_string).ok_or("expected array of strings".to_string()))
+        .map(|e| {
+            e.as_str()
+                .map(str::to_string)
+                .ok_or("expected array of strings".to_string())
+        })
         .collect()
 }
 
@@ -524,9 +588,14 @@ pub struct ToolOutcome {
 
 impl Default for ToolOutcome {
     fn default() -> Self {
-        Self { result: serde_json::json!({}), state_changed: false,
-               user_ask: None, abort_requested: None, commit_result: None,
-               code_gen_proposed: None }
+        Self {
+            result: serde_json::json!({}),
+            state_changed: false,
+            user_ask: None,
+            abort_requested: None,
+            commit_result: None,
+            code_gen_proposed: None,
+        }
     }
 }
 
@@ -542,7 +611,10 @@ pub async fn dispatch_tool(
         "wizard.propose" => {
             let cfg = cfg_lock.read().await;
             let field = args.get("field").and_then(|v| v.as_str()).unwrap_or("");
-            let value = args.get("value").cloned().unwrap_or(serde_json::Value::Null);
+            let value = args
+                .get("value")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             match apply_propose(&mut session.draft, field, &value) {
                 Ok(_) => ToolOutcome {
                     result: serde_json::json!({
@@ -560,10 +632,19 @@ pub async fn dispatch_tool(
             }
         }
         "wizard.ask" => {
-            let q = args.get("question").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let opts: Vec<String> = args.get("options")
+            let q = args
+                .get("question")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let opts: Vec<String> = args
+                .get("options")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
             ToolOutcome {
                 result: serde_json::json!({"ack": true}),
@@ -573,13 +654,22 @@ pub async fn dispatch_tool(
         }
         "wizard.list_modules" => {
             let cfg = cfg_lock.read().await;
-            let list: Vec<_> = cfg.module.iter().map(|m| serde_json::json!({
-                "id": m.id,
-                "typ": m.typ,
-                "bot_name": m.identity.bot_name,
-                "linked_modules": m.linked_modules,
-            })).collect();
-            ToolOutcome { result: serde_json::json!({"modules": list}), ..Default::default() }
+            let list: Vec<_> = cfg
+                .module
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "id": m.id,
+                        "typ": m.typ,
+                        "bot_name": m.identity.bot_name,
+                        "linked_modules": m.linked_modules,
+                    })
+                })
+                .collect();
+            ToolOutcome {
+                result: serde_json::json!({"modules": list}),
+                ..Default::default()
+            }
         }
         "wizard.inspect_module" => {
             let cfg = cfg_lock.read().await;
@@ -601,10 +691,17 @@ pub async fn dispatch_tool(
         }
         "wizard.list_py_modules" => {
             let list = list_py_modules(data_root).await;
-            ToolOutcome { result: serde_json::json!({"py_modules": list}), ..Default::default() }
+            ToolOutcome {
+                result: serde_json::json!({"py_modules": list}),
+                ..Default::default()
+            }
         }
         "wizard.abort" => {
-            let reason = args.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let reason = args
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             ToolOutcome {
                 result: serde_json::json!({"ok": true}),
                 abort_requested: Some(reason),
@@ -630,10 +727,12 @@ pub async fn dispatch_tool(
             // Materialize (pure function, no locks)
             let new_module = match materialize(&session.draft) {
                 Ok(m) => m,
-                Err(msg) => return ToolOutcome {
-                    result: serde_json::json!({"ok": false, "error": msg}),
-                    ..Default::default()
-                },
+                Err(msg) => {
+                    return ToolOutcome {
+                        result: serde_json::json!({"ok": false, "error": msg}),
+                        ..Default::default()
+                    };
+                }
             };
 
             // Acquire write lock ONCE for the whole validate + mutate + snapshot sequence.
@@ -671,7 +770,7 @@ pub async fn dispatch_tool(
                 // Snapshot while still holding the write lock so we write consistent bytes.
                 let snapshot = cfg_w.clone();
                 (snapshot, rollback)
-            };  // write lock dropped here
+            }; // write lock dropped here
 
             // Disk write outside the lock
             let write_result = persist_config(&snapshot, config_path).await;
@@ -711,7 +810,10 @@ pub async fn dispatch_tool(
             // Flag check via config
             let allow = {
                 let cfg = cfg_lock.read().await;
-                cfg.wizard.as_ref().map(|w| w.allow_code_gen).unwrap_or(false)
+                cfg.wizard
+                    .as_ref()
+                    .map(|w| w.allow_code_gen)
+                    .unwrap_or(false)
             };
             if !allow {
                 return ToolOutcome {
@@ -719,24 +821,60 @@ pub async fn dispatch_tool(
                     ..Default::default()
                 };
             }
-            let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let source_code = args.get("source_code").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let tools: Vec<crate::types::ProposedPyTool> = args.get("tools")
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let description = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let source_code = args
+                .get("source_code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let tools: Vec<crate::types::ProposedPyTool> = args
+                .get("tools")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
 
             // Validate module_name regex: ^[a-z][a-z0-9_]*$, max 32 chars
-            if name.is_empty() || name.len() > 32
-               || !name.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false)
-               || !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+            if name.is_empty()
+                || name.len() > 32
+                || !name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_lowercase())
+                    .unwrap_or(false)
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
                 return ToolOutcome {
                     result: serde_json::json!({"ok": false, "error": "invalid module name (must be ^[a-z][a-z0-9_]*$, max 32)"}),
                     ..Default::default()
                 };
             }
             // Protected system module names
-            let system_modules = ["sysinfo","healthcheck","agent_meta","mailstore","imap","smtp","pop3","editor","module_builder","taskloop","tavily","duckduckgo_search","rss","screenshot"];
+            let system_modules = [
+                "sysinfo",
+                "healthcheck",
+                "agent_meta",
+                "mailstore",
+                "imap",
+                "smtp",
+                "pop3",
+                "editor",
+                "module_builder",
+                "taskloop",
+                "tavily",
+                "duckduckgo_search",
+                "rss",
+                "screenshot",
+            ];
             if system_modules.contains(&name.as_str()) {
                 return ToolOutcome {
                     result: serde_json::json!({"ok": false, "error": "cannot overwrite system module"}),
@@ -787,10 +925,13 @@ fn materialize(d: &DraftAgent) -> Result<crate::types::ModulConfig, String> {
     let id = d.id.clone().ok_or("id missing")?;
     let typ = d.typ.clone().ok_or("typ missing")?;
     let bot_name = d.identity.bot_name.clone().unwrap_or_default();
-    let display_name = d.identity.display_name.clone().unwrap_or_else(|| bot_name.clone());
+    let display_name = d
+        .identity
+        .display_name
+        .clone()
+        .unwrap_or_else(|| bot_name.clone());
     let system_prompt = d.identity.system_prompt.clone().unwrap_or_default();
-    let settings: ModulSettings = serde_json::from_value(d.settings.clone())
-        .unwrap_or_default();
+    let settings: ModulSettings = serde_json::from_value(d.settings.clone()).unwrap_or_default();
     Ok(ModulConfig {
         id: id.clone(),
         name: id,
@@ -823,16 +964,16 @@ fn materialize(d: &DraftAgent) -> Result<crate::types::ModulConfig, String> {
 async fn persist_config(cfg: &AgentConfig, path: &Path) -> Result<(), String> {
     let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
-    tokio::fs::write(&tmp, json.as_bytes()).await.map_err(|e| e.to_string())?;
-    tokio::fs::rename(&tmp, path).await.map_err(|e| e.to_string())?;
+    tokio::fs::write(&tmp, json.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::rename(&tmp, path)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-pub fn missing_fields(
-    draft: &DraftAgent,
-    cfg: &AgentConfig,
-    mode: &WizardMode,
-) -> Vec<String> {
+pub fn missing_fields(draft: &DraftAgent, cfg: &AgentConfig, mode: &WizardMode) -> Vec<String> {
     match validate_for_commit(draft, cfg, mode) {
         Ok(()) => vec![],
         Err(errs) => {
@@ -847,7 +988,9 @@ pub fn missing_fields(
 async fn list_py_modules(data_root: &Path) -> Vec<serde_json::Value> {
     // modules/ liegt typisch neben agent-data/; fallback auf relative "modules"
     // für dev-run aus dem Projekt-Root.
-    let modules_root = data_root.parent().map(|p| p.join("modules"))
+    let modules_root = data_root
+        .parent()
+        .map(|p| p.join("modules"))
         .unwrap_or_else(|| std::path::PathBuf::from("modules"));
 
     // Volle Metadata — inkl. description, settings (mit labels/defaults) und
@@ -855,9 +998,10 @@ async fn list_py_modules(data_root: &Path) -> Vec<serde_json::Value> {
     // kann. Vorher gab's nur den Namen → Wizard wusste nicht was imap.host
     // ist oder was smtp.send tut. Blocking-Call in spawn_blocking, weil
     // `discover_modules` Python-Subprozesse spawnt.
-    let discovered = tokio::task::spawn_blocking(move || {
-        crate::loader::discover_modules(&modules_root)
-    }).await.unwrap_or_default();
+    let discovered =
+        tokio::task::spawn_blocking(move || crate::loader::discover_modules(&modules_root))
+            .await
+            .unwrap_or_default();
 
     let mut out: Vec<serde_json::Value> = discovered.into_iter().map(|m| {
         let settings_view: Vec<serde_json::Value> = m.settings.iter().map(|(key, spec)| {
@@ -906,6 +1050,7 @@ pub trait WizardBackend: Send + Sync {
 pub struct RealWizardBackend {
     pub router: std::sync::Arc<crate::llm::LlmRouter>,
     pub backend: crate::types::LlmBackend,
+    pub config: std::sync::Arc<tokio::sync::RwLock<crate::types::AgentConfig>>,
     /// Optional token-tracker (UI-Mirror) + Store-Pool (persistent accounting).
     pub tokens: Option<crate::web::TokenTracker>,
     pub store_pool: Option<crate::store::SqlitePool>,
@@ -918,10 +1063,36 @@ impl WizardBackend for RealWizardBackend {
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
     ) -> Result<(String, serde_json::Value), String> {
-        let result = self.router.chat_with_tools_adhoc(&self.backend, messages, tools).await;
-        if let Ok((_text, raw)) = &result {
-            if let (Some(tr), Some(pool)) = (&self.tokens, &self.store_pool) {
-                crate::web::track_tokens(pool, tr, &self.backend.id, &self.backend.model, "__wizard__", raw).await;
+        if let (Some(tr), Some(pool)) = (&self.tokens, &self.store_pool) {
+            let cfg = self.config.read().await.clone();
+            let _ = tr;
+            crate::web::check_llm_cap(pool, &cfg, &self.backend.id, messages, false)
+                .await
+                .map_err(|hit| hit.message())?;
+        }
+        let result = self
+            .router
+            .chat_with_tools_adhoc(&self.backend, messages, tools)
+            .await;
+        if let (Some(tr), Some(pool)) = (&self.tokens, &self.store_pool) {
+            let cfg = self.config.read().await.clone();
+            match &result {
+                Ok((_text, raw)) => {
+                    crate::web::track_tokens(
+                        pool,
+                        tr,
+                        &cfg,
+                        &self.backend.id,
+                        &self.backend.model,
+                        "__wizard__",
+                        raw,
+                    )
+                    .await;
+                }
+                Err(_) => {
+                    let cfg = self.config.read().await.clone();
+                    crate::web::release_reservation(pool, tr, &cfg, &self.backend.model).await;
+                }
             }
         }
         result
@@ -934,25 +1105,47 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WizardEvent {
-    Session { session_id: String, mode: WizardMode },
-    AssistantText { delta: String },
-    ToolCall { tool: String, arguments: serde_json::Value },
+    Session {
+        session_id: String,
+        mode: WizardMode,
+    },
+    AssistantText {
+        delta: String,
+    },
+    ToolCall {
+        tool: String,
+        arguments: serde_json::Value,
+    },
     DraftFull {
         draft: DraftAgent,
         missing_for_commit: Vec<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         next_suggested: Option<String>,
     },
-    Ask { question: String, #[serde(skip_serializing_if = "Vec::is_empty", default)] options: Vec<String> },
-    CommitOk { agent_id: String },
-    CommitError { errors: Vec<ValidationError> },
-    Frozen { reason: String },
-    Error { message: String },
+    Ask {
+        question: String,
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        options: Vec<String>,
+    },
+    CommitOk {
+        agent_id: String,
+    },
+    CommitError {
+        errors: Vec<ValidationError>,
+    },
+    Frozen {
+        reason: String,
+    },
+    Error {
+        message: String,
+    },
     Done,
-    CodeGenProposal { proposal: crate::types::WizardCodeGenProposal },
+    CodeGenProposal {
+        proposal: crate::types::WizardCodeGenProposal,
+    },
     CodeGenStep {
-        step: String,         // "scaffold" | "write" | "test" | "activate"
-        status: String,       // "running" | "ok" | "fail"
+        step: String,   // "scaffold" | "write" | "test" | "activate"
+        status: String, // "running" | "ok" | "fail"
         #[serde(skip_serializing_if = "Option::is_none", default)]
         output: Option<String>,
     },
@@ -972,7 +1165,11 @@ pub async fn run_turn(
     py_modules: &[crate::loader::PyModuleMeta],
 ) -> Result<(), String> {
     if session.frozen_reason.is_some() {
-        let _ = tx.send(WizardEvent::Frozen { reason: session.frozen_reason.clone().unwrap() }).await;
+        let _ = tx
+            .send(WizardEvent::Frozen {
+                reason: session.frozen_reason.clone().unwrap(),
+            })
+            .await;
         let _ = tx.send(WizardEvent::Done).await;
         return Ok(());
     }
@@ -990,7 +1187,9 @@ pub async fn run_turn(
     // Snapshot guardrail config once (drop lock immediately).
     let (gcfg, cfg_snap) = {
         let cfg_guard = cfg_lock.read().await;
-        let gcfg = cfg_guard.guardrail.clone()
+        let gcfg = cfg_guard
+            .guardrail
+            .clone()
             .unwrap_or_else(crate::types::GuardrailConfig::default);
         let cfg_snap = cfg_guard.clone();
         (gcfg, cfg_snap)
@@ -998,8 +1197,10 @@ pub async fn run_turn(
     let strict_mode = gcfg.strict_mode;
     let backend_id = &wizard_cfg.llm.id;
     let model = &wizard_cfg.llm.model;
-    let max_retries = gcfg.per_backend_overrides
-        .get(backend_id.as_str()).copied()
+    let max_retries = gcfg
+        .per_backend_overrides
+        .get(backend_id.as_str())
+        .copied()
         .unwrap_or(gcfg.max_retries);
 
     let tools_json = wizard_tool_descriptors(wizard_cfg.allow_code_gen);
@@ -1012,7 +1213,11 @@ pub async fn run_turn(
     for _tool_round in 0..tool_cap {
         if session.llm_rounds_used >= round_cap {
             session.frozen_reason = Some("round_cap_reached".into());
-            let _ = tx.send(WizardEvent::Frozen { reason: "round_cap_reached".into() }).await;
+            let _ = tx
+                .send(WizardEvent::Frozen {
+                    reason: "round_cap_reached".into(),
+                })
+                .await;
             break;
         }
         session.llm_rounds_used += 1;
@@ -1052,7 +1257,11 @@ pub async fn run_turn(
                         passed: true,
                         errors: vec![],
                         retry_attempt: guardrail_retries,
-                        final_outcome: if guardrail_retries > 0 { "retried".into() } else { "ok".into() },
+                        final_outcome: if guardrail_retries > 0 {
+                            "retried".into()
+                        } else {
+                            "ok".into()
+                        },
                         similar_suggestion: None,
                     };
                     let _ = crate::guardrail::log_event(data_root, &ev).await;
@@ -1070,7 +1279,11 @@ pub async fn run_turn(
                         passed: false,
                         errors: errors.clone(),
                         retry_attempt: guardrail_retries,
-                        final_outcome: if is_last { "hard_fail".into() } else { "retried".into() },
+                        final_outcome: if is_last {
+                            "hard_fail".into()
+                        } else {
+                            "retried".into()
+                        },
                         similar_suggestion: None,
                     };
                     let _ = crate::guardrail::log_event(data_root, &ev).await;
@@ -1086,7 +1299,9 @@ pub async fn run_turn(
 
                     // Append synthetic feedback user message and retry.
                     let feedback = crate::guardrail::synth_feedback_user_message(
-                        &errors, max_retries, guardrail_retries,
+                        &errors,
+                        max_retries,
+                        guardrail_retries,
                     );
                     session.transcript.push(WizardMessage {
                         role: "user".into(),
@@ -1105,7 +1320,11 @@ pub async fn run_turn(
         // ── End guardrail validation ────────────────────────────────────────
 
         if !assistant_text.is_empty() {
-            let _ = tx.send(WizardEvent::AssistantText { delta: assistant_text.clone() }).await;
+            let _ = tx
+                .send(WizardEvent::AssistantText {
+                    delta: assistant_text.clone(),
+                })
+                .await;
         }
 
         let calls = parse_tool_calls(&tool_calls_json);
@@ -1126,26 +1345,49 @@ pub async fn run_turn(
         let mut aborted = false;
         let mut committed = false;
         for call in calls {
-            let _ = tx.send(WizardEvent::ToolCall {
-                tool: call.tool_name.clone(),
-                arguments: call.arguments.clone(),
-            }).await;
+            let _ = tx
+                .send(WizardEvent::ToolCall {
+                    tool: call.tool_name.clone(),
+                    arguments: call.arguments.clone(),
+                })
+                .await;
 
-            let outcome = dispatch_tool(&call.tool_name, &call.arguments, session, cfg_lock, config_path, data_root).await;
+            let outcome = dispatch_tool(
+                &call.tool_name,
+                &call.arguments,
+                session,
+                cfg_lock,
+                config_path,
+                data_root,
+            )
+            .await;
 
             if outcome.state_changed {
                 let cfg_guard = cfg_lock.read().await;
-                let _ = tx.send(WizardEvent::DraftFull {
-                    draft: session.draft.clone(),
-                    missing_for_commit: missing_fields(&session.draft, &*cfg_guard, &session.mode),
-                    next_suggested: suggest_next(&session.draft),
-                }).await;
+                let _ = tx
+                    .send(WizardEvent::DraftFull {
+                        draft: session.draft.clone(),
+                        missing_for_commit: missing_fields(
+                            &session.draft,
+                            &*cfg_guard,
+                            &session.mode,
+                        ),
+                        next_suggested: suggest_next(&session.draft),
+                    })
+                    .await;
             }
             if let Some((q, opts)) = outcome.user_ask.clone() {
-                let _ = tx.send(WizardEvent::Ask { question: q, options: opts }).await;
+                let _ = tx
+                    .send(WizardEvent::Ask {
+                        question: q,
+                        options: opts,
+                    })
+                    .await;
             }
             if let Some(prop) = outcome.code_gen_proposed.clone() {
-                let _ = tx.send(WizardEvent::CodeGenProposal { proposal: prop }).await;
+                let _ = tx
+                    .send(WizardEvent::CodeGenProposal { proposal: prop })
+                    .await;
             }
             if outcome.abort_requested.is_some() {
                 let _ = delete_session(data_root, &session.session_id).await;
@@ -1153,11 +1395,17 @@ pub async fn run_turn(
             }
             if let Some(commit_res) = outcome.commit_result.clone() {
                 if let Some(agent_id) = commit_res.get("agent_id").and_then(|v| v.as_str()) {
-                    let _ = tx.send(WizardEvent::CommitOk { agent_id: agent_id.to_string() }).await;
+                    let _ = tx
+                        .send(WizardEvent::CommitOk {
+                            agent_id: agent_id.to_string(),
+                        })
+                        .await;
                     let _ = archive_session(data_root, &session.session_id).await;
                     committed = true;
                 } else if let Some(errs_val) = commit_res.get("errors") {
-                    if let Ok(errs) = serde_json::from_value::<Vec<ValidationError>>(errs_val.clone()) {
+                    if let Ok(errs) =
+                        serde_json::from_value::<Vec<ValidationError>>(errs_val.clone())
+                    {
                         let _ = tx.send(WizardEvent::CommitError { errors: errs }).await;
                     }
                 }
@@ -1172,13 +1420,17 @@ pub async fn run_turn(
                 timestamp: chrono::Utc::now().timestamp(),
             });
 
-            if aborted || committed { break; }
+            if aborted || committed {
+                break;
+            }
         }
 
         if let Err(e) = save_session(data_root, session).await {
-            let _ = tx.send(WizardEvent::Error {
-                message: format!("Session-State konnte nicht gespeichert werden: {}", e)
-            }).await;
+            let _ = tx
+                .send(WizardEvent::Error {
+                    message: format!("Session-State konnte nicht gespeichert werden: {}", e),
+                })
+                .await;
         }
 
         if aborted || committed {
@@ -1189,20 +1441,32 @@ pub async fn run_turn(
 
     session.last_activity = chrono::Utc::now().timestamp();
     if let Err(e) = save_session(data_root, session).await {
-        let _ = tx.send(WizardEvent::Error {
-            message: format!("Session-State konnte nicht gespeichert werden: {}", e)
-        }).await;
+        let _ = tx
+            .send(WizardEvent::Error {
+                message: format!("Session-State konnte nicht gespeichert werden: {}", e),
+            })
+            .await;
     }
     let _ = tx.send(WizardEvent::Done).await;
     Ok(())
 }
 
 fn suggest_next(draft: &DraftAgent) -> Option<String> {
-    if draft.identity.bot_name.is_none() { return Some("identity".into()); }
-    if draft.typ.is_none() { return Some("typ".into()); }
-    if draft.typ.as_deref() == Some("chat") && draft.llm_backend.is_none() { return Some("llm_backend".into()); }
-    if draft.linked_modules.is_empty() { return Some("linking".into()); }
-    if draft.identity.system_prompt.is_none() { return Some("system_prompt".into()); }
+    if draft.identity.bot_name.is_none() {
+        return Some("identity".into());
+    }
+    if draft.typ.is_none() {
+        return Some("typ".into());
+    }
+    if draft.typ.as_deref() == Some("chat") && draft.llm_backend.is_none() {
+        return Some("llm_backend".into());
+    }
+    if draft.linked_modules.is_empty() {
+        return Some("linking".into());
+    }
+    if draft.identity.system_prompt.is_none() {
+        return Some("system_prompt".into());
+    }
     Some("review".into())
 }
 
@@ -1216,7 +1480,15 @@ async fn call_py_tool(
     params: Vec<String>,
 ) -> Result<serde_json::Value, String> {
     let module_path = modules_root.join(module_name).join("module.py");
-    let (success, data) = pool.call(&module_path, module_name, tool_name, &params, &serde_json::json!({})).await?;
+    let (success, data) = pool
+        .call(
+            &module_path,
+            module_name,
+            tool_name,
+            &params,
+            &serde_json::json!({}),
+        )
+        .await?;
     Ok(serde_json::json!({"success": success, "data": data}))
 }
 
@@ -1244,48 +1516,78 @@ pub async fn execute_code_gen(
             })),
             timestamp: chrono::Utc::now().timestamp(),
         });
-        let _ = tx.send(WizardEvent::CodeGenStep {
-            step: "rejected".into(), status: "ok".into(),
-            output: Some(reason.to_string()),
-        }).await;
+        let _ = tx
+            .send(WizardEvent::CodeGenStep {
+                step: "rejected".into(),
+                status: "ok".into(),
+                output: Some(reason.to_string()),
+            })
+            .await;
         return;
     }
     // Approved: run the 4-step chain
     let pool = app_state.py_pool.clone();
-    let modules_root = app_state.data_root.parent()
+    let modules_root = app_state
+        .data_root
+        .parent()
         .unwrap_or(&app_state.data_root)
         .join("modules");
     let mod_dir = modules_root.join(&proposal.module_name);
 
     // Step A: scaffold via module_builder
-    let _ = tx.send(WizardEvent::CodeGenStep {
-        step: "scaffold".into(), status: "running".into(), output: None,
-    }).await;
-    let tools_csv = proposal.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(",");
+    let _ = tx
+        .send(WizardEvent::CodeGenStep {
+            step: "scaffold".into(),
+            status: "running".into(),
+            output: None,
+        })
+        .await;
+    let tools_csv = proposal
+        .tools
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
     let scaffold_params = vec![
         proposal.module_name.clone(),
         proposal.description.clone(),
         tools_csv,
     ];
-    match call_py_tool(&pool, &modules_root, "module_builder", "module_builder.scaffold", scaffold_params).await {
+    match call_py_tool(
+        &pool,
+        &modules_root,
+        "module_builder",
+        "module_builder.scaffold",
+        scaffold_params,
+    )
+    .await
+    {
         Ok(v) => {
-            let _ = tx.send(WizardEvent::CodeGenStep {
-                step: "scaffold".into(), status: "ok".into(),
-                output: Some(v.to_string()),
-            }).await;
+            let _ = tx
+                .send(WizardEvent::CodeGenStep {
+                    step: "scaffold".into(),
+                    status: "ok".into(),
+                    output: Some(v.to_string()),
+                })
+                .await;
         }
         Err(e) => {
-            let _ = tx.send(WizardEvent::CodeGenStep {
-                step: "scaffold".into(), status: "fail".into(),
-                output: Some(e.clone()),
-            }).await;
+            let _ = tx
+                .send(WizardEvent::CodeGenStep {
+                    step: "scaffold".into(),
+                    status: "fail".into(),
+                    output: Some(e.clone()),
+                })
+                .await;
             session.code_gen_proposal = None;
             session.transcript.push(WizardMessage {
                 role: "tool".into(),
                 content: String::new(),
                 tool_calls: vec![],
                 tool_call_id: None,
-                tool_result: Some(serde_json::json!({"ok": false, "failed_step": "scaffold", "output": e})),
+                tool_result: Some(
+                    serde_json::json!({"ok": false, "failed_step": "scaffold", "output": e}),
+                ),
                 timestamp: chrono::Utc::now().timestamp(),
             });
             return;
@@ -1293,41 +1595,77 @@ pub async fn execute_code_gen(
     }
 
     // Step B: overwrite the scaffolded module.py with LLM-provided source
-    let _ = tx.send(WizardEvent::CodeGenStep {
-        step: "write".into(), status: "running".into(), output: None,
-    }).await;
+    let _ = tx
+        .send(WizardEvent::CodeGenStep {
+            step: "write".into(),
+            status: "running".into(),
+            output: None,
+        })
+        .await;
     let module_py = mod_dir.join("module.py");
     if let Err(e) = tokio::fs::write(&module_py, &proposal.source_code).await {
         let emsg = e.to_string();
-        let _ = tx.send(WizardEvent::CodeGenStep {
-            step: "write".into(), status: "fail".into(), output: Some(emsg.clone()),
-        }).await;
+        let _ = tx
+            .send(WizardEvent::CodeGenStep {
+                step: "write".into(),
+                status: "fail".into(),
+                output: Some(emsg.clone()),
+            })
+            .await;
         session.code_gen_proposal = None;
         return;
     }
-    let _ = tx.send(WizardEvent::CodeGenStep {
-        step: "write".into(), status: "ok".into(), output: None,
-    }).await;
+    let _ = tx
+        .send(WizardEvent::CodeGenStep {
+            step: "write".into(),
+            status: "ok".into(),
+            output: None,
+        })
+        .await;
 
     // Step C: test via module_builder
-    let _ = tx.send(WizardEvent::CodeGenStep {
-        step: "test".into(), status: "running".into(), output: None,
-    }).await;
-    match call_py_tool(&pool, &modules_root, "module_builder", "module_builder.test", vec![proposal.module_name.clone()]).await {
+    let _ = tx
+        .send(WizardEvent::CodeGenStep {
+            step: "test".into(),
+            status: "running".into(),
+            output: None,
+        })
+        .await;
+    match call_py_tool(
+        &pool,
+        &modules_root,
+        "module_builder",
+        "module_builder.test",
+        vec![proposal.module_name.clone()],
+    )
+    .await
+    {
         Ok(v) => {
-            let _ = tx.send(WizardEvent::CodeGenStep {
-                step: "test".into(), status: "ok".into(), output: Some(v.to_string()),
-            }).await;
+            let _ = tx
+                .send(WizardEvent::CodeGenStep {
+                    step: "test".into(),
+                    status: "ok".into(),
+                    output: Some(v.to_string()),
+                })
+                .await;
         }
         Err(e) => {
-            let _ = tx.send(WizardEvent::CodeGenStep {
-                step: "test".into(), status: "fail".into(), output: Some(e.clone()),
-            }).await;
+            let _ = tx
+                .send(WizardEvent::CodeGenStep {
+                    step: "test".into(),
+                    status: "fail".into(),
+                    output: Some(e.clone()),
+                })
+                .await;
             session.code_gen_proposal = None;
             session.transcript.push(WizardMessage {
-                role: "tool".into(), content: String::new(),
-                tool_calls: vec![], tool_call_id: None,
-                tool_result: Some(serde_json::json!({"ok": false, "failed_step": "test", "output": e})),
+                role: "tool".into(),
+                content: String::new(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                tool_result: Some(
+                    serde_json::json!({"ok": false, "failed_step": "test", "output": e}),
+                ),
                 timestamp: chrono::Utc::now().timestamp(),
             });
             return;
@@ -1335,29 +1673,57 @@ pub async fn execute_code_gen(
     }
 
     // Step D: activate
-    let _ = tx.send(WizardEvent::CodeGenStep {
-        step: "activate".into(), status: "running".into(), output: None,
-    }).await;
-    match call_py_tool(&pool, &modules_root, "module_builder", "module_builder.activate", vec![proposal.module_name.clone()]).await {
+    let _ = tx
+        .send(WizardEvent::CodeGenStep {
+            step: "activate".into(),
+            status: "running".into(),
+            output: None,
+        })
+        .await;
+    match call_py_tool(
+        &pool,
+        &modules_root,
+        "module_builder",
+        "module_builder.activate",
+        vec![proposal.module_name.clone()],
+    )
+    .await
+    {
         Ok(_v) => {
-            let _ = tx.send(WizardEvent::CodeGenStep {
-                step: "activate".into(), status: "ok".into(), output: None,
-            }).await;
+            let _ = tx
+                .send(WizardEvent::CodeGenStep {
+                    step: "activate".into(),
+                    status: "ok".into(),
+                    output: None,
+                })
+                .await;
             session.transcript.push(WizardMessage {
-                role: "tool".into(), content: String::new(),
-                tool_calls: vec![], tool_call_id: None,
-                tool_result: Some(serde_json::json!({"ok": true, "module_name": proposal.module_name})),
+                role: "tool".into(),
+                content: String::new(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                tool_result: Some(
+                    serde_json::json!({"ok": true, "module_name": proposal.module_name}),
+                ),
                 timestamp: chrono::Utc::now().timestamp(),
             });
         }
         Err(e) => {
-            let _ = tx.send(WizardEvent::CodeGenStep {
-                step: "activate".into(), status: "fail".into(), output: Some(e.clone()),
-            }).await;
+            let _ = tx
+                .send(WizardEvent::CodeGenStep {
+                    step: "activate".into(),
+                    status: "fail".into(),
+                    output: Some(e.clone()),
+                })
+                .await;
             session.transcript.push(WizardMessage {
-                role: "tool".into(), content: String::new(),
-                tool_calls: vec![], tool_call_id: None,
-                tool_result: Some(serde_json::json!({"ok": false, "failed_step": "activate", "output": e})),
+                role: "tool".into(),
+                content: String::new(),
+                tool_calls: vec![],
+                tool_call_id: None,
+                tool_result: Some(
+                    serde_json::json!({"ok": false, "failed_step": "activate", "output": e}),
+                ),
                 timestamp: chrono::Utc::now().timestamp(),
             });
         }
@@ -1371,14 +1737,29 @@ fn parse_tool_calls(raw: &serde_json::Value) -> Vec<WizardToolCall> {
     // Also Anthropic tool_use blocks.
     let mut out = Vec::new();
     // Try OpenAI nested form
-    if let Some(calls) = raw.pointer("/choices/0/message/tool_calls").and_then(|v| v.as_array()) {
+    if let Some(calls) = raw
+        .pointer("/choices/0/message/tool_calls")
+        .and_then(|v| v.as_array())
+    {
         for item in calls {
             if let Some(func) = item.get("function") {
-                let args_str = func.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
-                let args: serde_json::Value = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                let args_str = func
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}");
+                let args: serde_json::Value =
+                    serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
                 out.push(WizardToolCall {
-                    id: item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    tool_name: func.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    id: item
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    tool_name: func
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     arguments: args,
                 });
             }
@@ -1386,20 +1767,43 @@ fn parse_tool_calls(raw: &serde_json::Value) -> Vec<WizardToolCall> {
         return out;
     }
     // Try direct array form (convenient for tests and possible converter outputs)
-    let arr = match raw.as_array() { Some(a) => a, None => return vec![] };
+    let arr = match raw.as_array() {
+        Some(a) => a,
+        None => return vec![],
+    };
     for item in arr {
         if let Some(func) = item.get("function") {
-            let args_str = func.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
-            let args: serde_json::Value = serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+            let args_str = func
+                .get("arguments")
+                .and_then(|v| v.as_str())
+                .unwrap_or("{}");
+            let args: serde_json::Value =
+                serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
             out.push(WizardToolCall {
-                id: item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                tool_name: func.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                id: item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                tool_name: func
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 arguments: args,
             });
         } else if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
             out.push(WizardToolCall {
-                id: item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                tool_name: item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                id: item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                tool_name: item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 arguments: item.get("input").cloned().unwrap_or(serde_json::json!({})),
             });
         }
@@ -1440,11 +1844,15 @@ fn build_provider_messages(session: &WizardSession, cfg: &AgentConfig) -> Vec<se
 
 fn build_system_prompt(draft: &DraftAgent, mode: &WizardMode, cfg: &AgentConfig) -> String {
     let template = include_str!("../modules/templates/wizard.txt");
-    let module_list = cfg.module.iter()
+    let module_list = cfg
+        .module
+        .iter()
         .map(|m| format!("  - {} ({}): {}", m.id, m.typ, m.identity.bot_name))
         .collect::<Vec<_>>()
         .join("\n");
-    let backend_list = cfg.llm_backends.iter()
+    let backend_list = cfg
+        .llm_backends
+        .iter()
         .map(|b| format!("  - {} ({:?}): {}", b.id, b.typ, b.model))
         .collect::<Vec<_>>()
         .join("\n");
@@ -1469,8 +1877,12 @@ mod tests {
     fn session_id_is_22_chars_url_safe() {
         let id = new_session_id();
         assert_eq!(id.len(), 22, "expected 22 chars, got {}: {}", id.len(), id);
-        assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-                "non-URL-safe char in: {}", id);
+        assert!(
+            id.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "non-URL-safe char in: {}",
+            id
+        );
     }
 
     #[test]
@@ -1496,7 +1908,8 @@ mod tests {
             created_at: 100,
             last_activity: 200,
             user_overridden_fields: vec![],
-            frozen_reason: None, code_gen_proposal: None,
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
         save_session(tmp.path(), &s).await.unwrap();
         let loaded = load_session(tmp.path(), "abc123").await.unwrap();
@@ -1518,11 +1931,16 @@ mod tests {
         use crate::types::{LlmBackend, LlmTyp, ModulIdentity};
         let mut cfg = AgentConfig::default();
         cfg.llm_backends.push(LlmBackend {
-            id: "grok".into(), name: "Grok".into(), typ: LlmTyp::Grok,
-            url: "https://api.x.ai".into(), api_key: Some("k".into()),
-            model: "grok-4".into(), timeout_s: 30,
+            id: "grok".into(),
+            name: "Grok".into(),
+            typ: LlmTyp::Grok,
+            url: "https://api.x.ai".into(),
+            api_key: Some("k".into()),
+            model: "grok-4".into(),
+            timeout_s: 30,
             identity: ModulIdentity::default(),
             max_tokens: None,
+            cost_cap: None,
         });
         cfg
     }
@@ -1551,7 +1969,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.id = Some("Chat Roland!".into());
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "id" && e.code == "invalid_format"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "id" && e.code == "invalid_format")
+        );
     }
 
     #[test]
@@ -1559,7 +1980,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.typ = Some("ueberraschung".into());
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "typ" && e.code == "unknown_type"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "typ" && e.code == "unknown_type")
+        );
     }
 
     #[test]
@@ -1567,7 +1991,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.llm_backend = None;
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "llm_backend" && e.code == "missing"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "llm_backend" && e.code == "missing")
+        );
     }
 
     #[test]
@@ -1575,19 +2002,35 @@ mod tests {
         let mut d = valid_chat_draft();
         d.llm_backend = Some("no_such_backend".into());
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "llm_backend" && e.code == "unknown_backend"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "llm_backend" && e.code == "unknown_backend")
+        );
     }
 
     fn sample_module(id: &str, typ: &str) -> crate::types::ModulConfig {
         crate::types::ModulConfig {
-            id: id.into(), typ: typ.into(), name: id.into(),
-            display_name: id.into(), llm_backend: "grok".into(), backup_llm: None,
-            berechtigungen: vec![], timeout_s: 60, retry: 2,
+            id: id.into(),
+            typ: typ.into(),
+            name: id.into(),
+            display_name: id.into(),
+            llm_backend: "grok".into(),
+            backup_llm: None,
+            berechtigungen: vec![],
+            timeout_s: 60,
+            retry: 2,
             settings: crate::types::ModulSettings::default(),
             identity: crate::types::ModulIdentity::default(),
-            rag_pool: None, linked_modules: vec![], persistent: true,
-            spawned_by: None, spawn_ttl_s: None, created_at: None, scheduler_interval_ms: None,
-            max_concurrent_tasks: None, token_budget: None, token_budget_warning: None,
+            rag_pool: None,
+            linked_modules: vec![],
+            persistent: true,
+            spawned_by: None,
+            spawn_ttl_s: None,
+            created_at: None,
+            scheduler_interval_ms: None,
+            max_concurrent_tasks: None,
+            token_budget: None,
+            token_budget_warning: None,
         }
     }
 
@@ -1596,14 +2039,23 @@ mod tests {
         let mut cfg = sample_cfg();
         cfg.module.push(sample_module("chat.roland", "chat"));
         let errs = validate_for_commit(&valid_chat_draft(), &cfg, &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "id" && e.code == "collision"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "id" && e.code == "collision")
+        );
     }
 
     #[test]
     fn validate_allows_same_id_in_edit_mode() {
         let mut cfg = sample_cfg();
         cfg.module.push(sample_module("chat.roland", "chat"));
-        let r = validate_for_commit(&valid_chat_draft(), &cfg, &WizardMode::Edit { target_id: "chat.roland".into() });
+        let r = validate_for_commit(
+            &valid_chat_draft(),
+            &cfg,
+            &WizardMode::Edit {
+                target_id: "chat.roland".into(),
+            },
+        );
         assert!(r.is_ok(), "{:?}", r);
     }
 
@@ -1612,7 +2064,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.linked_modules.push("web.ghost".into());
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "linked_modules" && e.code == "unknown_module"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "linked_modules" && e.code == "unknown_module")
+        );
     }
 
     #[test]
@@ -1620,7 +2075,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.berechtigungen.push("shell".into());
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "berechtigungen" && e.code == "not_allowed"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "berechtigungen" && e.code == "not_allowed")
+        );
     }
 
     #[test]
@@ -1638,7 +2096,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.identity.system_prompt = Some("".into());
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "identity.system_prompt" && e.code == "missing"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "identity.system_prompt" && e.code == "missing")
+        );
     }
 
     #[test]
@@ -1646,7 +2107,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.identity.system_prompt = Some("A".repeat(20_001));
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "identity.system_prompt" && e.code == "too_long"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "identity.system_prompt" && e.code == "too_long")
+        );
     }
 
     #[test]
@@ -1654,7 +2118,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.token_budget = Some(0);
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "token_budget" && e.code == "out_of_range"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "token_budget" && e.code == "out_of_range")
+        );
     }
 
     #[test]
@@ -1662,14 +2129,22 @@ mod tests {
         let mut d = valid_chat_draft();
         d.scheduler_interval_ms = Some(100);
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "scheduler_interval_ms" && e.code == "out_of_range"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "scheduler_interval_ms" && e.code == "out_of_range")
+        );
     }
 
     #[test]
     fn validate_returns_all_errors_not_just_first() {
         let d = DraftAgent::default();
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.len() >= 4, "expected >= 4 errors, got {}: {:?}", errs.len(), errs);
+        assert!(
+            errs.len() >= 4,
+            "expected >= 4 errors, got {}: {:?}",
+            errs.len(),
+            errs
+        );
     }
 
     #[test]
@@ -1677,7 +2152,10 @@ mod tests {
         let mut d = valid_chat_draft();
         d.identity.bot_name = Some("A".repeat(65));
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "identity.bot_name" && e.code == "too_long"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "identity.bot_name" && e.code == "too_long")
+        );
     }
 
     #[test]
@@ -1685,14 +2163,17 @@ mod tests {
         let mut d = valid_chat_draft();
         d.max_concurrent_tasks = Some(0);
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "max_concurrent_tasks" && e.code == "out_of_range"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "max_concurrent_tasks" && e.code == "out_of_range")
+        );
     }
 
     #[test]
     fn validate_accepts_cron_fire_permission_for_cron_typ() {
         let mut d = valid_chat_draft();
         d.typ = Some("cron".into());
-        d.llm_backend = None;        // cron doesn't require llm_backend
+        d.llm_backend = None; // cron doesn't require llm_backend
         d.berechtigungen.push("cron.fire".into());
         assert!(validate_for_commit(&d, &sample_cfg(), &WizardMode::New).is_ok());
     }
@@ -1703,7 +2184,10 @@ mod tests {
         // typ stays "chat"
         d.berechtigungen.push("cron.fire".into());
         let errs = validate_for_commit(&d, &sample_cfg(), &WizardMode::New).unwrap_err();
-        assert!(errs.iter().any(|e| e.field == "berechtigungen" && e.code == "not_allowed"));
+        assert!(
+            errs.iter()
+                .any(|e| e.field == "berechtigungen" && e.code == "not_allowed")
+        );
     }
 
     // ─── MockBackend ───────────────────────────────────
@@ -1716,7 +2200,9 @@ mod tests {
 
     impl MockBackend {
         pub fn new(script: Vec<Result<(String, serde_json::Value), String>>) -> Self {
-            Self { script: StdMutex::new(script) }
+            Self {
+                script: StdMutex::new(script),
+            }
         }
     }
 
@@ -1801,11 +2287,16 @@ mod tests {
     #[test]
     fn apply_propose_whole_identity_object_merges() {
         let mut d = DraftAgent::default();
-        apply_propose(&mut d, "identity", &serde_json::json!({
-            "bot_name": "Roland",
-            "system_prompt": "Du bist Roland.",
-            "language": "de"
-        })).unwrap();
+        apply_propose(
+            &mut d,
+            "identity",
+            &serde_json::json!({
+                "bot_name": "Roland",
+                "system_prompt": "Du bist Roland.",
+                "language": "de"
+            }),
+        )
+        .unwrap();
         assert_eq!(d.identity.bot_name.as_deref(), Some("Roland"));
         assert_eq!(d.identity.system_prompt.as_deref(), Some("Du bist Roland."));
         assert_eq!(d.identity.language.as_deref(), Some("de"));
@@ -1823,16 +2314,27 @@ mod tests {
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(sample_cfg()));
         let cfg_path = tmp.path().join("config.json");
         let mut s = WizardSession {
-            session_id: "x".into(), mode: WizardMode::New,
-            draft: Default::default(), original: None, transcript: vec![],
-            llm_rounds_used: 0, created_at: 0, last_activity: 0,
-            user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "x".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
         let out = dispatch_tool(
             "wizard.propose",
             &serde_json::json!({"field": "id", "value": "chat.foo", "reasoning": "x"}),
-            &mut s, &cfg_lock, &cfg_path, tmp.path(),
-        ).await;
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
         assert!(out.state_changed);
         assert_eq!(s.draft.id.as_deref(), Some("chat.foo"));
     }
@@ -1843,15 +2345,27 @@ mod tests {
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(sample_cfg()));
         let cfg_path = tmp.path().join("config.json");
         let mut s = WizardSession {
-            session_id: "x".into(), mode: WizardMode::New, draft: Default::default(),
-            original: None, transcript: vec![], llm_rounds_used: 0, created_at: 0,
-            last_activity: 0, user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "x".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
         let out = dispatch_tool(
             "wizard.ask",
             &serde_json::json!({"question": "Welcher Typ?", "options": ["chat","shell"]}),
-            &mut s, &cfg_lock, &cfg_path, tmp.path(),
-        ).await;
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
         assert!(out.user_ask.is_some());
         let (q, opts) = out.user_ask.unwrap();
         assert_eq!(q, "Welcher Typ?");
@@ -1866,12 +2380,27 @@ mod tests {
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(cfg));
         let cfg_path = tmp.path().join("config.json");
         let mut s = WizardSession {
-            session_id: "x".into(), mode: WizardMode::New, draft: Default::default(),
-            original: None, transcript: vec![], llm_rounds_used: 0, created_at: 0,
-            last_activity: 0, user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "x".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
-        let out = dispatch_tool("wizard.list_modules", &serde_json::json!({}),
-                                &mut s, &cfg_lock, &cfg_path, tmp.path()).await;
+        let out = dispatch_tool(
+            "wizard.list_modules",
+            &serde_json::json!({}),
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
         let arr = out.result["modules"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["id"], "chat.alice");
@@ -1885,13 +2414,27 @@ mod tests {
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(cfg));
         let cfg_path = tmp.path().join("config.json");
         let mut s = WizardSession {
-            session_id: "x".into(), mode: WizardMode::New, draft: Default::default(),
-            original: None, transcript: vec![], llm_rounds_used: 0, created_at: 0,
-            last_activity: 0, user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "x".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
-        let out = dispatch_tool("wizard.inspect_module",
-                                 &serde_json::json!({"id": "shell.ops"}),
-                                 &mut s, &cfg_lock, &cfg_path, tmp.path()).await;
+        let out = dispatch_tool(
+            "wizard.inspect_module",
+            &serde_json::json!({"id": "shell.ops"}),
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
         assert_eq!(out.result["id"], "shell.ops");
         assert_eq!(out.result["typ"], "shell");
     }
@@ -1902,14 +2445,33 @@ mod tests {
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(sample_cfg()));
         let cfg_path = tmp.path().join("config.json");
         let mut s = WizardSession {
-            session_id: "x".into(), mode: WizardMode::New, draft: Default::default(),
-            original: None, transcript: vec![], llm_rounds_used: 0, created_at: 0,
-            last_activity: 0, user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "x".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
-        let out = dispatch_tool("wizard.inspect_module",
-                                 &serde_json::json!({"id": "nope.none"}),
-                                 &mut s, &cfg_lock, &cfg_path, tmp.path()).await;
-        assert!(out.result["error"].as_str().unwrap_or("").contains("not found"));
+        let out = dispatch_tool(
+            "wizard.inspect_module",
+            &serde_json::json!({"id": "nope.none"}),
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
+        assert!(
+            out.result["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("not found")
+        );
     }
 
     #[tokio::test]
@@ -1918,12 +2480,27 @@ mod tests {
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(sample_cfg()));
         let cfg_path = tmp.path().join("config.json");
         let mut s = WizardSession {
-            session_id: "x".into(), mode: WizardMode::New, draft: Default::default(),
-            original: None, transcript: vec![], llm_rounds_used: 0, created_at: 0,
-            last_activity: 0, user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "x".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
-        let out = dispatch_tool("wizard.abort", &serde_json::json!({"reason": "user cancelled"}),
-                                &mut s, &cfg_lock, &cfg_path, tmp.path()).await;
+        let out = dispatch_tool(
+            "wizard.abort",
+            &serde_json::json!({"reason": "user cancelled"}),
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
         assert_eq!(out.abort_requested.as_deref(), Some("user cancelled"));
     }
 
@@ -1933,13 +2510,33 @@ mod tests {
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(sample_cfg()));
         let cfg_path = tmp.path().join("config.json");
         let mut s = WizardSession {
-            session_id: "x".into(), mode: WizardMode::New, draft: Default::default(),
-            original: None, transcript: vec![], llm_rounds_used: 0, created_at: 0,
-            last_activity: 0, user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "x".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
-        let out = dispatch_tool("wizard.bogus", &serde_json::json!({}),
-                                &mut s, &cfg_lock, &cfg_path, tmp.path()).await;
-        assert!(out.result["error"].as_str().unwrap_or("").contains("unknown tool"));
+        let out = dispatch_tool(
+            "wizard.bogus",
+            &serde_json::json!({}),
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
+        assert!(
+            out.result["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("unknown tool")
+        );
     }
 
     #[tokio::test]
@@ -1957,7 +2554,8 @@ mod tests {
             created_at: now - 100,
             last_activity: now - 100,
             user_overridden_fields: vec![],
-            frozen_reason: None, code_gen_proposal: None,
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
         let stale = WizardSession {
             session_id: "stale".into(),
@@ -1978,11 +2576,16 @@ mod tests {
         crate::types::WizardConfig {
             enabled: true,
             llm: LlmBackend {
-                id: "wizard".into(), name: "Wizard".into(), typ: LlmTyp::Anthropic,
-                url: "https://api.anthropic.com".into(), api_key: Some("sk".into()),
-                model: "claude-haiku-4-5".into(), timeout_s: 30,
+                id: "wizard".into(),
+                name: "Wizard".into(),
+                typ: LlmTyp::Anthropic,
+                url: "https://api.anthropic.com".into(),
+                api_key: Some("sk".into()),
+                model: "claude-haiku-4-5".into(),
+                timeout_s: 30,
                 identity: ModulIdentity::default(),
                 max_tokens: None,
+                cost_cap: None,
             },
             allow_code_gen: false,
             max_rounds_per_session: 30,
@@ -2006,7 +2609,10 @@ mod tests {
                     "function": {"name": "wizard.propose", "arguments": "{\"field\":\"id\",\"value\":\"chat.test\",\"reasoning\":\"user asked\"}"}
                 }]),
             )),
-            Ok(("Ich habe 'chat.test' als ID vorgeschlagen.".into(), serde_json::json!([]))),
+            Ok((
+                "Ich habe 'chat.test' als ID vorgeschlagen.".into(),
+                serde_json::json!([]),
+            )),
         ];
         let mock = MockBackend::new(script);
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(sample_cfg()));
@@ -2014,24 +2620,51 @@ mod tests {
         let wcfg = minimal_wizard_cfg();
 
         let mut session = WizardSession {
-            session_id: "sess1".into(), mode: WizardMode::New,
-            draft: Default::default(), original: None, transcript: vec![],
-            llm_rounds_used: 0, created_at: 0, last_activity: 0,
-            user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "sess1".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
         save_session(tmp.path(), &session).await.unwrap();
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-        let res = run_turn(&mock, &mut session, &cfg_lock, &cfg_path, &wcfg, tmp.path(),
-                           "Ich will einen Chat-Agent namens test".into(), tx, &[]).await;
+        let res = run_turn(
+            &mock,
+            &mut session,
+            &cfg_lock,
+            &cfg_path,
+            &wcfg,
+            tmp.path(),
+            "Ich will einen Chat-Agent namens test".into(),
+            tx,
+            &[],
+        )
+        .await;
         assert!(res.is_ok());
 
         let mut events = vec![];
-        while let Ok(Some(ev)) = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+        while let Ok(Some(ev)) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await
+        {
             events.push(ev);
         }
-        assert!(events.iter().any(|e| matches!(e, WizardEvent::ToolCall{tool, ..} if tool == "wizard.propose")));
-        assert!(events.iter().any(|e| matches!(e, WizardEvent::DraftFull{..})));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WizardEvent::ToolCall{tool, ..} if tool == "wizard.propose"))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WizardEvent::DraftFull { .. }))
+        );
         assert!(events.iter().any(|e| matches!(e, WizardEvent::Done)));
         assert_eq!(session.draft.id.as_deref(), Some("chat.test"));
     }
@@ -2046,16 +2679,40 @@ mod tests {
         let wcfg = minimal_wizard_cfg();
 
         let mut session = WizardSession {
-            session_id: "sess1".into(), mode: WizardMode::New, draft: Default::default(),
-            original: None, transcript: vec![], llm_rounds_used: 30, created_at: 0,
-            last_activity: 0, user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "sess1".into(),
+            mode: WizardMode::New,
+            draft: Default::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 30,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        run_turn(&mock, &mut session, &cfg_lock, &cfg_path, &wcfg, tmp.path(), "hallo".into(), tx, &[]).await.unwrap();
+        run_turn(
+            &mock,
+            &mut session,
+            &cfg_lock,
+            &cfg_path,
+            &wcfg,
+            tmp.path(),
+            "hallo".into(),
+            tx,
+            &[],
+        )
+        .await
+        .unwrap();
         let mut got_frozen = false;
-        while let Ok(Some(ev)) = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
-            if matches!(ev, WizardEvent::Frozen{..}) { got_frozen = true; }
+        while let Ok(Some(ev)) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await
+        {
+            if matches!(ev, WizardEvent::Frozen { .. }) {
+                got_frozen = true;
+            }
         }
         assert!(got_frozen);
         assert_eq!(session.frozen_reason.as_deref(), Some("round_cap_reached"));
@@ -2069,13 +2726,27 @@ mod tests {
         tokio::fs::write(&cfg_path, b"{}").await.unwrap();
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(sample_cfg()));
         let mut s = WizardSession {
-            session_id: "sess".into(), mode: WizardMode::New,
-            draft: valid_chat_draft(), original: None, transcript: vec![],
-            llm_rounds_used: 0, created_at: 0, last_activity: 0,
-            user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "sess".into(),
+            mode: WizardMode::New,
+            draft: valid_chat_draft(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
-        let outcome = dispatch_tool("wizard.commit", &serde_json::json!({}),
-                                    &mut s, &cfg_lock, &cfg_path, tmp.path()).await;
+        let outcome = dispatch_tool(
+            "wizard.commit",
+            &serde_json::json!({}),
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
         assert_eq!(outcome.result["ok"], true, "{:?}", outcome.result);
         let cfg_read = cfg_lock.read().await;
         assert!(cfg_read.module.iter().any(|m| m.id == "chat.roland"));
@@ -2087,13 +2758,27 @@ mod tests {
         let cfg_path = tmp.path().join("config.json");
         let cfg_lock = std::sync::Arc::new(tokio::sync::RwLock::new(sample_cfg()));
         let mut s = WizardSession {
-            session_id: "sess".into(), mode: WizardMode::New,
-            draft: DraftAgent::default(), original: None, transcript: vec![],
-            llm_rounds_used: 0, created_at: 0, last_activity: 0,
-            user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            session_id: "sess".into(),
+            mode: WizardMode::New,
+            draft: DraftAgent::default(),
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
-        let outcome = dispatch_tool("wizard.commit", &serde_json::json!({}),
-                                    &mut s, &cfg_lock, &cfg_path, tmp.path()).await;
+        let outcome = dispatch_tool(
+            "wizard.commit",
+            &serde_json::json!({}),
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
         assert_eq!(outcome.result["ok"], false);
         let errs = outcome.result["errors"].as_array().unwrap();
         assert!(errs.len() >= 4);
@@ -2112,17 +2797,44 @@ mod tests {
         draft.identity.system_prompt = Some("neuer prompt".into());
         let mut s = WizardSession {
             session_id: "sess".into(),
-            mode: WizardMode::Edit { target_id: "chat.roland".into() },
-            draft, original: None, transcript: vec![], llm_rounds_used: 0,
-            created_at: 0, last_activity: 0, user_overridden_fields: vec![], frozen_reason: None, code_gen_proposal: None,
+            mode: WizardMode::Edit {
+                target_id: "chat.roland".into(),
+            },
+            draft,
+            original: None,
+            transcript: vec![],
+            llm_rounds_used: 0,
+            created_at: 0,
+            last_activity: 0,
+            user_overridden_fields: vec![],
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
-        let outcome = dispatch_tool("wizard.commit", &serde_json::json!({}),
-                                    &mut s, &cfg_lock, &cfg_path, tmp.path()).await;
+        let outcome = dispatch_tool(
+            "wizard.commit",
+            &serde_json::json!({}),
+            &mut s,
+            &cfg_lock,
+            &cfg_path,
+            tmp.path(),
+        )
+        .await;
         assert_eq!(outcome.result["ok"], true, "{:?}", outcome.result);
         let cfg_read = cfg_lock.read().await;
-        let m = cfg_read.module.iter().find(|m| m.id == "chat.roland").unwrap();
+        let m = cfg_read
+            .module
+            .iter()
+            .find(|m| m.id == "chat.roland")
+            .unwrap();
         assert_eq!(m.identity.system_prompt, "neuer prompt");
-        assert_eq!(cfg_read.module.iter().filter(|m| m.id == "chat.roland").count(), 1);
+        assert_eq!(
+            cfg_read
+                .module
+                .iter()
+                .filter(|m| m.id == "chat.roland")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -2139,7 +2851,9 @@ mod tests {
         draft.id = Some("chat.copy".into());
         let mut session = WizardSession {
             session_id: "sess_copy".into(),
-            mode: WizardMode::Copy { source_id: "chat.src".into() },
+            mode: WizardMode::Copy {
+                source_id: "chat.src".into(),
+            },
             draft,
             original: None,
             transcript: vec![],
@@ -2147,7 +2861,8 @@ mod tests {
             created_at: 0,
             last_activity: 0,
             user_overridden_fields: vec![],
-            frozen_reason: None, code_gen_proposal: None,
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
         let outcome = dispatch_tool(
             "wizard.commit",
@@ -2156,12 +2871,19 @@ mod tests {
             &cfg_lock,
             &cfg_path,
             tmp.path(),
-        ).await;
+        )
+        .await;
         assert_eq!(outcome.result["ok"], true, "{:?}", outcome.result);
 
         let r = cfg_lock.read().await;
-        assert!(r.module.iter().any(|m| m.id == "chat.src"), "source must remain");
-        assert!(r.module.iter().any(|m| m.id == "chat.copy"), "copy must be created");
+        assert!(
+            r.module.iter().any(|m| m.id == "chat.src"),
+            "source must remain"
+        );
+        assert!(
+            r.module.iter().any(|m| m.id == "chat.copy"),
+            "copy must be created"
+        );
         assert_eq!(r.module.iter().filter(|m| m.id == "chat.src").count(), 1);
     }
 
@@ -2182,11 +2904,14 @@ mod tests {
             created_at: 0,
             last_activity: 0,
             user_overridden_fields: vec![],
-            frozen_reason: None, code_gen_proposal: None,
+            frozen_reason: None,
+            code_gen_proposal: None,
         };
         save_session(tmp.path(), &session).await.unwrap();
-        assert!(session_path(tmp.path(), "sess_abort_disk").exists(),
-                "session file should exist before abort");
+        assert!(
+            session_path(tmp.path(), "sess_abort_disk").exists(),
+            "session file should exist before abort"
+        );
 
         // Dispatch-level abort does NOT itself delete the file — deletion happens in run_turn's
         // abort branch. Simulate that side-effect directly to verify the disk operation.
@@ -2198,12 +2923,15 @@ mod tests {
             &cfg_lock,
             &cfg_path,
             tmp.path(),
-        ).await;
+        )
+        .await;
         assert!(outcome.abort_requested.is_some());
 
         // run_turn's deletion step:
         delete_session(tmp.path(), "sess_abort_disk").await.unwrap();
-        assert!(!session_path(tmp.path(), "sess_abort_disk").exists(),
-                "session file should be gone after delete_session");
+        assert!(
+            !session_path(tmp.path(), "sess_abort_disk").exists(),
+            "session file should be gone after delete_session"
+        );
     }
 }

@@ -4,8 +4,8 @@
 // Every check emits a GuardrailEvent; events land in agent-data/guardrail-events/<YYYY-MM-DD>.jsonl.
 // Aggregate counts are held in-memory, rebuilt from the last 7 days of logs at startup.
 
-use std::path::{Path, PathBuf};
 use crate::types::{AgentConfig, GuardrailConfig, GuardrailEvent, StatsSummary, ValidationError};
+use std::path::{Path, PathBuf};
 
 // ─── Paths ─────────────────────────────────────────
 
@@ -27,8 +27,12 @@ fn today_str() -> String {
 
 fn levenshtein(a: &str, b: &str) -> usize {
     let (n, m) = (a.chars().count(), b.chars().count());
-    if n == 0 { return m; }
-    if m == 0 { return n; }
+    if n == 0 {
+        return m;
+    }
+    if m == 0 {
+        return n;
+    }
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut prev: Vec<usize> = (0..=m).collect();
@@ -36,10 +40,8 @@ fn levenshtein(a: &str, b: &str) -> usize {
     for i in 1..=n {
         curr[0] = i;
         for j in 1..=m {
-            let cost = if a[i-1] == b[j-1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j-1] + 1)
-                .min(prev[j-1] + cost);
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -65,7 +67,7 @@ pub fn suggest_similar_tool(bad: &str, known: &[String]) -> Option<String> {
 /// Parsed + validated tool call. Caller passes this to exec_tool_unified / dispatch_tool.
 #[derive(Debug, Clone)]
 pub struct ParsedCall {
-    pub id: String,           // LLM call id (OpenAI-style); empty if absent
+    pub id: String, // LLM call id (OpenAI-style); empty if absent
     pub tool_name: String,
     pub arguments: serde_json::Value,
 }
@@ -81,18 +83,26 @@ pub struct ValidatorContext<'a> {
 
 const TOOL_NAME_RE_FIRST: &str = "abcdefghijklmnopqrstuvwxyz";
 const TOOL_NAME_RE_REST: &str = "abcdefghijklmnopqrstuvwxyz0123456789._";
-const DEFAULT_STRICT_TRIGGERS: &[&str] = &["ruf", "schicke", "sende", "list", "show", "search", "suche", "create", "lies", "speicher", "löschen", "teste"];
+const DEFAULT_STRICT_TRIGGERS: &[&str] = &[
+    "ruf", "schicke", "sende", "list", "show", "search", "suche", "create", "lies", "speicher",
+    "löschen", "teste",
+];
 
 fn effective_strict_triggers(cfg: &crate::types::GuardrailConfig) -> Vec<String> {
     if cfg.strict_triggers.is_empty() {
-        DEFAULT_STRICT_TRIGGERS.iter().map(|s| s.to_string()).collect()
+        DEFAULT_STRICT_TRIGGERS
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else {
         cfg.strict_triggers.clone()
     }
 }
 
 fn tool_name_ok(name: &str) -> bool {
-    if name.is_empty() || name.len() > 64 { return false; }
+    if name.is_empty() || name.len() > 64 {
+        return false;
+    }
     let mut chars = name.chars();
     match chars.next() {
         Some(c) if TOOL_NAME_RE_FIRST.contains(c) => {}
@@ -130,7 +140,11 @@ fn known_tools_for_modul(
     }
 
     let mut out: Vec<String> = Vec::new();
-    let modul = match cfg.module.iter().find(|m| m.id == modul_id || m.name == modul_id) {
+    let modul = match cfg
+        .module
+        .iter()
+        .find(|m| m.id == modul_id || m.name == modul_id)
+    {
         Some(m) => m,
         None => return out,
     };
@@ -151,9 +165,16 @@ pub fn validate_response(
 
     // Pull tool_calls from raw. Accept OpenAI-nested, direct array (our mock tests),
     // and Anthropic tool_use format already flattened to OpenAI by llm.rs::dispatch_chat.
-    let tool_calls_val = raw.pointer("/choices/0/message/tool_calls")
+    let tool_calls_val = raw
+        .pointer("/choices/0/message/tool_calls")
         .cloned()
-        .or_else(|| if raw.is_array() { Some(raw.clone()) } else { None });
+        .or_else(|| {
+            if raw.is_array() {
+                Some(raw.clone())
+            } else {
+                None
+            }
+        });
 
     let arr = match tool_calls_val.as_ref().and_then(|v| v.as_array()) {
         Some(a) => a.clone(),
@@ -168,9 +189,15 @@ pub fn validate_response(
                 let triggers = if let Some(g) = ctx.cfg.guardrail.as_ref() {
                     effective_strict_triggers(g)
                 } else {
-                    DEFAULT_STRICT_TRIGGERS.iter().map(|s| s.to_string()).collect()
+                    DEFAULT_STRICT_TRIGGERS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect()
                 };
-                if triggers.iter().any(|t| low.contains(t.to_lowercase().as_str())) {
+                if triggers
+                    .iter()
+                    .any(|t| low.contains(t.to_lowercase().as_str()))
+                {
                     errs.push(ValidationError {
                         field: "tool_calls".into(),
                         code: "no_tool_call_when_expected".into(),
@@ -185,7 +212,11 @@ pub fn validate_response(
 
     let known = known_tools_for_modul(ctx.modul_id, ctx.cfg, ctx.py_modules);
     let mut calls: Vec<ParsedCall> = Vec::new();
-    let modul = ctx.cfg.module.iter().find(|m| m.id == ctx.modul_id || m.name == ctx.modul_id);
+    let modul = ctx
+        .cfg
+        .module
+        .iter()
+        .find(|m| m.id == ctx.modul_id || m.name == ctx.modul_id);
 
     for (idx, item) in arr.iter().enumerate() {
         let prefix = format!("tool_calls[{}]", idx);
@@ -193,24 +224,46 @@ pub fn validate_response(
         // Or Anthropic-style {type:"tool_use", id, name, input: object}
         let (id, tool_name, args_val): (String, String, serde_json::Value) =
             if let Some(func) = item.get("function") {
-                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let name = func.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let args_str = func.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}");
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = func
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let args_str = func
+                    .get("arguments")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("{}");
                 let args = match serde_json::from_str::<serde_json::Value>(args_str) {
                     Ok(v) => v,
                     Err(_) => {
                         errs.push(ValidationError {
                             field: format!("{}.arguments", prefix),
                             code: "bad_json".into(),
-                            human_message_de: format!("Tool-Call '{}' hat ungueltiges JSON in arguments.", name),
+                            human_message_de: format!(
+                                "Tool-Call '{}' hat ungueltiges JSON in arguments.",
+                                name
+                            ),
                         });
                         continue;
                     }
                 };
                 (id, name, args)
             } else if item.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let args = item.get("input").cloned().unwrap_or(serde_json::json!({}));
                 (id, name, args)
             } else {
@@ -227,7 +280,10 @@ pub fn validate_response(
             let mut err = ValidationError {
                 field: format!("{}.name", prefix),
                 code: "gibberish".into(),
-                human_message_de: format!("Tool-Name '{}' enthaelt unzulaessige Zeichen oder sieht nach Prosa aus.", tool_name),
+                human_message_de: format!(
+                    "Tool-Name '{}' enthaelt unzulaessige Zeichen oder sieht nach Prosa aus.",
+                    tool_name
+                ),
             };
             if let Some(s) = suggest_similar_tool(&tool_name, &known) {
                 err.human_message_de = format!("{} Meinst du '{}'?", err.human_message_de, s);
@@ -241,7 +297,10 @@ pub fn validate_response(
             let mut err = ValidationError {
                 field: format!("{}.name", prefix),
                 code: "unknown_tool".into(),
-                human_message_de: format!("Tool '{}' existiert nicht fuer Modul '{}'.", tool_name, ctx.modul_id),
+                human_message_de: format!(
+                    "Tool '{}' existiert nicht fuer Modul '{}'.",
+                    tool_name, ctx.modul_id
+                ),
             };
             if let Some(s) = suggest_similar_tool(&tool_name, &known) {
                 err.human_message_de = format!("{} Meinst du '{}'?", err.human_message_de, s);
@@ -256,7 +315,10 @@ pub fn validate_response(
                 errs.push(ValidationError {
                     field: format!("{}.name", prefix),
                     code: "no_permission".into(),
-                    human_message_de: format!("Modul '{}' hat keine Berechtigung fuer Tool '{}'.", ctx.modul_id, tool_name),
+                    human_message_de: format!(
+                        "Modul '{}' hat keine Berechtigung fuer Tool '{}'.",
+                        ctx.modul_id, tool_name
+                    ),
                 });
                 continue;
             }
@@ -272,16 +334,35 @@ pub fn validate_response(
             continue;
         }
 
-        calls.push(ParsedCall { id, tool_name, arguments: args_val });
+        calls.push(ParsedCall {
+            id,
+            tool_name,
+            arguments: args_val,
+        });
     }
 
-    if !errs.is_empty() { Err(errs) } else { Ok(calls) }
+    if !errs.is_empty() {
+        Err(errs)
+    } else {
+        Ok(calls)
+    }
 }
 
-pub fn synth_feedback_user_message(errors: &[ValidationError], max_retries: u32, attempt: u32) -> String {
-    let mut lines = vec![format!("SYSTEM-FEEDBACK (Retry {}/{}): Dein letzter Tool-Call war ungueltig:", attempt + 1, max_retries)];
+pub fn synth_feedback_user_message(
+    errors: &[ValidationError],
+    max_retries: u32,
+    attempt: u32,
+) -> String {
+    let mut lines = vec![format!(
+        "SYSTEM-FEEDBACK (Retry {}/{}): Dein letzter Tool-Call war ungueltig:",
+        attempt + 1,
+        max_retries
+    )];
     for e in errors {
-        lines.push(format!("- {} [{}]: {}", e.field, e.code, e.human_message_de));
+        lines.push(format!(
+            "- {} [{}]: {}",
+            e.field, e.code, e.human_message_de
+        ));
     }
     lines.push("Bitte korrigieren und den Tool-Call erneut senden.".into());
     lines.join("\n")
@@ -305,7 +386,10 @@ pub async fn log_event(data_root: &Path, event: &GuardrailEvent) -> std::io::Res
     // because guardrail events are emitted from one process (the agent binary).
     use tokio::io::AsyncWriteExt;
     let mut f = tokio::fs::OpenOptions::new()
-        .create(true).append(true).open(&path).await?;
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await?;
     f.write_all(line.as_bytes()).await?;
     f.flush().await?;
     Ok(())
@@ -330,7 +414,7 @@ pub async fn load_events_since(
         }
     }
     files.sort();
-    files.reverse();  // newest first
+    files.reverse(); // newest first
 
     let mut out: Vec<GuardrailEvent> = Vec::new();
     for f in files {
@@ -340,29 +424,39 @@ pub async fn load_events_since(
         };
         let text = String::from_utf8_lossy(&bytes);
         for line in text.lines().rev() {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             if let Ok(ev) = serde_json::from_str::<GuardrailEvent>(line) {
-                if ev.ts < since_ts { return out; }
-                if let Some(b) = backend_filter {
-                    if ev.backend != b { continue; }
+                if ev.ts < since_ts {
+                    return out;
                 }
-                if only_failed && ev.passed { continue; }
+                if let Some(b) = backend_filter {
+                    if ev.backend != b {
+                        continue;
+                    }
+                }
+                if only_failed && ev.passed {
+                    continue;
+                }
                 out.push(ev);
-                if out.len() >= limit { return out; }
+                if out.len() >= limit {
+                    return out;
+                }
             }
         }
     }
     out
 }
 
-pub async fn compute_stats(
-    data_root: &Path,
-    window_hours: u32,
-) -> StatsSummary {
+pub async fn compute_stats(data_root: &Path, window_hours: u32) -> StatsSummary {
     let since = chrono::Utc::now().timestamp() - (window_hours as i64) * 3600;
     let events = load_events_since(data_root, since, 100_000, None, false).await;
 
-    let mut s = StatsSummary { window_hours, ..Default::default() };
+    let mut s = StatsSummary {
+        window_hours,
+        ..Default::default()
+    };
     let mut err_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
     for e in &events {
@@ -372,19 +466,33 @@ pub async fn compute_stats(
         } else {
             s.invalid += 1;
         }
-        if e.retry_attempt > 0 { s.retried += 1; }
-        if e.final_outcome == "hard_fail" { s.hard_failed += 1; }
+        if e.retry_attempt > 0 {
+            s.retried += 1;
+        }
+        if e.final_outcome == "hard_fail" {
+            s.hard_failed += 1;
+        }
 
         let be = s.per_backend.entry(e.backend.clone()).or_default();
         be.total += 1;
-        if e.passed { be.valid += 1; }
-        if e.final_outcome == "hard_fail" { be.hard_failed += 1; }
+        if e.passed {
+            be.valid += 1;
+        }
+        if e.final_outcome == "hard_fail" {
+            be.hard_failed += 1;
+        }
 
         let m = be.per_model.entry(e.model.clone()).or_default();
         m.total += 1;
-        if e.passed { m.valid += 1; }
-        if e.final_outcome == "hard_fail" { m.hard_failed += 1; }
-        if e.ts > m.last_ts { m.last_ts = e.ts; }
+        if e.passed {
+            m.valid += 1;
+        }
+        if e.final_outcome == "hard_fail" {
+            m.hard_failed += 1;
+        }
+        if e.ts > m.last_ts {
+            m.last_ts = e.ts;
+        }
 
         for err in &e.errors {
             *err_counts.entry(err.code.clone()).or_insert(0) += 1;
@@ -418,8 +526,10 @@ where
     Push: FnMut(&str),
     B: Fn() -> ValidatorContext<'ctx>,
 {
-    let max_retries = cfg.per_backend_overrides
-        .get(backend_id).copied()
+    let max_retries = cfg
+        .per_backend_overrides
+        .get(backend_id)
+        .copied()
         .unwrap_or(cfg.max_retries);
 
     for attempt in 0..=max_retries {
@@ -439,7 +549,11 @@ where
                     passed: true,
                     errors: vec![],
                     retry_attempt: attempt,
-                    final_outcome: if attempt > 0 { "retried".into() } else { "ok".into() },
+                    final_outcome: if attempt > 0 {
+                        "retried".into()
+                    } else {
+                        "ok".into()
+                    },
                     similar_suggestion: None,
                 };
                 let _ = log_event(data_root, &ev).await;
@@ -456,14 +570,20 @@ where
                     passed: false,
                     errors: errors.clone(),
                     retry_attempt: attempt,
-                    final_outcome: if is_last { "hard_fail".into() } else { "retried".into() },
+                    final_outcome: if is_last {
+                        "hard_fail".into()
+                    } else {
+                        "retried".into()
+                    },
                     similar_suggestion: None,
                 };
                 let _ = log_event(data_root, &ev).await;
                 if is_last {
                     let codes: Vec<String> = errors.iter().map(|e| e.code.clone()).collect();
-                    return Err(format!("Guardrail hard-fail nach {} Retries. Codes: {:?}",
-                                       max_retries, codes));
+                    return Err(format!(
+                        "Guardrail hard-fail nach {} Retries. Codes: {:?}",
+                        max_retries, codes
+                    ));
                 }
                 let feedback = synth_feedback_user_message(&errors, max_retries, attempt);
                 push_feedback(&feedback);
@@ -476,7 +596,9 @@ where
 
 /// Cleanup old event files according to retention policy.
 pub async fn cleanup_old_events(data_root: &Path, retention_days: u32) -> usize {
-    if retention_days == 0 { return 0; }
+    if retention_days == 0 {
+        return 0;
+    }
     let cutoff = chrono::Utc::now().timestamp() - (retention_days as i64) * 86400;
     let dir = events_dir(data_root);
     let mut entries = match tokio::fs::read_dir(&dir).await {
@@ -501,7 +623,8 @@ pub async fn cleanup_old_events(data_root: &Path, retention_days: u32) -> usize 
 
 use tokio::sync::Mutex as TokioMutex;
 
-pub type AlertCooldownMap = std::sync::Arc<TokioMutex<std::collections::HashMap<(String, String), i64>>>;
+pub type AlertCooldownMap =
+    std::sync::Arc<TokioMutex<std::collections::HashMap<(String, String), i64>>>;
 
 pub fn new_alert_cooldown_map() -> AlertCooldownMap {
     std::sync::Arc::new(TokioMutex::new(std::collections::HashMap::new()))
@@ -512,18 +635,25 @@ pub async fn check_alert_threshold(
     data_root: &Path,
     cooldown_map: &AlertCooldownMap,
 ) -> Vec<(String, String, f32, u64)> {
-    if !cfg.alert.enabled { return Vec::new(); }
+    if !cfg.alert.enabled {
+        return Vec::new();
+    }
     let since = chrono::Utc::now().timestamp() - (cfg.alert.window_minutes as i64) * 60;
     let events = load_events_since(data_root, since, 100_000, None, false).await;
 
-    let mut per_key: std::collections::HashMap<(String, String), (u64, u64)> = std::collections::HashMap::new();
+    let mut per_key: std::collections::HashMap<(String, String), (u64, u64)> =
+        std::collections::HashMap::new();
     for e in events {
         // Skip alerts and fallbacks themselves, otherwise we alert on alerts
-        if e.final_outcome == "alert_fired" || e.final_outcome == "fallback_triggered" { continue; }
+        if e.final_outcome == "alert_fired" || e.final_outcome == "fallback_triggered" {
+            continue;
+        }
         let k = (e.backend.clone(), e.model.clone());
         let entry = per_key.entry(k).or_insert((0, 0));
         entry.0 += 1;
-        if e.passed { entry.1 += 1; }
+        if e.passed {
+            entry.1 += 1;
+        }
     }
 
     let now = chrono::Utc::now().timestamp();
@@ -532,12 +662,18 @@ pub async fn check_alert_threshold(
     let mut fired = Vec::new();
 
     for ((backend, model), (total, valid)) in per_key {
-        if total < cfg.alert.min_calls_window { continue; }
+        if total < cfg.alert.min_calls_window {
+            continue;
+        }
         let pct = (valid as f32 / total as f32) * 100.0;
-        if (pct as u32) >= cfg.alert.threshold_valid_pct { continue; }
+        if (pct as u32) >= cfg.alert.threshold_valid_pct {
+            continue;
+        }
         let k = (backend.clone(), model.clone());
         let last = cd.get(&k).copied().unwrap_or(0);
-        if now - last < cooldown_secs { continue; }
+        if now - last < cooldown_secs {
+            continue;
+        }
         cd.insert(k, now);
         fired.push((backend, model, pct, total));
     }
@@ -561,7 +697,10 @@ pub async fn log_alert_event(
         errors: vec![crate::types::ValidationError {
             field: format!("{}/{}", backend, model),
             code: "quality_threshold_breached".into(),
-            human_message_de: format!("Valid-Rate {:.1}% bei {} Calls unter Threshold", valid_pct, sample_size),
+            human_message_de: format!(
+                "Valid-Rate {:.1}% bei {} Calls unter Threshold",
+                valid_pct, sample_size
+            ),
         }],
         retry_attempt: 0,
         final_outcome: "alert_fired".into(),
@@ -584,11 +723,14 @@ pub async fn log_fallback_event(
         model: fallback.into(),
         tool_name: None,
         passed: false,
-        errors: codes.iter().map(|c| crate::types::ValidationError {
-            field: "backend".into(),
-            code: c.clone(),
-            human_message_de: format!("Hard-fail, fallback auf {}", fallback),
-        }).collect(),
+        errors: codes
+            .iter()
+            .map(|c| crate::types::ValidationError {
+                field: "backend".into(),
+                code: c.clone(),
+                human_message_de: format!("Hard-fail, fallback auf {}", fallback),
+            })
+            .collect(),
         retry_attempt: 0,
         final_outcome: "fallback_triggered".into(),
         similar_suggestion: Some(fallback.into()),
@@ -622,11 +764,21 @@ mod tests {
 
     #[test]
     fn suggest_similar_catches_typos() {
-        let known = vec!["shell.exec".to_string(), "files.read".to_string(), "web.search".to_string()];
-        assert_eq!(suggest_similar_tool("sehel.exec", &known), Some("shell.exec".to_string()));
-        assert_eq!(suggest_similar_tool("file.read", &known), Some("files.read".to_string()));
+        let known = vec![
+            "shell.exec".to_string(),
+            "files.read".to_string(),
+            "web.search".to_string(),
+        ];
+        assert_eq!(
+            suggest_similar_tool("sehel.exec", &known),
+            Some("shell.exec".to_string())
+        );
+        assert_eq!(
+            suggest_similar_tool("file.read", &known),
+            Some("files.read".to_string())
+        );
         assert_eq!(suggest_similar_tool("totally_unrelated_name", &known), None);
-        assert_eq!(suggest_similar_tool("shell.exec", &known), None);  // identical, not a suggestion
+        assert_eq!(suggest_similar_tool("shell.exec", &known), None); // identical, not a suggestion
     }
 
     use crate::types::ModulConfig;
@@ -635,20 +787,44 @@ mod tests {
         use crate::types::{LlmBackend, LlmTyp, ModulIdentity, ModulSettings};
         let mut cfg = AgentConfig::default();
         cfg.llm_backends.push(LlmBackend {
-            id: "grok".into(), name: "Grok".into(), typ: LlmTyp::Grok,
-            url: "https://api.x.ai".into(), api_key: Some("k".into()),
-            model: "grok-4".into(), timeout_s: 30,
-            identity: ModulIdentity::default(), max_tokens: None,
+            id: "grok".into(),
+            name: "Grok".into(),
+            typ: LlmTyp::Grok,
+            url: "https://api.x.ai".into(),
+            api_key: Some("k".into()),
+            model: "grok-4".into(),
+            timeout_s: 30,
+            identity: ModulIdentity::default(),
+            max_tokens: None,
+            cost_cap: None,
         });
         cfg.module.push(ModulConfig {
-            id: "chat.bob".into(), typ: "chat".into(), name: "chat.bob".into(),
-            display_name: "Bob".into(), llm_backend: "grok".into(), backup_llm: None,
-            berechtigungen: vec!["aufgaben".into()], timeout_s: 60, retry: 2,
+            id: "chat.bob".into(),
+            typ: "chat".into(),
+            name: "chat.bob".into(),
+            display_name: "Bob".into(),
+            llm_backend: "grok".into(),
+            backup_llm: None,
+            berechtigungen: vec!["aufgaben".into()],
+            timeout_s: 60,
+            retry: 2,
             settings: ModulSettings::default(),
-            identity: ModulIdentity { bot_name: "Bob".into(), greeting: "".into(), system_prompt: "bob".into(), ..Default::default() },
-            rag_pool: None, linked_modules: vec![], persistent: true,
-            spawned_by: None, spawn_ttl_s: None, created_at: None, scheduler_interval_ms: None,
-            max_concurrent_tasks: None, token_budget: None, token_budget_warning: None,
+            identity: ModulIdentity {
+                bot_name: "Bob".into(),
+                greeting: "".into(),
+                system_prompt: "bob".into(),
+                ..Default::default()
+            },
+            rag_pool: None,
+            linked_modules: vec![],
+            persistent: true,
+            spawned_by: None,
+            spawn_ttl_s: None,
+            created_at: None,
+            scheduler_interval_ms: None,
+            max_concurrent_tasks: None,
+            token_budget: None,
+            token_budget_warning: None,
         });
         cfg
     }
@@ -690,7 +866,10 @@ mod tests {
         let errs = validate_response(&raw, &ctx(&cfg)).unwrap_err();
         assert!(errs.iter().any(|e| e.code == "unknown_tool"));
         // suggestion message should reference a close match if any
-        assert!(errs.iter().any(|e| e.human_message_de.contains("Meinst du") || e.code == "unknown_tool"));
+        assert!(
+            errs.iter()
+                .any(|e| e.human_message_de.contains("Meinst du") || e.code == "unknown_tool")
+        );
     }
 
     #[test]
@@ -727,7 +906,8 @@ mod tests {
     #[test]
     fn synth_feedback_includes_code_and_message() {
         let e = vec![ValidationError {
-            field: "f".into(), code: "unknown_tool".into(),
+            field: "f".into(),
+            code: "unknown_tool".into(),
             human_message_de: "X".into(),
         }];
         let msg = synth_feedback_user_message(&e, 2, 0);
@@ -767,13 +947,27 @@ mod tests {
             ("grok", "grok-4", true),
             ("anthropic", "claude-haiku", true),
         ] {
-            log_event(tmp.path(), &GuardrailEvent {
-                ts: now, modul: "m".into(),
-                backend: backend.into(), model: model.into(),
-                tool_name: None, passed, errors: vec![],
-                retry_attempt: 0, final_outcome: if passed { "ok".into() } else { "hard_fail".into() },
-                similar_suggestion: None,
-            }).await.unwrap();
+            log_event(
+                tmp.path(),
+                &GuardrailEvent {
+                    ts: now,
+                    modul: "m".into(),
+                    backend: backend.into(),
+                    model: model.into(),
+                    tool_name: None,
+                    passed,
+                    errors: vec![],
+                    retry_attempt: 0,
+                    final_outcome: if passed {
+                        "ok".into()
+                    } else {
+                        "hard_fail".into()
+                    },
+                    similar_suggestion: None,
+                },
+            )
+            .await
+            .unwrap();
         }
         let s = compute_stats(tmp.path(), 24).await;
         assert_eq!(s.total, 4);
@@ -789,13 +983,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let now = chrono::Utc::now().timestamp();
         for backend in ["grok", "anthropic", "grok"] {
-            log_event(tmp.path(), &GuardrailEvent {
-                ts: now, modul: "m".into(),
-                backend: backend.into(), model: "x".into(),
-                tool_name: None, passed: true, errors: vec![],
-                retry_attempt: 0, final_outcome: "ok".into(),
-                similar_suggestion: None,
-            }).await.unwrap();
+            log_event(
+                tmp.path(),
+                &GuardrailEvent {
+                    ts: now,
+                    modul: "m".into(),
+                    backend: backend.into(),
+                    model: "x".into(),
+                    tool_name: None,
+                    passed: true,
+                    errors: vec![],
+                    retry_attempt: 0,
+                    final_outcome: "ok".into(),
+                    similar_suggestion: None,
+                },
+            )
+            .await
+            .unwrap();
         }
         let e = load_events_since(tmp.path(), 0, 10, Some("grok"), false).await;
         assert_eq!(e.len(), 2);
@@ -806,8 +1010,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = test_cfg();
         let gcfg = GuardrailConfig {
-            enabled: true, max_retries: 2, strict_mode: false,
-            per_backend_overrides: Default::default(), max_events_per_turn: 10,
+            enabled: true,
+            max_retries: 2,
+            strict_mode: false,
+            per_backend_overrides: Default::default(),
+            max_events_per_turn: 10,
             ..Default::default()
         };
 
@@ -825,10 +1032,15 @@ mod tests {
         let calls = with_validation(
             &gcfg,
             || ValidatorContext {
-                modul_id: "chat.bob", cfg: &cfg, py_modules: &[],
-                last_user_msg: None, strict_mode: false,
+                modul_id: "chat.bob",
+                cfg: &cfg,
+                py_modules: &[],
+                last_user_msg: None,
+                strict_mode: false,
             },
-            "grok", "chat.bob", "grok-4",
+            "grok",
+            "chat.bob",
+            "grok-4",
             tmp.path(),
             || {
                 let resps = resp_clone.clone();
@@ -840,7 +1052,9 @@ mod tests {
             |msg| {
                 fb_clone.lock().unwrap().push(msg.to_string());
             },
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].tool_name, "aufgaben.erstellen");
         assert_eq!(feedback_recv.lock().unwrap().len(), 1); // one feedback message pushed
@@ -851,8 +1065,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = test_cfg();
         let gcfg = GuardrailConfig {
-            enabled: true, max_retries: 1, strict_mode: false,
-            per_backend_overrides: Default::default(), max_events_per_turn: 10,
+            enabled: true,
+            max_retries: 1,
+            strict_mode: false,
+            per_backend_overrides: Default::default(),
+            max_events_per_turn: 10,
             ..Default::default()
         };
 
@@ -864,10 +1081,15 @@ mod tests {
         let r = with_validation(
             &gcfg,
             || ValidatorContext {
-                modul_id: "chat.bob", cfg: &cfg, py_modules: &[],
-                last_user_msg: None, strict_mode: false,
+                modul_id: "chat.bob",
+                cfg: &cfg,
+                py_modules: &[],
+                last_user_msg: None,
+                strict_mode: false,
             },
-            "grok", "chat.bob", "grok-4",
+            "grok",
+            "chat.bob",
+            "grok-4",
             tmp.path(),
             || {
                 let resps = resp_clone.clone();
@@ -877,7 +1099,8 @@ mod tests {
                 }
             },
             |_| {},
-        ).await;
+        )
+        .await;
         assert!(r.is_err(), "{:?}", r);
         assert!(r.unwrap_err().contains("Guardrail hard-fail"));
     }
@@ -889,18 +1112,31 @@ mod tests {
         // 20 events, 10 valid → 50% (below 70% default)
         for i in 0..20 {
             let e = crate::types::GuardrailEvent {
-                ts: now - 60, modul: "m".into(),
-                backend: "grok".into(), model: "grok-4".into(),
-                tool_name: None, passed: i < 10, errors: vec![],
-                retry_attempt: 0, final_outcome: if i < 10 { "ok".into() } else { "hard_fail".into() },
+                ts: now - 60,
+                modul: "m".into(),
+                backend: "grok".into(),
+                model: "grok-4".into(),
+                tool_name: None,
+                passed: i < 10,
+                errors: vec![],
+                retry_attempt: 0,
+                final_outcome: if i < 10 {
+                    "ok".into()
+                } else {
+                    "hard_fail".into()
+                },
                 similar_suggestion: None,
             };
             log_event(tmp.path(), &e).await.unwrap();
         }
         let cfg = crate::types::GuardrailConfig {
             alert: crate::types::GuardrailAlertConfig {
-                enabled: true, threshold_valid_pct: 70, min_calls_window: 10,
-                window_minutes: 30, cooldown_minutes: 60, notify_backend_id: None,
+                enabled: true,
+                threshold_valid_pct: 70,
+                min_calls_window: 10,
+                window_minutes: 30,
+                cooldown_minutes: 60,
+                notify_backend_id: None,
             },
             ..Default::default()
         };
@@ -916,18 +1152,32 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let now = chrono::Utc::now().timestamp();
         for i in 0..20 {
-            log_event(tmp.path(), &crate::types::GuardrailEvent {
-                ts: now - 60, modul: "m".into(),
-                backend: "grok".into(), model: "grok-4".into(),
-                tool_name: None, passed: i < 5, errors: vec![],
-                retry_attempt: 0, final_outcome: "hard_fail".into(),
-                similar_suggestion: None,
-            }).await.unwrap();
+            log_event(
+                tmp.path(),
+                &crate::types::GuardrailEvent {
+                    ts: now - 60,
+                    modul: "m".into(),
+                    backend: "grok".into(),
+                    model: "grok-4".into(),
+                    tool_name: None,
+                    passed: i < 5,
+                    errors: vec![],
+                    retry_attempt: 0,
+                    final_outcome: "hard_fail".into(),
+                    similar_suggestion: None,
+                },
+            )
+            .await
+            .unwrap();
         }
         let cfg = crate::types::GuardrailConfig {
             alert: crate::types::GuardrailAlertConfig {
-                enabled: true, threshold_valid_pct: 70, min_calls_window: 10,
-                window_minutes: 30, cooldown_minutes: 60, notify_backend_id: None,
+                enabled: true,
+                threshold_valid_pct: 70,
+                min_calls_window: 10,
+                window_minutes: 30,
+                cooldown_minutes: 60,
+                notify_backend_id: None,
             },
             ..Default::default()
         };
@@ -943,18 +1193,32 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let now = chrono::Utc::now().timestamp();
         for _ in 0..5 {
-            log_event(tmp.path(), &crate::types::GuardrailEvent {
-                ts: now - 60, modul: "m".into(),
-                backend: "grok".into(), model: "grok-4".into(),
-                tool_name: None, passed: false, errors: vec![],
-                retry_attempt: 0, final_outcome: "hard_fail".into(),
-                similar_suggestion: None,
-            }).await.unwrap();
+            log_event(
+                tmp.path(),
+                &crate::types::GuardrailEvent {
+                    ts: now - 60,
+                    modul: "m".into(),
+                    backend: "grok".into(),
+                    model: "grok-4".into(),
+                    tool_name: None,
+                    passed: false,
+                    errors: vec![],
+                    retry_attempt: 0,
+                    final_outcome: "hard_fail".into(),
+                    similar_suggestion: None,
+                },
+            )
+            .await
+            .unwrap();
         }
         let cfg = crate::types::GuardrailConfig {
             alert: crate::types::GuardrailAlertConfig {
-                enabled: true, threshold_valid_pct: 70, min_calls_window: 10,
-                window_minutes: 30, cooldown_minutes: 60, notify_backend_id: None,
+                enabled: true,
+                threshold_valid_pct: 70,
+                min_calls_window: 10,
+                window_minutes: 30,
+                cooldown_minutes: 60,
+                notify_backend_id: None,
             },
             ..Default::default()
         };
@@ -965,17 +1229,28 @@ mod tests {
     #[tokio::test]
     async fn log_alert_event_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        log_alert_event(tmp.path(), "grok", "grok-4", 55.0, 30).await.unwrap();
+        log_alert_event(tmp.path(), "grok", "grok-4", 55.0, 30)
+            .await
+            .unwrap();
         let events = load_events_since(tmp.path(), 0, 10, None, false).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].final_outcome, "alert_fired");
-        assert!(events[0].errors.iter().any(|e| e.code == "quality_threshold_breached"));
+        assert!(
+            events[0]
+                .errors
+                .iter()
+                .any(|e| e.code == "quality_threshold_breached")
+        );
     }
 
     #[test]
     fn effective_strict_triggers_uses_config_when_provided() {
         let mut cfg = crate::types::GuardrailConfig::default();
-        assert!(effective_strict_triggers(&cfg).iter().any(|s| s == "search" || s == "ruf")); // default set
+        assert!(
+            effective_strict_triggers(&cfg)
+                .iter()
+                .any(|s| s == "search" || s == "ruf")
+        ); // default set
         cfg.strict_triggers = vec!["custom_trigger".into()];
         let tr = effective_strict_triggers(&cfg);
         assert_eq!(tr, vec!["custom_trigger".to_string()]);
@@ -984,7 +1259,15 @@ mod tests {
     #[tokio::test]
     async fn log_fallback_event_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        log_fallback_event(tmp.path(), "grok", "claude", "chat.x", &["unknown_tool".into()]).await.unwrap();
+        log_fallback_event(
+            tmp.path(),
+            "grok",
+            "claude",
+            "chat.x",
+            &["unknown_tool".into()],
+        )
+        .await
+        .unwrap();
         let events = load_events_since(tmp.path(), 0, 10, None, false).await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].final_outcome, "fallback_triggered");

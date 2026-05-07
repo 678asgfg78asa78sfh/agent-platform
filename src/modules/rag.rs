@@ -1,12 +1,12 @@
-use crate::tools::ToolResult;
 use crate::security::safe_id;
-use std::path::Path;
+use crate::tools::ToolResult;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime};
 use tokio::sync::RwLock;
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RagEntry {
@@ -31,19 +31,16 @@ fn rag_dir(base: &Path, pool: &str) -> std::path::PathBuf {
 /// don't match every entry.
 const STOPWORDS: &[&str] = &[
     // German
-    "der", "die", "das", "und", "oder", "aber", "ist", "war", "sind", "waren",
-    "ein", "eine", "einer", "eines", "einem", "einen", "den", "dem", "des",
-    "mit", "von", "bei", "nach", "vor", "über", "unter", "zwischen", "durch",
-    "ich", "du", "er", "sie", "es", "wir", "ihr", "sie", "mich", "dich", "ihn",
-    "mir", "dir", "ihm", "uns", "euch", "ihnen",
-    "nicht", "kein", "keine", "keiner", "auch", "noch", "schon", "nur", "auf",
-    "was", "wer", "wo", "wie", "wann", "warum",
+    "der", "die", "das", "und", "oder", "aber", "ist", "war", "sind", "waren", "ein", "eine",
+    "einer", "eines", "einem", "einen", "den", "dem", "des", "mit", "von", "bei", "nach", "vor",
+    "über", "unter", "zwischen", "durch", "ich", "du", "er", "sie", "es", "wir", "ihr", "sie",
+    "mich", "dich", "ihn", "mir", "dir", "ihm", "uns", "euch", "ihnen", "nicht", "kein", "keine",
+    "keiner", "auch", "noch", "schon", "nur", "auf", "was", "wer", "wo", "wie", "wann", "warum",
     // English
-    "the", "and", "or", "but", "is", "was", "are", "were", "be", "been", "being",
-    "a", "an", "in", "on", "at", "to", "for", "of", "with", "by", "from",
-    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
-    "not", "no", "yes", "also", "only", "just", "so", "as", "that", "this",
-    "what", "who", "where", "how", "when", "why",
+    "the", "and", "or", "but", "is", "was", "are", "were", "be", "been", "being", "a", "an", "in",
+    "on", "at", "to", "for", "of", "with", "by", "from", "i", "you", "he", "she", "it", "we",
+    "they", "me", "him", "her", "us", "them", "not", "no", "yes", "also", "only", "just", "so",
+    "as", "that", "this", "what", "who", "where", "how", "when", "why",
 ];
 
 fn is_stopword(word: &str) -> bool {
@@ -52,18 +49,245 @@ fn is_stopword(word: &str) -> bool {
 
 fn extract_keywords(text: &str) -> Vec<String> {
     text.split_whitespace()
-        .map(|w| w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric()).to_string())
+        .map(|w| {
+            w.to_lowercase()
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_string()
+        })
         .filter(|w| w.len() > 2 && !is_stopword(w))
         .collect()
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 { return 0.0; }
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
     dot / (norm_a * norm_b)
+}
+
+fn compact_rag_text(entry: &RagEntry) -> String {
+    if entry.text.starts_with("DEEPDIVE_CRAWL_MANIFEST") {
+        return compact_deepdive_manifest(entry);
+    }
+    if entry.text.starts_with("DEEPDIVE_CRAWL_NOTE") || entry.text.starts_with("DEEPDIVE_RAG_NOTE")
+    {
+        return compact_deepdive_text(entry);
+    }
+    crate::util::safe_truncate(&entry.text, 1800).to_string()
+}
+
+fn compact_deepdive_manifest(entry: &RagEntry) -> String {
+    let mut out = vec![format!(
+        "rag_id: {}\nstored_at_utc: {}{}",
+        entry.id,
+        entry.timestamp,
+        age_suffix(&entry.timestamp)
+    )];
+    for key in [
+        "crawl_id",
+        "crawl_started_at_utc",
+        "captured_at_utc",
+        "topic",
+        "sources_fetched",
+        "failed_count",
+        "search_error_count",
+    ] {
+        if let Some(v) = line_value(&entry.text, key) {
+            out.push(format!("{}: {}", key, v));
+        }
+    }
+    if let Some(sources) = section_after(&entry.text, "sources:") {
+        let mut sources = sources;
+        for marker in [
+            "\nfailures:",
+            "\nsearch_errors:",
+            "\ntool_trace:",
+            "\ntrace:",
+        ] {
+            sources = sources.split(marker).next().unwrap_or(sources);
+        }
+        let sources = sources.trim();
+        if !sources.is_empty() {
+            out.push(format!(
+                "sources:\n{}",
+                crate::util::safe_truncate(sources, 1400)
+            ));
+            out.push(format!(
+                "<quellen>\n{}\n</quellen>",
+                crate::util::safe_truncate(sources, 2400)
+            ));
+        }
+    }
+    if let Some(tool_trace) = section_after(&entry.text, "tool_trace:") {
+        let tool_trace = tool_trace
+            .split("\ntrace:")
+            .next()
+            .unwrap_or(tool_trace)
+            .trim();
+        if !tool_trace.is_empty() {
+            out.push(format!(
+                "tool_trace_excerpt:\n{}",
+                crate::util::safe_truncate(tool_trace, 1400)
+            ));
+        }
+    }
+    if let Some(trace) = section_after(&entry.text, "trace:") {
+        out.push(format!(
+            "trace_excerpt:\n{}",
+            crate::util::safe_truncate(trace, 1400)
+        ));
+    }
+    out.join("\n")
+}
+
+fn compact_deepdive_text(entry: &RagEntry) -> String {
+    let mut out = vec![format!(
+        "rag_id: {}\nstored_at_utc: {}{}",
+        entry.id,
+        entry.timestamp,
+        age_suffix(&entry.timestamp)
+    )];
+    for key in [
+        "crawl_id",
+        "captured_at_utc",
+        "source_last_seen_utc",
+        "topic",
+        "source_url",
+        "source_title",
+        "source_depth",
+        "page_role",
+        "discovery_method",
+        "discovery_reason",
+        "parent_url",
+        "source_type",
+        "source_reliability",
+        "relevance_score",
+        "recency_label",
+        "author",
+        "publisher",
+        "date_hints",
+        "search_snippet",
+    ] {
+        if let Some(v) = line_value(&entry.text, key) {
+            out.push(format!("{}: {}", key, v));
+        }
+    }
+
+    out.push(deepdive_source_tag(entry));
+
+    if let Some(passages) = section_after(&entry.text, "key_passages:") {
+        let passages = passages
+            .split("\nassessment_required:")
+            .next()
+            .unwrap_or(passages)
+            .split("\ncausality_hints:")
+            .next()
+            .unwrap_or(passages)
+            .trim();
+        if !passages.is_empty() {
+            out.push(format!(
+                "key_passages:\n{}",
+                crate::util::safe_truncate(passages, 900)
+            ));
+        }
+    }
+
+    if let Some(hints) = section_after(&entry.text, "causality_hints:") {
+        let hints = hints
+            .split("\nassessment_required:")
+            .next()
+            .unwrap_or(hints)
+            .trim();
+        if !hints.is_empty() {
+            out.push(format!(
+                "causality_hints:\n{}",
+                crate::util::safe_truncate(hints, 900)
+            ));
+        }
+    }
+
+    let excerpt = if let Some(text) = section_after(&entry.text, "source_text:") {
+        text
+    } else if let Some(text) = section_after(&entry.text, "source_material:") {
+        text
+    } else {
+        entry.text.as_str()
+    };
+    out.push(format!(
+        "content_excerpt:\n{}",
+        crate::util::safe_truncate(&collapse_ws(excerpt), 1400)
+    ));
+    out.join("\n")
+}
+
+fn deepdive_source_tag(entry: &RagEntry) -> String {
+    let url = line_value(&entry.text, "source_url").unwrap_or_else(|| "(kein URL-Fundort)".into());
+    let title = line_value(&entry.text, "source_title").unwrap_or_else(|| "(kein Titel)".into());
+    let captured = line_value(&entry.text, "captured_at_utc").unwrap_or_default();
+    let seen = line_value(&entry.text, "source_last_seen_utc").unwrap_or_default();
+    let dates = line_value(&entry.text, "date_hints").unwrap_or_default();
+    let crawl_id = line_value(&entry.text, "crawl_id").unwrap_or_default();
+    format!(
+        "<quellen>\n- rag_id: {}\n  crawl_id: {}\n  fundort: {}\n  titel: {}\n  abgerufen_utc: {}\n  source_last_seen_utc: {}\n  datumshinweise: {}\n</quellen>",
+        entry.id, crawl_id, url, title, captured, seen, dates
+    )
+}
+
+fn age_suffix(ts: &str) -> String {
+    DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|dt| {
+            let age = Utc::now().signed_duration_since(dt.with_timezone(&Utc));
+            if age.num_minutes() < 120 {
+                format!(" (age: {} min)", age.num_minutes().max(0))
+            } else if age.num_hours() < 72 {
+                format!(" (age: {} h)", age.num_hours())
+            } else {
+                format!(" (age: {} d)", age.num_days())
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn line_value(text: &str, key: &str) -> Option<String> {
+    let prefix = format!("{}:", key);
+    text.lines()
+        .find_map(|line| line.strip_prefix(&prefix).map(|v| v.trim().to_string()))
+        .filter(|v| !v.is_empty())
+}
+
+fn section_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+    let start = text.find(marker)? + marker.len();
+    let rest = text[start..].trim();
+    if marker == "source_text:" {
+        if let Some(end) = rest.find("\nsource_links:") {
+            return Some(rest[..end].trim());
+        }
+    }
+    Some(rest)
+}
+
+fn collapse_ws(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn crawl_id_from_query(query: &str) -> Option<String> {
+    query
+        .split_whitespace()
+        .find(|part| {
+            part.starts_with("dd-")
+                && part.len() <= 64
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+        .map(|s| s.trim_matches(|c: char| c == ',' || c == ';').to_string())
 }
 
 struct CachedIndex {
@@ -97,9 +321,7 @@ async fn load_all_entries(base: &Path, pool: &str) -> Vec<RagEntry> {
         let c = cache().read().await;
         if let Some(cached) = c.get(pool) {
             // Invalidate if dir mtime changed or cache older than 60s
-            if cached.dir_mtime == current_mtime
-                && cached.loaded_at.elapsed().as_secs() < 60
-            {
+            if cached.dir_mtime == current_mtime && cached.loaded_at.elapsed().as_secs() < 60 {
                 return cached.entries.clone();
             }
         }
@@ -121,19 +343,30 @@ async fn load_all_entries(base: &Path, pool: &str) -> Vec<RagEntry> {
             }
         }
         entries
-    }).await.unwrap_or_default();
+    })
+    .await
+    .unwrap_or_default();
 
     let mut c = cache().write().await;
-    c.insert(pool.to_string(), CachedIndex {
-        entries: entries.clone(),
-        loaded_at: Instant::now(),
-        dir_mtime: current_mtime,
-    });
+    c.insert(
+        pool.to_string(),
+        CachedIndex {
+            entries: entries.clone(),
+            loaded_at: Instant::now(),
+            dir_mtime: current_mtime,
+        },
+    );
     entries
 }
 
 /// Store text in RAG pool. If embedding is provided, store it alongside.
-pub async fn speichern(base: &Path, pool: &str, text: &str, embedding: Option<Vec<f32>>, embed_model: Option<String>) -> ToolResult {
+pub async fn speichern(
+    base: &Path,
+    pool: &str,
+    text: &str,
+    embedding: Option<Vec<f32>>,
+    embed_model: Option<String>,
+) -> ToolResult {
     if text.trim().is_empty() {
         return ToolResult::fail("Kein Text zum Speichern angegeben".into());
     }
@@ -160,27 +393,46 @@ pub async fn speichern(base: &Path, pool: &str, text: &str, embedding: Option<Ve
     match write_result {
         Ok(_) => {
             invalidate_cache(pool);
-            ToolResult::ok(format!("Im RAG Pool '{}' gespeichert (id: {})", pool, &id[..8]))
+            ToolResult::ok(format!(
+                "Im RAG Pool '{}' gespeichert (id: {})",
+                pool,
+                &id[..8]
+            ))
         }
         Err(e) => ToolResult::fail(format!("RAG speichern fehlgeschlagen: {}", e)),
     }
 }
 
 /// Search RAG pool. Vector search first (if query_embedding provided), keyword fallback.
-pub async fn suchen(base: &Path, pool: &str, query: &str, query_embedding: Option<&[f32]>) -> ToolResult {
+pub async fn suchen(
+    base: &Path,
+    pool: &str,
+    query: &str,
+    query_embedding: Option<&[f32]>,
+) -> ToolResult {
     if query.trim().is_empty() {
         return ToolResult::fail("Keine Suchanfrage angegeben".into());
     }
 
-    let entries = load_all_entries(base, pool).await;
+    let loaded_entries = load_all_entries(base, pool).await;
+    let entries: Vec<RagEntry> = if let Some(crawl_id) = crawl_id_from_query(query) {
+        loaded_entries
+            .into_iter()
+            .filter(|entry| entry.text.contains(&crawl_id))
+            .collect()
+    } else {
+        loaded_entries
+    };
 
     // Vector search if embedding available
     if let Some(qvec) = query_embedding {
-        let mut results: Vec<(f32, &RagEntry)> = entries.iter()
+        let mut results: Vec<(f32, &RagEntry)> = entries
+            .iter()
             .filter_map(|entry| {
-                entry.embedding.as_ref().map(|evec| {
-                    (cosine_similarity(qvec, evec), entry)
-                })
+                entry
+                    .embedding
+                    .as_ref()
+                    .map(|evec| (cosine_similarity(qvec, evec), entry))
             })
             .filter(|(score, _)| *score > 0.3)
             .collect();
@@ -188,10 +440,22 @@ pub async fn suchen(base: &Path, pool: &str, query: &str, query_embedding: Optio
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
         if !results.is_empty() {
-            let top: Vec<String> = results.iter().take(5).map(|(score, entry)| {
-                format!("[{:.0}% match] {}", score * 100.0, entry.text)
-            }).collect();
-            return ToolResult::ok(format!("RAG Ergebnisse ({} gefunden, vector search):\n{}", results.len(), top.join("\n\n")));
+            let top: Vec<String> = results
+                .iter()
+                .take(5)
+                .map(|(score, entry)| {
+                    format!(
+                        "[{:.0}% match]\n{}",
+                        display_score(*score),
+                        compact_rag_text(entry)
+                    )
+                })
+                .collect();
+            return ToolResult::ok(format!(
+                "RAG Ergebnisse ({} gefunden, vector search):\n{}",
+                results.len(),
+                top.join("\n\n")
+            ));
         }
     }
 
@@ -200,14 +464,18 @@ pub async fn suchen(base: &Path, pool: &str, query: &str, query_embedding: Optio
     let mut results: Vec<(f32, &RagEntry)> = vec![];
 
     for entry in &entries {
-        let matches = query_keywords.iter()
+        let matches = query_keywords
+            .iter()
             .filter(|qk| {
                 entry.keywords.iter().any(|rk| rk.contains(qk.as_str()))
-                || entry.text.to_lowercase().contains(qk.as_str())
+                    || entry.text.to_lowercase().contains(qk.as_str())
             })
             .count();
         if matches > 0 {
-            let score = matches as f32 / query_keywords.len().max(1) as f32;
+            let mut score = matches as f32 / query_keywords.len().max(1) as f32;
+            if entry.text.starts_with("DEEPDIVE_CRAWL_MANIFEST") {
+                score += 0.25;
+            }
             results.push((score, entry));
         }
     }
@@ -215,13 +483,32 @@ pub async fn suchen(base: &Path, pool: &str, query: &str, query_embedding: Optio
     results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     if results.is_empty() {
-        ToolResult::ok(format!("Keine Ergebnisse im RAG Pool '{}' fuer: {}", pool, query))
+        ToolResult::ok(format!(
+            "Keine Ergebnisse im RAG Pool '{}' fuer: {}",
+            pool, query
+        ))
     } else {
-        let top: Vec<String> = results.iter().take(5).map(|(score, entry)| {
-            format!("[{:.0}% match] {}", score * 100.0, entry.text)
-        }).collect();
-        ToolResult::ok(format!("RAG Ergebnisse ({} gefunden, keyword search):\n{}", results.len(), top.join("\n\n")))
+        let top: Vec<String> = results
+            .iter()
+            .take(5)
+            .map(|(score, entry)| {
+                format!(
+                    "[{:.0}% match]\n{}",
+                    display_score(*score),
+                    compact_rag_text(entry)
+                )
+            })
+            .collect();
+        ToolResult::ok(format!(
+            "RAG Ergebnisse ({} gefunden, keyword search):\n{}",
+            results.len(),
+            top.join("\n\n")
+        ))
     }
+}
+
+fn display_score(score: f32) -> f32 {
+    (score * 100.0).clamp(0.0, 100.0)
 }
 
 #[cfg(test)]
@@ -271,5 +558,14 @@ mod tests {
         let kw = extract_keywords("I am a ok");
         // "I", "am", "a", "ok" are all <= 2 chars
         assert!(kw.is_empty() || kw.iter().all(|w| w.len() > 2));
+    }
+
+    #[test]
+    fn test_crawl_id_from_query() {
+        assert_eq!(
+            crawl_id_from_query("dd-20260507T011624Z-5f8430b0 Friedrich Merz").as_deref(),
+            Some("dd-20260507T011624Z-5f8430b0")
+        );
+        assert!(crawl_id_from_query("Friedrich Merz").is_none());
     }
 }

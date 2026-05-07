@@ -16,13 +16,13 @@
 // Single-Node-Deployment mit dutzenden Modulen. Busy-Timeout fängt den seltenen
 // Fall von Lock-Contention unter Last.
 
-use std::path::Path;
-use std::sync::Arc;
-use rusqlite::{params, OptionalExtension};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
+use std::path::Path;
+use std::sync::Arc;
 
 pub type SqlitePool = Pool<SqliteConnectionManager>;
 
@@ -44,23 +44,22 @@ pub fn open_pool(db_path: &Path) -> StoreResult<SqlitePool> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).map_err(e("create_dir_all"))?;
     }
-    let manager = SqliteConnectionManager::file(db_path)
-        .with_init(|c| {
-            // WAL für concurrent readers + eine atomic write lane.
-            // synchronous=NORMAL ist der sweet spot für WAL: Daten-Durability bei
-            // Checkpoint garantiert, zwischen Checkpoints maximal ein Commit
-            // verloren bei Hard-Power-Loss (akzeptabel für task queue).
-            c.execute_batch(
-                "PRAGMA journal_mode=WAL;
+    let manager = SqliteConnectionManager::file(db_path).with_init(|c| {
+        // WAL für concurrent readers + eine atomic write lane.
+        // synchronous=NORMAL ist der sweet spot für WAL: Daten-Durability bei
+        // Checkpoint garantiert, zwischen Checkpoints maximal ein Commit
+        // verloren bei Hard-Power-Loss (akzeptabel für task queue).
+        c.execute_batch(
+            "PRAGMA journal_mode=WAL;
                  PRAGMA synchronous=NORMAL;
                  PRAGMA busy_timeout=5000;
                  PRAGMA cache_size=-65536;
                  PRAGMA mmap_size=268435456;
                  PRAGMA foreign_keys=ON;
-                 PRAGMA temp_store=MEMORY;"
-            )?;
-            Ok(())
-        });
+                 PRAGMA temp_store=MEMORY;",
+        )?;
+        Ok(())
+    });
     let pool = Pool::builder()
         .max_size(16)
         .build(manager)
@@ -72,7 +71,8 @@ pub fn open_pool(db_path: &Path) -> StoreResult<SqlitePool> {
 
     // Migrations für existierende DBs — ALTER TABLE idempotent machen via
     // information_schema-Check. SQLite hat dafür PRAGMA table_info.
-    let has_faellig: bool = conn.prepare("PRAGMA table_info(tasks)")
+    let has_faellig: bool = conn
+        .prepare("PRAGMA table_info(tasks)")
         .map_err(e("pragma"))?
         .query_map([], |r| r.get::<_, String>(1))
         .map_err(e("pragma query"))?
@@ -82,7 +82,8 @@ pub fn open_pool(db_path: &Path) -> StoreResult<SqlitePool> {
         conn.execute(
             "ALTER TABLE tasks ADD COLUMN faellig_ab_ts INTEGER NOT NULL DEFAULT 0",
             [],
-        ).map_err(e("migration faellig_ab_ts"))?;
+        )
+        .map_err(e("migration faellig_ab_ts"))?;
         // Bestehende erstellt-Tasks als "sofort fällig" markieren
         conn.execute(
             "UPDATE tasks SET faellig_ab_ts = erstellt_ts WHERE faellig_ab_ts = 0 AND status='erstellt'",
@@ -161,13 +162,15 @@ CREATE TABLE IF NOT EXISTS token_calls (
     cost_usd        REAL    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_token_calls_ts ON token_calls(ts);
+CREATE INDEX IF NOT EXISTS idx_token_calls_backend_ts ON token_calls(backend, ts);
+DROP TRIGGER IF EXISTS token_calls_cap;
 CREATE TRIGGER IF NOT EXISTS token_calls_cap
     AFTER INSERT ON token_calls
-    WHEN (SELECT COUNT(*) FROM token_calls) > 200
+    WHEN (SELECT COUNT(*) FROM token_calls) > 50000
     BEGIN
         DELETE FROM token_calls WHERE id IN
             (SELECT id FROM token_calls ORDER BY ts ASC
-             LIMIT (SELECT COUNT(*) FROM token_calls) - 200);
+             LIMIT (SELECT COUNT(*) FROM token_calls) - 50000);
     END;
 
 -- ══════════ Idempotency (exactly-once für Side-Effect-Tools) ══════════
@@ -233,8 +236,12 @@ impl TaskRow {
 /// `transition` damit sie atomar mit Status-Wechsel + Timestamp sind.
 pub fn task_upsert(
     pool: &SqlitePool,
-    id: &str, status: &str, modul: &str, payload_json: &str,
-    erstellt_ts: i64, faellig_ab_ts: i64,
+    id: &str,
+    status: &str,
+    modul: &str,
+    payload_json: &str,
+    erstellt_ts: i64,
+    faellig_ab_ts: i64,
 ) -> StoreResult<()> {
     let conn = pool.get().map_err(e("pool"))?;
     conn.execute(
@@ -246,7 +253,8 @@ pub fn task_upsert(
            payload_json=excluded.payload_json,
            faellig_ab_ts=excluded.faellig_ab_ts",
         params![id, status, modul, payload_json, erstellt_ts, faellig_ab_ts],
-    ).map_err(e("task_upsert"))?;
+    )
+    .map_err(e("task_upsert"))?;
     Ok(())
 }
 
@@ -262,16 +270,20 @@ pub fn task_upsert(
 pub fn claim_one_for_modul(pool: &SqlitePool, modul: &str) -> StoreResult<Option<TaskRow>> {
     let now = chrono::Utc::now().timestamp();
     let mut conn = pool.get().map_err(e("pool"))?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(e("begin"))?;
 
-    let id: Option<String> = tx.query_row(
-        "SELECT id FROM tasks
+    let id: Option<String> = tx
+        .query_row(
+            "SELECT id FROM tasks
          WHERE status='erstellt' AND modul=?1 AND faellig_ab_ts<=?2
          ORDER BY faellig_ab_ts ASC, erstellt_ts ASC LIMIT 1",
-        params![modul, now],
-        |r| r.get(0),
-    ).optional().map_err(e("claim select"))?;
+            params![modul, now],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(e("claim select"))?;
 
     let Some(id) = id else {
         tx.commit().map_err(e("commit empty"))?;
@@ -282,23 +294,28 @@ pub fn claim_one_for_modul(pool: &SqlitePool, modul: &str) -> StoreResult<Option
 
     // Atomic transition: nur wenn Status noch 'erstellt' ist (sonst hat ein
     // anderer Caller schon gewonnen). Rowcount == 1 → unser Claim.
-    let changed = tx.execute(
-        "UPDATE tasks
+    let changed = tx
+        .execute(
+            "UPDATE tasks
          SET status='gestartet', gestartet_ts=?1, claim_token=?2
          WHERE id=?3 AND status='erstellt'",
-        params![now, claim_token, id],
-    ).map_err(e("claim update"))?;
+            params![now, claim_token, id],
+        )
+        .map_err(e("claim update"))?;
 
     if changed == 0 {
         tx.commit().map_err(e("commit noop"))?;
         return Ok(None);
     }
 
-    let row = tx.query_row(
-        "SELECT id, status, modul, payload_json, erstellt_ts, gestartet_ts, erledigt_ts
+    let row = tx
+        .query_row(
+            "SELECT id, status, modul, payload_json, erstellt_ts, gestartet_ts, erledigt_ts
          FROM tasks WHERE id=?1",
-        params![id], TaskRow::from_row,
-    ).map_err(e("claim reload"))?;
+            params![id],
+            TaskRow::from_row,
+        )
+        .map_err(e("claim reload"))?;
     tx.commit().map_err(e("commit"))?;
     Ok(Some(row))
 }
@@ -311,11 +328,10 @@ pub fn claim_one_for_modul(pool: &SqlitePool, modul: &str) -> StoreResult<Option
 pub fn parse_faellig_ab(wann: &str) -> i64 {
     match wann {
         "sofort" => 0,
-        w if w.starts_with("20") => {
-            w.parse::<chrono::DateTime<chrono::Utc>>()
-                .map(|dt| dt.timestamp())
-                .unwrap_or(0)
-        }
+        w if w.starts_with("20") => w
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .map(|dt| dt.timestamp())
+            .unwrap_or(0),
         _ => 0,
     }
 }
@@ -324,7 +340,9 @@ pub fn parse_faellig_ab(wann: &str) -> i64 {
 /// ein anderer Writer gleichzeitig schreiben, serialisiert SQLite das.
 pub fn task_transition(
     pool: &SqlitePool,
-    id: &str, new_status: &str, new_payload_json: &str,
+    id: &str,
+    new_status: &str,
+    new_payload_json: &str,
 ) -> StoreResult<()> {
     let now = chrono::Utc::now().timestamp();
     let conn = pool.get().map_err(e("pool"))?;
@@ -339,17 +357,20 @@ pub fn task_transition(
         conn.execute(
             "UPDATE tasks SET status=?1, payload_json=?2, gestartet_ts=?3 WHERE id=?4",
             params![new_status, new_payload_json, set_gestartet, id],
-        ).map_err(e("transition g"))?;
+        )
+        .map_err(e("transition g"))?;
     } else if set_erledigt.is_some() {
         conn.execute(
             "UPDATE tasks SET status=?1, payload_json=?2, erledigt_ts=?3 WHERE id=?4",
             params![new_status, new_payload_json, set_erledigt, id],
-        ).map_err(e("transition e"))?;
+        )
+        .map_err(e("transition e"))?;
     } else {
         conn.execute(
             "UPDATE tasks SET status=?1, payload_json=?2 WHERE id=?3",
             params![new_status, new_payload_json, id],
-        ).map_err(e("transition s"))?;
+        )
+        .map_err(e("transition s"))?;
     }
     Ok(())
 }
@@ -359,17 +380,23 @@ pub fn task_load_by_id(pool: &SqlitePool, id: &str) -> StoreResult<Option<TaskRo
     conn.query_row(
         "SELECT id, status, modul, payload_json, erstellt_ts, gestartet_ts, erledigt_ts
          FROM tasks WHERE id=?1",
-        params![id], TaskRow::from_row,
-    ).optional().map_err(e("task_load_by_id"))
+        params![id],
+        TaskRow::from_row,
+    )
+    .optional()
+    .map_err(e("task_load_by_id"))
 }
 
 pub fn task_list_by_status(pool: &SqlitePool, status: &str) -> StoreResult<Vec<TaskRow>> {
     let conn = pool.get().map_err(e("pool"))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, status, modul, payload_json, erstellt_ts, gestartet_ts, erledigt_ts
-         FROM tasks WHERE status=?1 ORDER BY erstellt_ts ASC"
-    ).map_err(e("prepare"))?;
-    let rows = stmt.query_map(params![status], TaskRow::from_row)
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id, status, modul, payload_json, erstellt_ts, gestartet_ts, erledigt_ts
+         FROM tasks WHERE status=?1 ORDER BY erstellt_ts ASC",
+        )
+        .map_err(e("prepare"))?;
+    let rows = stmt
+        .query_map(params![status], TaskRow::from_row)
         .map_err(e("query"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(e("collect"))?;
@@ -378,37 +405,61 @@ pub fn task_list_by_status(pool: &SqlitePool, status: &str) -> StoreResult<Vec<T
 
 pub fn task_list_erledigt_recent(pool: &SqlitePool, limit: usize) -> StoreResult<Vec<TaskRow>> {
     let conn = pool.get().map_err(e("pool"))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, status, modul, payload_json, erstellt_ts, gestartet_ts, erledigt_ts
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id, status, modul, payload_json, erstellt_ts, gestartet_ts, erledigt_ts
          FROM tasks
          WHERE status IN ('success','failed','cancelled')
-         ORDER BY erledigt_ts DESC LIMIT ?1"
-    ).map_err(e("prepare"))?;
-    let rows = stmt.query_map(params![limit as i64], TaskRow::from_row)
+         ORDER BY erledigt_ts DESC LIMIT ?1",
+        )
+        .map_err(e("prepare"))?;
+    let rows = stmt
+        .query_map(params![limit as i64], TaskRow::from_row)
         .map_err(e("query"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(e("collect"))?;
     Ok(rows)
 }
 
+pub fn task_count_completed(pool: &SqlitePool) -> StoreResult<usize> {
+    let conn = pool.get().map_err(e("pool"))?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status IN ('success','failed','cancelled')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(e("count completed"))?;
+    Ok(count.max(0) as usize)
+}
+
 /// Cleanup erledigter Tasks älter als max_age_days, zusätzlich cap bei max_count.
-pub fn task_cleanup_erledigt(pool: &SqlitePool, max_count: usize, max_age_days: u32) -> StoreResult<usize> {
+pub fn task_cleanup_erledigt(
+    pool: &SqlitePool,
+    max_count: usize,
+    max_age_days: u32,
+) -> StoreResult<usize> {
     let cutoff = chrono::Utc::now().timestamp() - (max_age_days as i64) * 86400;
     let conn = pool.get().map_err(e("pool"))?;
 
     // Älter als cutoff löschen
-    let by_age = conn.execute(
-        "DELETE FROM tasks
+    let by_age = conn
+        .execute(
+            "DELETE FROM tasks
          WHERE status IN ('success','failed','cancelled')
            AND erledigt_ts IS NOT NULL AND erledigt_ts < ?1",
-        params![cutoff],
-    ).map_err(e("cleanup age"))?;
+            params![cutoff],
+        )
+        .map_err(e("cleanup age"))?;
 
     // Wenn noch mehr als max_count, die ältesten oberhalb löschen
-    let total: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM tasks WHERE status IN ('success','failed','cancelled')",
-        [], |r| r.get(0),
-    ).map_err(e("count"))?;
+    let total: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE status IN ('success','failed','cancelled')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(e("count"))?;
 
     let by_cap = if total > max_count as i64 {
         let overflow = total - max_count as i64;
@@ -419,8 +470,11 @@ pub fn task_cleanup_erledigt(pool: &SqlitePool, max_count: usize, max_age_days: 
                 ORDER BY erledigt_ts ASC LIMIT ?1
              )",
             params![overflow],
-        ).map_err(e("cleanup cap"))?
-    } else { 0 };
+        )
+        .map_err(e("cleanup cap"))?
+    } else {
+        0
+    };
 
     Ok(by_age + by_cap)
 }
@@ -434,7 +488,8 @@ pub fn audit(pool: &SqlitePool, action: &str, actor: &str, detail: &str) -> Stor
     conn.execute(
         "INSERT INTO audit_log (ts, action, actor, detail) VALUES (?1, ?2, ?3, ?4)",
         params![chrono::Utc::now().timestamp(), action, actor, detail],
-    ).map_err(e("audit insert"))?;
+    )
+    .map_err(e("audit insert"))?;
     Ok(())
 }
 
@@ -448,13 +503,21 @@ pub struct AuditEntry {
 
 pub fn audit_recent(pool: &SqlitePool, limit: usize) -> StoreResult<Vec<AuditEntry>> {
     let conn = pool.get().map_err(e("pool"))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT ts, action, actor, detail FROM audit_log ORDER BY ts DESC LIMIT ?1"
-    ).map_err(e("prepare"))?;
-    let rows = stmt.query_map(params![limit as i64], |r| Ok(AuditEntry {
-        ts: r.get(0)?, action: r.get(1)?, actor: r.get(2)?, detail: r.get(3)?,
-    })).map_err(e("query"))?
-      .collect::<Result<Vec<_>, _>>().map_err(e("collect"))?;
+    let mut stmt = conn
+        .prepare_cached("SELECT ts, action, actor, detail FROM audit_log ORDER BY ts DESC LIMIT ?1")
+        .map_err(e("prepare"))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |r| {
+            Ok(AuditEntry {
+                ts: r.get(0)?,
+                action: r.get(1)?,
+                actor: r.get(2)?,
+                detail: r.get(3)?,
+            })
+        })
+        .map_err(e("query"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(e("collect"))?;
     Ok(rows)
 }
 
@@ -470,21 +533,41 @@ pub fn audit_filtered(
 ) -> StoreResult<Vec<AuditEntry>> {
     let conn = pool.get().map_err(e("pool"))?;
     let mut sql = String::from("SELECT ts, action, actor, detail FROM audit_log WHERE 1=1");
-    if action.is_some() { sql.push_str(" AND action LIKE ?"); }
-    if actor.is_some() { sql.push_str(" AND actor LIKE ?"); }
-    if since_ts.is_some() { sql.push_str(" AND ts >= ?"); }
+    if action.is_some() {
+        sql.push_str(" AND action LIKE ?");
+    }
+    if actor.is_some() {
+        sql.push_str(" AND actor LIKE ?");
+    }
+    if since_ts.is_some() {
+        sql.push_str(" AND ts >= ?");
+    }
     sql.push_str(" ORDER BY ts DESC LIMIT ?");
     let mut stmt = conn.prepare(&sql).map_err(e("prepare"))?;
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-    if let Some(a) = action { args.push(Box::new(format!("{}%", a))); }
-    if let Some(a) = actor { args.push(Box::new(format!("{}%", a))); }
-    if let Some(t) = since_ts { args.push(Box::new(t)); }
+    if let Some(a) = action {
+        args.push(Box::new(format!("{}%", a)));
+    }
+    if let Some(a) = actor {
+        args.push(Box::new(format!("{}%", a)));
+    }
+    if let Some(t) = since_ts {
+        args.push(Box::new(t));
+    }
     args.push(Box::new(limit as i64));
     let borrowed: Vec<&dyn rusqlite::ToSql> = args.iter().map(|b| b.as_ref()).collect();
-    let rows = stmt.query_map(borrowed.as_slice(), |r| Ok(AuditEntry {
-        ts: r.get(0)?, action: r.get(1)?, actor: r.get(2)?, detail: r.get(3)?,
-    })).map_err(e("query"))?
-      .collect::<Result<Vec<_>, _>>().map_err(e("collect"))?;
+    let rows = stmt
+        .query_map(borrowed.as_slice(), |r| {
+            Ok(AuditEntry {
+                ts: r.get(0)?,
+                action: r.get(1)?,
+                actor: r.get(2)?,
+                detail: r.get(3)?,
+            })
+        })
+        .map_err(e("query"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(e("collect"))?;
     Ok(rows)
 }
 
@@ -498,12 +581,17 @@ pub fn audit_filtered(
 /// alte cron_state.json-JSON-File-basierte System hatte.
 pub fn cron_try_claim(pool: &SqlitePool, modul: &str, minute_key: &str) -> StoreResult<bool> {
     let mut conn = pool.get().map_err(e("pool"))?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(e("begin"))?;
-    let current: Option<String> = tx.query_row(
-        "SELECT last_fire_minute FROM cron_state WHERE modul=?1",
-        params![modul], |r| r.get(0),
-    ).optional().map_err(e("cron select"))?;
+    let current: Option<String> = tx
+        .query_row(
+            "SELECT last_fire_minute FROM cron_state WHERE modul=?1",
+            params![modul],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(e("cron select"))?;
     if let Some(c) = current {
         if c == minute_key {
             tx.commit().map_err(e("commit dup"))?;
@@ -514,7 +602,8 @@ pub fn cron_try_claim(pool: &SqlitePool, modul: &str, minute_key: &str) -> Store
         "INSERT INTO cron_state (modul, last_fire_minute) VALUES (?1, ?2)
          ON CONFLICT(modul) DO UPDATE SET last_fire_minute=excluded.last_fire_minute",
         params![modul, minute_key],
-    ).map_err(e("cron upsert"))?;
+    )
+    .map_err(e("cron upsert"))?;
     tx.commit().map_err(e("commit"))?;
     Ok(true)
 }
@@ -522,14 +611,25 @@ pub fn cron_try_claim(pool: &SqlitePool, modul: &str, minute_key: &str) -> Store
 pub fn cron_prune_stale(pool: &SqlitePool, keep_moduls: &[String]) -> StoreResult<()> {
     if keep_moduls.is_empty() {
         let conn = pool.get().map_err(e("pool"))?;
-        conn.execute("DELETE FROM cron_state", []).map_err(e("prune"))?;
+        conn.execute("DELETE FROM cron_state", [])
+            .map_err(e("prune"))?;
         return Ok(());
     }
-    let placeholders = keep_moduls.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!("DELETE FROM cron_state WHERE modul NOT IN ({})", placeholders);
+    let placeholders = keep_moduls
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM cron_state WHERE modul NOT IN ({})",
+        placeholders
+    );
     let conn = pool.get().map_err(e("pool"))?;
     let mut stmt = conn.prepare(&sql).map_err(e("prepare"))?;
-    let params: Vec<&dyn rusqlite::ToSql> = keep_moduls.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let params: Vec<&dyn rusqlite::ToSql> = keep_moduls
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
     stmt.execute(params.as_slice()).map_err(e("exec"))?;
     Ok(())
 }
@@ -567,21 +667,34 @@ pub fn token_day_get(pool: &SqlitePool) -> StoreResult<DayStats> {
             reserved_calls: r.get::<_,i64>(6)? as u64,
         }),
     ).optional().map_err(e("day_get"))?;
-    Ok(existing.unwrap_or(DayStats { day_key, ..Default::default() }))
+    Ok(existing.unwrap_or(DayStats {
+        day_key,
+        ..Default::default()
+    }))
 }
 
 /// Atomar: Reservation addieren WENN projected total unter Budget bleibt. Sonst Err.
 /// Gibt true/false zurück ob die Reservation gebucht wurde (plus aktuelle Stats).
-pub fn token_reserve(pool: &SqlitePool, estimated_usd: f64, budget: Option<f64>) -> StoreResult<Result<f64, String>> {
+pub fn token_reserve(
+    pool: &SqlitePool,
+    estimated_usd: f64,
+    budget: Option<f64>,
+) -> StoreResult<Result<f64, String>> {
     let day_key = today_key();
     let mut conn = pool.get().map_err(e("pool"))?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(e("begin"))?;
-    let (cost, reserved): (f64, f64) = tx.query_row(
-        "SELECT COALESCE(cost_usd,0), COALESCE(reserved_usd,0)
+    let (cost, reserved): (f64, f64) = tx
+        .query_row(
+            "SELECT COALESCE(cost_usd,0), COALESCE(reserved_usd,0)
          FROM token_stats WHERE day_key=?1",
-        params![day_key], |r| Ok((r.get(0)?, r.get(1)?)),
-    ).optional().map_err(e("reserve sel"))?.unwrap_or((0.0, 0.0));
+            params![day_key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(e("reserve sel"))?
+        .unwrap_or((0.0, 0.0));
 
     if let Some(cap) = budget {
         if cap > 0.0 && cost + reserved + estimated_usd > cap {
@@ -598,7 +711,8 @@ pub fn token_reserve(pool: &SqlitePool, estimated_usd: f64, budget: Option<f64>)
             reserved_usd = reserved_usd + excluded.reserved_usd,
             reserved_calls = reserved_calls + 1",
         params![day_key, estimated_usd],
-    ).map_err(e("reserve upsert"))?;
+    )
+    .map_err(e("reserve upsert"))?;
     tx.commit().map_err(e("commit ok"))?;
     Ok(Ok(cost + reserved + estimated_usd))
 }
@@ -612,21 +726,27 @@ pub fn token_release_reservation(pool: &SqlitePool, estimated_usd: f64) -> Store
              reserved_calls = MAX(0, reserved_calls - 1)
          WHERE day_key=?2",
         params![estimated_usd, day_key],
-    ).map_err(e("release"))?;
+    )
+    .map_err(e("release"))?;
     Ok(())
 }
 
 /// Actual commit nach einem LLM-Call: Reservation auflösen, Actual-Kosten addieren.
 pub fn token_commit_actual(
     pool: &SqlitePool,
-    estimated_usd: f64, actual_usd: f64,
-    input_tokens: u64, output_tokens: u64,
-    backend: &str, model: &str, modul: &str,
+    estimated_usd: f64,
+    actual_usd: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+    backend: &str,
+    model: &str,
+    modul: &str,
 ) -> StoreResult<()> {
     let day_key = today_key();
     let now = chrono::Utc::now().timestamp();
     let mut conn = pool.get().map_err(e("pool"))?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(e("begin"))?;
     tx.execute(
         "INSERT INTO token_stats (day_key, input_tokens, output_tokens, calls, cost_usd)
@@ -638,13 +758,29 @@ pub fn token_commit_actual(
             cost_usd      = cost_usd + excluded.cost_usd,
             reserved_usd  = MAX(0, reserved_usd - ?5),
             reserved_calls = MAX(0, reserved_calls - 1)",
-        params![day_key, input_tokens as i64, output_tokens as i64, actual_usd, estimated_usd],
-    ).map_err(e("token upsert"))?;
+        params![
+            day_key,
+            input_tokens as i64,
+            output_tokens as i64,
+            actual_usd,
+            estimated_usd
+        ],
+    )
+    .map_err(e("token upsert"))?;
     tx.execute(
         "INSERT INTO token_calls (ts, backend, model, modul, input_tokens, output_tokens, cost_usd)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![now, backend, model, modul, input_tokens as i64, output_tokens as i64, actual_usd],
-    ).map_err(e("calls insert"))?;
+        params![
+            now,
+            backend,
+            model,
+            modul,
+            input_tokens as i64,
+            output_tokens as i64,
+            actual_usd
+        ],
+    )
+    .map_err(e("calls insert"))?;
     tx.commit().map_err(e("commit"))?;
     Ok(())
 }
@@ -660,6 +796,41 @@ pub struct TokenCallRow {
     pub cost_usd: f64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenWindowStats {
+    pub calls: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+}
+
+pub fn token_backend_window(
+    pool: &SqlitePool,
+    backend: &str,
+    start_ts: i64,
+    end_ts: i64,
+) -> StoreResult<TokenWindowStats> {
+    let conn = pool.get().map_err(e("pool"))?;
+    conn.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cost_usd), 0.0)
+         FROM token_calls
+         WHERE backend=?1 AND ts>=?2 AND ts<?3",
+        params![backend, start_ts, end_ts],
+        |r| {
+            Ok(TokenWindowStats {
+                calls: r.get::<_, i64>(0)?.max(0) as u64,
+                input_tokens: r.get::<_, i64>(1)?.max(0) as u64,
+                output_tokens: r.get::<_, i64>(2)?.max(0) as u64,
+                cost_usd: r.get(3)?,
+            })
+        },
+    )
+    .map_err(e("token_backend_window"))
+}
+
 /// Aggregiert die letzten N Tage pro Modul: Total-Tokens, Calls, Cost. UI nutzt
 /// das für die "Top-Burner"-Liste im Token-Tab. Wenn UI pro-Task-Cost will
 /// (zu welcher Aufgabe gehörte der Call), dann müssten wir task_id in
@@ -667,61 +838,87 @@ pub struct TokenCallRow {
 pub fn tokens_by_modul(pool: &SqlitePool, days: i64) -> StoreResult<Vec<serde_json::Value>> {
     let cutoff = chrono::Utc::now().timestamp() - days * 86400;
     let conn = pool.get().map_err(e("pool"))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT modul,
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT modul,
                 COUNT(*) AS calls,
                 SUM(input_tokens) AS input_tokens,
                 SUM(output_tokens) AS output_tokens,
                 SUM(cost_usd) AS cost_usd
          FROM token_calls WHERE ts >= ?1
-         GROUP BY modul ORDER BY cost_usd DESC, calls DESC"
-    ).map_err(e("prepare"))?;
-    let rows = stmt.query_map(params![cutoff], |r| Ok(serde_json::json!({
-        "modul": r.get::<_, String>(0)?,
-        "calls": r.get::<_, i64>(1)?,
-        "input_tokens": r.get::<_, i64>(2)?,
-        "output_tokens": r.get::<_, i64>(3)?,
-        "cost_usd": r.get::<_, f64>(4)?,
-    }))).map_err(e("query"))?
-      .collect::<Result<Vec<_>, _>>().map_err(e("collect"))?;
+         GROUP BY modul ORDER BY cost_usd DESC, calls DESC",
+        )
+        .map_err(e("prepare"))?;
+    let rows = stmt
+        .query_map(params![cutoff], |r| {
+            Ok(serde_json::json!({
+                "modul": r.get::<_, String>(0)?,
+                "calls": r.get::<_, i64>(1)?,
+                "input_tokens": r.get::<_, i64>(2)?,
+                "output_tokens": r.get::<_, i64>(3)?,
+                "cost_usd": r.get::<_, f64>(4)?,
+            }))
+        })
+        .map_err(e("query"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(e("collect"))?;
     Ok(rows)
 }
 
 pub fn tokens_by_backend(pool: &SqlitePool, days: i64) -> StoreResult<Vec<serde_json::Value>> {
     let cutoff = chrono::Utc::now().timestamp() - days * 86400;
     let conn = pool.get().map_err(e("pool"))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT backend, model,
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT backend, model,
                 COUNT(*) AS calls,
                 SUM(input_tokens) AS input_tokens,
                 SUM(output_tokens) AS output_tokens,
                 SUM(cost_usd) AS cost_usd
          FROM token_calls WHERE ts >= ?1
-         GROUP BY backend, model ORDER BY cost_usd DESC"
-    ).map_err(e("prepare"))?;
-    let rows = stmt.query_map(params![cutoff], |r| Ok(serde_json::json!({
-        "backend": r.get::<_, String>(0)?,
-        "model": r.get::<_, String>(1)?,
-        "calls": r.get::<_, i64>(2)?,
-        "input_tokens": r.get::<_, i64>(3)?,
-        "output_tokens": r.get::<_, i64>(4)?,
-        "cost_usd": r.get::<_, f64>(5)?,
-    }))).map_err(e("query"))?
-      .collect::<Result<Vec<_>, _>>().map_err(e("collect"))?;
+         GROUP BY backend, model ORDER BY cost_usd DESC",
+        )
+        .map_err(e("prepare"))?;
+    let rows = stmt
+        .query_map(params![cutoff], |r| {
+            Ok(serde_json::json!({
+                "backend": r.get::<_, String>(0)?,
+                "model": r.get::<_, String>(1)?,
+                "calls": r.get::<_, i64>(2)?,
+                "input_tokens": r.get::<_, i64>(3)?,
+                "output_tokens": r.get::<_, i64>(4)?,
+                "cost_usd": r.get::<_, f64>(5)?,
+            }))
+        })
+        .map_err(e("query"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(e("collect"))?;
     Ok(rows)
 }
 
 pub fn token_calls_recent(pool: &SqlitePool, limit: usize) -> StoreResult<Vec<TokenCallRow>> {
     let conn = pool.get().map_err(e("pool"))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT ts, backend, model, modul, input_tokens, output_tokens, cost_usd
-         FROM token_calls ORDER BY ts DESC LIMIT ?1"
-    ).map_err(e("prepare"))?;
-    let rows = stmt.query_map(params![limit as i64], |r| Ok(TokenCallRow {
-        ts: r.get(0)?, backend: r.get(1)?, model: r.get(2)?, modul: r.get(3)?,
-        input_tokens: r.get(4)?, output_tokens: r.get(5)?, cost_usd: r.get(6)?,
-    })).map_err(e("query"))?
-      .collect::<Result<Vec<_>, _>>().map_err(e("collect"))?;
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT ts, backend, model, modul, input_tokens, output_tokens, cost_usd
+         FROM token_calls ORDER BY ts DESC LIMIT ?1",
+        )
+        .map_err(e("prepare"))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |r| {
+            Ok(TokenCallRow {
+                ts: r.get(0)?,
+                backend: r.get(1)?,
+                model: r.get(2)?,
+                modul: r.get(3)?,
+                input_tokens: r.get(4)?,
+                output_tokens: r.get(5)?,
+                cost_usd: r.get(6)?,
+            })
+        })
+        .map_err(e("query"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(e("collect"))?;
     Ok(rows)
 }
 
@@ -732,11 +929,17 @@ pub fn token_all_time(pool: &SqlitePool) -> StoreResult<(u64, u64, u64, f64)> {
         "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
                 COALESCE(SUM(calls),0), COALESCE(SUM(cost_usd),0.0)
          FROM token_stats",
-        [], |r| Ok((
-            r.get::<_,i64>(0)? as u64, r.get::<_,i64>(1)? as u64,
-            r.get::<_,i64>(2)? as u64, r.get::<_,f64>(3)?,
-        )),
-    ).map_err(e("all_time"))
+        [],
+        |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get::<_, i64>(1)? as u64,
+                r.get::<_, i64>(2)? as u64,
+                r.get::<_, f64>(3)?,
+            ))
+        },
+    )
+    .map_err(e("all_time"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -752,7 +955,9 @@ pub fn idempotency_key(task_id: &str, tool_name: &str, params: &[String]) -> Str
     hasher.update(tool_name.as_bytes());
     hasher.update(b"|");
     for (i, p) in params.iter().enumerate() {
-        if i > 0 { hasher.update(b"\x1f"); } // unit separator
+        if i > 0 {
+            hasher.update(b"\x1f");
+        } // unit separator
         hasher.update(p.as_bytes());
     }
     format!("{:x}", hasher.finalize())
@@ -770,17 +975,25 @@ pub fn idempotency_get(pool: &SqlitePool, key: &str) -> StoreResult<Option<(bool
     conn.query_row(
         "SELECT result_success, result_data FROM idempotency WHERE key=?1",
         params![key],
-        |r| Ok((r.get::<_,i64>(0)? != 0, r.get(1)?)),
-    ).optional().map_err(e("idempotency_get"))
+        |r| Ok((r.get::<_, i64>(0)? != 0, r.get(1)?)),
+    )
+    .optional()
+    .map_err(e("idempotency_get"))
 }
 
-pub fn idempotency_store(pool: &SqlitePool, key: &str, success: bool, data: &str) -> StoreResult<()> {
+pub fn idempotency_store(
+    pool: &SqlitePool,
+    key: &str,
+    success: bool,
+    data: &str,
+) -> StoreResult<()> {
     let conn = pool.get().map_err(e("pool"))?;
     conn.execute(
         "INSERT OR REPLACE INTO idempotency (key, result_success, result_data, ts)
          VALUES (?1, ?2, ?3, ?4)",
         params![key, success as i64, data, chrono::Utc::now().timestamp()],
-    ).map_err(e("idempotency_store"))?;
+    )
+    .map_err(e("idempotency_store"))?;
     Ok(())
 }
 
@@ -826,14 +1039,20 @@ pub fn idempotency_expire_in_progress(pool: &SqlitePool, timeout_secs: i64) -> S
     conn.execute(
         "DELETE FROM idempotency WHERE result_data=?1 AND ts < ?2",
         params![IDEMPOTENCY_IN_PROGRESS, cutoff],
-    ).map_err(e("idem expire"))
+    )
+    .map_err(e("idem expire"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Conversations
 // ═══════════════════════════════════════════════════════════════════════════
 
-pub fn convo_save(pool: &SqlitePool, modul_id: &str, convo_id: &str, data_json: &str) -> StoreResult<()> {
+pub fn convo_save(
+    pool: &SqlitePool,
+    modul_id: &str,
+    convo_id: &str,
+    data_json: &str,
+) -> StoreResult<()> {
     let now = chrono::Utc::now().timestamp();
     let conn = pool.get().map_err(e("pool"))?;
     conn.execute(
@@ -843,24 +1062,35 @@ pub fn convo_save(pool: &SqlitePool, modul_id: &str, convo_id: &str, data_json: 
             data_json=excluded.data_json,
             updated_ts=excluded.updated_ts",
         params![modul_id, convo_id, data_json, now],
-    ).map_err(e("convo_save"))?;
+    )
+    .map_err(e("convo_save"))?;
     Ok(())
 }
 
-pub fn convo_load(pool: &SqlitePool, modul_id: &str, convo_id: &str) -> StoreResult<Option<String>> {
+pub fn convo_load(
+    pool: &SqlitePool,
+    modul_id: &str,
+    convo_id: &str,
+) -> StoreResult<Option<String>> {
     let conn = pool.get().map_err(e("pool"))?;
     conn.query_row(
         "SELECT data_json FROM conversations WHERE modul_id=?1 AND convo_id=?2",
-        params![modul_id, convo_id], |r| r.get(0),
-    ).optional().map_err(e("convo_load"))
+        params![modul_id, convo_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(e("convo_load"))
 }
 
 pub fn convo_list(pool: &SqlitePool, modul_id: &str) -> StoreResult<Vec<String>> {
     let conn = pool.get().map_err(e("pool"))?;
-    let mut stmt = conn.prepare_cached(
-        "SELECT data_json FROM conversations WHERE modul_id=?1 ORDER BY updated_ts DESC"
-    ).map_err(e("prepare"))?;
-    let rows = stmt.query_map(params![modul_id], |r| r.get::<_, String>(0))
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT data_json FROM conversations WHERE modul_id=?1 ORDER BY updated_ts DESC",
+        )
+        .map_err(e("prepare"))?;
+    let rows = stmt
+        .query_map(params![modul_id], |r| r.get::<_, String>(0))
         .map_err(e("query"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(e("collect"))?;
@@ -872,7 +1102,8 @@ pub fn convo_delete(pool: &SqlitePool, modul_id: &str, convo_id: &str) -> StoreR
     conn.execute(
         "DELETE FROM conversations WHERE modul_id=?1 AND convo_id=?2",
         params![modul_id, convo_id],
-    ).map_err(e("convo_delete"))?;
+    )
+    .map_err(e("convo_delete"))?;
     Ok(())
 }
 
@@ -887,7 +1118,9 @@ pub struct Store {
 
 impl Store {
     pub fn open(db_path: &Path) -> StoreResult<Self> {
-        Ok(Self { pool: Arc::new(open_pool(db_path)?) })
+        Ok(Self {
+            pool: Arc::new(open_pool(db_path)?),
+        })
     }
 }
 
@@ -898,8 +1131,10 @@ mod tests {
     fn in_memory_pool() -> SqlitePool {
         // :memory: DB für schnelle Unit-Tests. WAL funktioniert auf :memory: nicht,
         // deshalb nur im Test das pragma weglassen via direktem manager.
-        let manager = SqliteConnectionManager::memory()
-            .with_init(|c| { c.execute_batch("PRAGMA foreign_keys=ON;")?; Ok(()) });
+        let manager = SqliteConnectionManager::memory().with_init(|c| {
+            c.execute_batch("PRAGMA foreign_keys=ON;")?;
+            Ok(())
+        });
         let pool = Pool::builder().max_size(4).build(manager).unwrap();
         let conn = pool.get().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
@@ -926,7 +1161,16 @@ mod tests {
         // einen Gewinner (der ihn claimed) oder bleibt in erstellt.
         let pool = Arc::new(in_memory_pool());
         for i in 0..50 {
-            task_upsert(&pool, &format!("t{}", i), "erstellt", "worker", "{}", i as i64, 0).unwrap();
+            task_upsert(
+                &pool,
+                &format!("t{}", i),
+                "erstellt",
+                "worker",
+                "{}",
+                i as i64,
+                0,
+            )
+            .unwrap();
         }
 
         let mut handles = vec![];
@@ -950,18 +1194,42 @@ mod tests {
         audit(&pool, "tool_exec", "test", "detail").unwrap();
         let conn = pool.get().unwrap();
         let err = conn.execute("UPDATE audit_log SET action='tampered'", []);
-        assert!(err.is_err(), "UPDATE auf audit_log muss fehlschlagen (Trigger)");
+        assert!(
+            err.is_err(),
+            "UPDATE auf audit_log muss fehlschlagen (Trigger)"
+        );
         let err2 = conn.execute("DELETE FROM audit_log", []);
-        assert!(err2.is_err(), "DELETE auf audit_log muss fehlschlagen (Trigger)");
+        assert!(
+            err2.is_err(),
+            "DELETE auf audit_log muss fehlschlagen (Trigger)"
+        );
     }
 
     #[test]
     fn cron_dedup_blocks_double_fire() {
         let pool = in_memory_pool();
         let key = "2026-04-23 10:00";
-        assert!(cron_try_claim(&pool, "m1", key).unwrap(), "erster Fire erlaubt");
-        assert!(!cron_try_claim(&pool, "m1", key).unwrap(), "zweiter Fire blockiert");
-        assert!(cron_try_claim(&pool, "m1", "2026-04-23 10:01").unwrap(), "neue Minute erlaubt");
+        assert!(
+            cron_try_claim(&pool, "m1", key).unwrap(),
+            "erster Fire erlaubt"
+        );
+        assert!(
+            !cron_try_claim(&pool, "m1", key).unwrap(),
+            "zweiter Fire blockiert"
+        );
+        assert!(
+            cron_try_claim(&pool, "m1", "2026-04-23 10:01").unwrap(),
+            "neue Minute erlaubt"
+        );
+    }
+
+    #[test]
+    fn completed_count_uses_sqlite_statuses() {
+        let pool = in_memory_pool();
+        task_upsert(&pool, "t1", "erstellt", "m", "{}", 1, 0).unwrap();
+        task_upsert(&pool, "t2", "success", "m", "{}", 2, 0).unwrap();
+        task_upsert(&pool, "t3", "failed", "m", "{}", 3, 0).unwrap();
+        assert_eq!(task_count_completed(&pool).unwrap(), 2);
     }
 
     #[test]

@@ -1,3 +1,3 @@
 pub mod files;
-pub mod web;
 pub mod rag;
+pub mod web;

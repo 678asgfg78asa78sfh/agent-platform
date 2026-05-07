@@ -166,12 +166,34 @@ var chatHistory = [];
 var streaming = false;
 var currentConvoId = '';
 
+var TOKEN_PARAM = new URLSearchParams(window.location.search).get('token');
+if (TOKEN_PARAM) {
+  localStorage.setItem('api_auth_token', TOKEN_PARAM);
+  history.replaceState(null, '', window.location.pathname + window.location.hash);
+}
+
+function authHeaders(extra) {
+  var headers = extra || {};
+  var token = localStorage.getItem('api_auth_token') || '';
+  if (token) headers.Authorization = 'Bearer ' + token;
+  return headers;
+}
+
+function apiFetch(path, opts) {
+  opts = opts || {};
+  opts.headers = authHeaders(opts.headers || {});
+  return fetch(path, opts).then(function(res) {
+    if (res.status === 401) throw new Error('HTTP 401: Admin token fehlt oder ist falsch. Chat mit ?token=... oeffnen.');
+    return res;
+  });
+}
+
 /* ═══ Conversations ═══ */
 function genId() { return Date.now().toString(36) + Math.random().toString(36).substr(2, 5); }
 
 function loadConvoList() {
   if (!modulId) return;
-  fetch('/api/convos/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
+  apiFetch('/api/convos/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
     var sel = ge('convo-select');
     sel.innerHTML = '';
     (data.conversations || []).forEach(function(c) {
@@ -188,7 +210,7 @@ function loadConvoList() {
 
 function loadConvo(id) {
   if (!id || !modulId) return;
-  fetch('/api/convos/' + modulId + '/' + id).then(function(r) { return r.json(); }).then(function(c) {
+  apiFetch('/api/convos/' + modulId + '/' + id).then(function(r) { return r.json(); }).then(function(c) {
     if (c.error) return;
     currentConvoId = c.id;
     chatHistory = c.messages || [];
@@ -211,7 +233,7 @@ function saveConvo() {
     messages: chatHistory,
     updated: new Date().toISOString(),
   };
-  fetch('/api/convos/' + modulId + '/' + currentConvoId, {
+  apiFetch('/api/convos/' + modulId + '/' + currentConvoId, {
     method: 'PUT', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(convo)
   });
@@ -256,7 +278,7 @@ ge('convo-new').addEventListener('click', newConvo);
 function loadModul() {
   // Config vom Admin-Port oder gleichen Port laden
   var configUrl = '/api/config';
-  fetch(configUrl).then(function(r) { return r.json(); }).then(function(cfg) {
+  apiFetch(configUrl).then(function(r) { return r.json(); }).then(function(cfg) {
     var mod = cfg.module.find(function(m) { return m.id === modulId; });
     if (!mod) {
       ge('messages').innerHTML = '<div style="text-align:center;padding:40px;color:#ff4466;">Modul "' + esc(modulId) + '" nicht gefunden.</div>';
@@ -270,7 +292,7 @@ function loadModul() {
     ge('agent-sub').textContent = mod.id + ' (' + mod.typ + ')';
     ge('status-dot').className = 'status-dot';
     // Conversations laden
-    fetch('/api/convos/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
+    apiFetch('/api/convos/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
       var convos = data.conversations || [];
       if (convos.length > 0) {
         currentConvoId = convos[0].id; // Neueste laden
@@ -368,7 +390,7 @@ function send() {
   var cursor = streamDiv.querySelector('.typing-cursor');
   var fullContent = '';
 
-  fetch('/api/chat', {
+  apiFetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ modul: modulId, messages: chatHistory })
@@ -456,7 +478,7 @@ ge('files-refresh').addEventListener('click', loadFileTree);
 
 function loadFileTree() {
   if (!modulId) return;
-  fetch('/api/home/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
+  apiFetch('/api/home/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
     var tree = ge('file-tree');
     if (!data.files || data.files.length === 0) {
       tree.innerHTML = '<div style="color:var(--text-dim); padding:8px; font-style:italic;">Leer</div>';
@@ -492,7 +514,7 @@ function renderTree(files, depth) {
 
 ge('files-delete-all').addEventListener('click', function() {
   if (!confirm('ALLE Dateien im Home-Verzeichnis loeschen?')) return;
-  fetch('/api/home-clear/' + modulId, {method: 'DELETE'})
+  apiFetch('/api/home-clear/' + modulId, {method: 'DELETE'})
     .then(function(r) { return r.json(); })
     .then(function(res) {
       if (res.ok) { loadFileTree(); }
@@ -501,7 +523,7 @@ ge('files-delete-all').addEventListener('click', function() {
 
 function deleteFile(path) {
   if (!confirm('Datei loeschen: ' + path + '?')) return;
-  fetch('/api/home/' + modulId + '/' + path, {method: 'DELETE'})
+  apiFetch('/api/home/' + modulId + '/' + path, {method: 'DELETE'})
     .then(function(r) { return r.json(); })
     .then(function(res) { if (res.ok) loadFileTree(); });
 }
@@ -512,7 +534,7 @@ function openFile(path) {
   var ext = path.split('.').pop().toLowerCase();
   var textTypes = ['txt','md','html','htm','css','js','json','log','py','rs','toml','yaml','yml','sh','csv','xml'];
   if (textTypes.indexOf(ext) !== -1) {
-    fetch(url).then(function(r) { return r.text(); }).then(function(text) {
+    apiFetch(url).then(function(r) { return r.text(); }).then(function(text) {
       var pre = '<div style="position:fixed;inset:0;z-index:9000;background:rgba(2,2,10,0.9);display:flex;align-items:center;justify-content:center;" onclick="this.remove()">'
         + '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:8px;padding:16px;max-width:90%;max-height:80vh;overflow:auto;min-width:50%;" onclick="event.stopPropagation()">'
         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">'
@@ -533,7 +555,7 @@ function openFile(path) {
 ge('clear-btn').addEventListener('click', function() {
   if (!confirm('Conversation loeschen?')) return;
   if (currentConvoId) {
-    fetch('/api/convos/' + modulId + '/' + currentConvoId, {method: 'DELETE'}).then(function() {
+    apiFetch('/api/convos/' + modulId + '/' + currentConvoId, {method: 'DELETE'}).then(function() {
       newConvo();
     });
   } else {

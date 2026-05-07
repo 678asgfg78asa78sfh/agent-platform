@@ -308,11 +308,49 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
   border-radius: var(--radius); font-size: 10px; color: var(--text-dim);
   max-height: 40px; overflow-y: auto; word-break: break-word;
 }
+.kanban-child-flow {
+  margin-top: 7px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.07);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.kanban-child-row { display: grid; grid-template-columns: 14px 1fr; gap: 6px; align-items: start; }
+.kanban-child-spine { display: flex; flex-direction: column; align-items: center; height: 100%; }
+.kanban-child-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+.kanban-child-line { width: 2px; flex: 1; min-height: 10px; background: var(--border); opacity: 0.7; }
+.kanban-child-body {
+  min-width: 0; padding: 4px 6px; border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius); background: rgba(0,0,0,0.16);
+}
+.kanban-child-head { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 9px; }
+.kanban-child-tool { color: var(--cyan); font-weight: 700; }
+.kanban-child-result { margin-top: 2px; color: var(--text-dim); font-size: 9px; line-height: 1.35; word-break: break-word; }
+.kanban-child-details { margin-top: 4px; border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; background: rgba(0,0,0,0.18); }
+.kanban-child-details summary { cursor: pointer; color: var(--text-dim); font-size: 9px; padding: 3px 6px; }
+.kanban-child-details pre { white-space: pre-wrap; word-break: break-word; margin: 0; padding: 7px; max-height: 280px; overflow: auto; color: var(--text); font-size: 10px; line-height: 1.35; background: rgba(0,0,0,0.25); }
+.deepdive-tool-trace {
+  margin-top: 5px; padding: 5px 6px; border: 1px solid rgba(0,238,255,0.14);
+  border-radius: var(--radius); background: rgba(0,238,255,0.035); font-size: 9px;
+}
+.deepdive-tool-trace-title {
+  color: var(--cyan); font-weight: 700; margin-bottom: 4px; text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.deepdive-tool-row {
+  display: grid; grid-template-columns: 24px minmax(92px, 145px) 42px minmax(0, 1fr);
+  gap: 5px; align-items: start; padding: 2px 0; border-top: 1px solid rgba(255,255,255,0.04);
+}
+.deepdive-tool-row:first-of-type { border-top: 0; }
+.deepdive-tool-idx { color: var(--text-dim); }
+.deepdive-tool-name { color: var(--text-bright); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deepdive-tool-status { font-size: 8px; font-weight: 700; text-align: center; border-radius: 3px; padding: 1px 3px; }
+.deepdive-tool-status.OK, .deepdive-tool-status.DONE { color: var(--green); background: rgba(0,255,136,0.08); }
+.deepdive-tool-status.FAIL { color: var(--red); background: rgba(255,68,102,0.09); }
+.deepdive-tool-status.START, .deepdive-tool-status.QUEUE, .deepdive-tool-status.EMPTY { color: var(--orange); background: rgba(255,170,0,0.08); }
+.deepdive-tool-detail { color: var(--text-dim); word-break: break-word; line-height: 1.3; }
 .kanban-empty { text-align: center; padding: 16px; color: var(--text-dim); font-size: 10px; font-style: italic; }
 
 /* ════════════════════════════════ TAB 3: CONFIG ════════════════════════════════ */
-#tab-config { background: var(--bg-base); overflow: hidden; display: flex; flex-direction: column; }
-.config-board { flex: 1; position: relative; overflow: hidden; display: flex; flex-direction: column; }
+#tab-config { background: var(--bg-base); overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; }
+.config-board { flex: 0 0 auto; position: relative; overflow: hidden; display: flex; flex-direction: column; }
 .config-svg { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
 .config-toolbar {
   display: flex; align-items: center; gap: 10px; padding: 6px 16px;
@@ -434,22 +472,42 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
 .materia-orb-label { font-size: 11px; font-family: var(--font); }
 
 /* === MODULE CARDS === */
-.config-row-modules { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 10px 20px; position: relative; z-index: 3; }
+.config-row-modules { flex: 0 0 auto; max-height: 360px; min-height: 140px; overflow-y: auto; overflow-x: hidden; padding: 8px 20px; position: relative; z-index: 3; }
 .config-row-modules .row-label-h { font-size: 9px; text-transform: uppercase; letter-spacing: 2px; color: var(--purple); margin-bottom: 8px; text-shadow: 0 0 8px var(--purple-glow); }
-.module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; position: relative; }
-.mod-card {
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
-  padding: 10px; transition: var(--transition); position: relative; cursor: default;
+.module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 7px; position: relative; align-items: start; }
+.module-group-header {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+  margin: 8px 0 2px; padding: 5px 8px; border: 1px solid rgba(255,255,255,0.06);
+  border-left: 3px solid var(--llm-color, var(--cyan)); border-radius: var(--radius);
+  background: linear-gradient(90deg, var(--llm-soft, rgba(0,238,255,0.06)), rgba(0,0,0,0.08));
 }
-.mod-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.module-group-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--llm-color, var(--cyan)); box-shadow: 0 0 8px var(--llm-glow, rgba(0,238,255,0.35)); }
+.module-group-title { color: var(--llm-color, var(--cyan)); font-weight: 700; font-size: 10px; letter-spacing: 0.8px; text-transform: uppercase; }
+.module-group-meta { color: var(--text-dim); font-size: 9px; }
+.mod-card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 7px; transition: var(--transition); position: relative; cursor: pointer;
+  min-height: 74px;
+}
+.mod-card[data-llm-id] { border-top: 2px solid var(--llm-color, var(--border)); }
+.mod-card.expanded { grid-column: span 2; min-height: 0; border-color: rgba(0,238,255,0.35); box-shadow: 0 0 18px rgba(0,238,255,0.08); z-index: 5; }
+.mod-card-head { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; min-width: 0; }
 .mod-card-icon {
-  font-size: 16px; width: 30px; height: 30px; border-radius: 8px;
+  font-size: 13px; width: 24px; height: 24px; border-radius: 6px;
   display: flex; align-items: center; justify-content: center;
   background: radial-gradient(circle at 30% 30%, #2a1a4a, #1a0a3a);
-  border: 1px solid var(--purple-dim); box-shadow: 0 0 8px var(--purple-glow);
+  border: 1px solid var(--purple-dim); box-shadow: 0 0 6px var(--purple-glow);
+  flex-shrink: 0;
 }
-.mod-card-title { font-size: 12px; font-weight: 700; color: var(--text-bright); }
-.mod-card-sub { font-size: 9px; color: var(--text-dim); }
+.mod-card-title { font-size: 11px; font-weight: 700; color: var(--text-bright); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mod-card-sub { font-size: 8px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mod-card-head-main { min-width: 0; flex: 1; }
+.mod-card-state {
+  font-size: 8px; color: var(--cyan); border: 1px solid rgba(0,238,255,0.18);
+  background: rgba(0,238,255,0.06); border-radius: 8px; padding: 1px 5px; flex-shrink: 0;
+}
+.mod-card-toggle { color: var(--text-dim); font-size: 11px; width: 14px; text-align: center; flex-shrink: 0; }
+.mod-card.expanded .mod-card-toggle { color: var(--cyan); }
 .mod-card-tools {
   display: flex; flex-wrap: wrap; gap: 3px; margin: 5px 0;
   padding: 4px 6px; background: rgba(0,0,0,0.2); border-radius: var(--radius);
@@ -460,23 +518,27 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
   background: rgba(0,238,255,0.08); border: 1px solid rgba(0,238,255,0.15); color: var(--cyan);
   font-family: var(--font); letter-spacing: 0.3px;
 }
-.mod-sockets { display: flex; flex-direction: column; gap: 4px; margin: 4px 0; }
+.mod-sockets { display: flex; flex-direction: row; gap: 3px; margin: 4px 0 0; }
 .mod-socket-row {
-  display: flex; align-items: center; gap: 5px; padding: 3px 6px;
+  display: flex; align-items: center; gap: 4px; padding: 2px 4px; min-width: 0; flex: 1;
   background: rgba(0,0,0,0.2); border-radius: var(--radius); border: 1px solid rgba(255,255,255,0.02);
   cursor: pointer; transition: var(--transition);
 }
 .mod-socket-row:hover { border-color: rgba(0,238,255,0.2); background: rgba(0,238,255,0.03); }
-.socket-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid; flex-shrink: 0; transition: var(--transition); }
+.socket-dot { width: 8px; height: 8px; border-radius: 50%; border: 2px solid; flex-shrink: 0; transition: var(--transition); }
 .socket-dot.primary { border-color: var(--cyan); background: rgba(0,238,255,0.15); }
+.mod-card[data-llm-id] .socket-dot.primary { border-color: var(--llm-color); background: var(--llm-soft); }
+.mod-card[data-llm-id] .socket-dot.primary.connected { background: var(--llm-color); box-shadow: 0 0 6px var(--llm-glow); }
 .socket-dot.primary.connected { background: var(--cyan); box-shadow: 0 0 6px var(--cyan-glow); }
+.mod-card[data-llm-id] .socket-dot.primary.connected { background: var(--llm-color); box-shadow: 0 0 6px var(--llm-glow); }
 .socket-dot.backup { border-color: var(--orange); background: rgba(255,170,0,0.1); }
 .socket-dot.backup.connected { background: var(--orange); box-shadow: 0 0 4px var(--orange-glow); }
 .socket-dot.rag { border-color: var(--purple); background: rgba(136,85,255,0.1); }
 .socket-dot.rag.connected { background: var(--purple); box-shadow: 0 0 4px var(--purple-glow); }
-.socket-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; min-width: 30px; }
-.socket-value { font-size: 10px; font-weight: 600; }
-.socket-value.primary-val { color: var(--cyan); }
+.socket-label { font-size: 8px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.3px; }
+.socket-value { font-size: 9px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mod-card:not(.expanded) .socket-label { display: none; }
+.socket-value.primary-val { color: var(--llm-color, var(--cyan)); }
 .socket-value.backup-val { color: var(--orange); }
 .socket-value.rag-val { color: var(--purple); }
 .socket-value.empty-val { color: var(--text-dim); font-weight: 400; font-style: italic; font-size: 9px; }
@@ -484,9 +546,22 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
 .perm-pill { font-size: 8px; padding: 1px 5px; border-radius: 8px; background: rgba(136,85,255,0.1); border: 1px solid rgba(136,85,255,0.2); color: var(--purple); }
 .mod-card-meta { font-size: 9px; color: var(--text-dim); margin-top: 3px; }
 .mod-card-actions { display: flex; gap: 4px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.mod-card-detail { display: none; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.05); cursor: default; }
+.mod-card.expanded .mod-card-detail { display: block; }
+.mod-card-tooltip {
+  position: absolute; left: 8px; top: calc(100% + 6px); width: min(320px, 92vw);
+  background: #090918; border: 1px solid rgba(0,238,255,0.18); border-radius: var(--radius);
+  box-shadow: 0 10px 32px rgba(0,0,0,0.55); padding: 8px; color: var(--text);
+  font-size: 10px; line-height: 1.45; opacity: 0; pointer-events: none; transform: translateY(-4px);
+  transition: var(--transition); z-index: 20;
+}
+.mod-card:hover .mod-card-tooltip { opacity: 1; transform: translateY(0); }
+.mod-card.expanded .mod-card-tooltip { display: none; }
+.mod-card-tooltip strong { color: var(--cyan); }
+.mod-card-tooltip .muted { color: var(--text-dim); }
 .add-module-card {
   background: transparent; border: 2px dashed rgba(136,85,255,0.2); border-radius: var(--radius-lg);
-  display: flex; align-items: center; justify-content: center; min-height: 120px;
+  display: flex; align-items: center; justify-content: center; min-height: 74px;
   cursor: pointer; transition: var(--transition); color: var(--text-dim); font-size: 13px;
 }
 .add-module-card:hover { border-color: var(--purple); color: var(--purple); box-shadow: 0 0 16px var(--purple-glow); }
@@ -519,6 +594,28 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
   display: flex; justify-content: flex-end; gap: 8px; padding: 6px 20px;
   border-top: 1px solid var(--border); background: var(--bg-surface); z-index: 5; flex-shrink: 0;
 }
+.settings-accordion {
+  margin-top: 18px; border-top: 1px solid #333; padding: 12px 20px 0;
+}
+.settings-accordion-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-bright); padding: 9px 12px;
+  cursor: pointer; font-family: var(--font); font-size: 12px; text-align: left;
+}
+.settings-accordion-toggle:hover { border-color: var(--cyan); box-shadow: 0 0 10px rgba(0,238,255,0.08); }
+.settings-accordion-title { color: var(--cyan); font-weight: 700; letter-spacing: 1px; text-transform: uppercase; flex-shrink: 0; }
+.settings-accordion-summary { color: var(--text-dim); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.settings-accordion-caret { color: var(--text-dim); font-size: 13px; transition: var(--transition); }
+.settings-accordion.open .settings-accordion-caret { color: var(--cyan); transform: rotate(180deg); }
+.settings-accordion-body { display: none; padding-top: 12px; }
+.settings-accordion.open .settings-accordion-body { display: block; }
+.settings-help {
+  margin: 0 0 12px; padding: 10px 12px; background: rgba(0,238,255,0.04);
+  border: 1px solid rgba(0,238,255,0.12); border-radius: var(--radius);
+  color: var(--text-dim); font-size: 11px; line-height: 1.45;
+}
+.settings-help strong { color: var(--text-bright); }
 
 /* Socket dropdown */
 .socket-dropdown {
@@ -554,6 +651,21 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
 .hb-status-pill.dead .hb-pulse { background: var(--red); box-shadow: 0 0 10px var(--red-glow); }
 .hb-stats { margin-left: auto; display: flex; gap: 14px; font-size: 10px; color: var(--text-dim); }
 .hb-stats .hv { color: var(--text-bright); font-weight: 600; }
+.hb-schedulers-panel {
+  display: none; flex-shrink: 0; padding: 6px 16px; border-bottom: 1px solid var(--border);
+  background: rgba(0,0,0,0.12); max-height: 180px; overflow-y: auto;
+}
+.hb-schedulers-panel.open { display: block; }
+#hb-schedulers {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 10px;
+}
+.hb-scheduler-row {
+  display: flex; gap: 7px; align-items: center; min-width: 0; padding: 3px 6px;
+  border: 1px solid rgba(255,255,255,0.04); border-radius: var(--radius);
+  background: rgba(255,255,255,0.02); font-size: 10px;
+}
+.hb-scheduler-row .name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.hb-scheduler-row .age { color: var(--text-dim); font-size: 9px; flex-shrink: 0; }
 
 .hb-timeline { flex: 1; overflow-y: auto; padding: 12px 20px; display: flex; flex-direction: column; gap: 0; }
 .hb-entry {
@@ -638,6 +750,7 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
   .kanban-board { flex-direction: column; }
   .kanban-column { min-width: unset; }
   .module-grid { grid-template-columns: 1fr; }
+  .mod-card.expanded { grid-column: span 1; }
   .config-toolbar .cfg-general-fields { flex-wrap: wrap; }
   .llm-gem-orb { width: 44px; height: 44px; font-size: 18px; }
   .add-gem-btn { width: 44px; height: 44px; }
@@ -660,10 +773,10 @@ body::after {
 
 /* Module card breathing on hover */
 .mod-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 20px rgba(136,85,255,0.08);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 12px rgba(0,0,0,0.35), 0 0 12px rgba(136,85,255,0.06);
   border-color: var(--border-glow);
-  animation: cardBreathe 2s ease-in-out infinite;
+  animation: none;
 }
 @keyframes cardBreathe {
   0%,100% { box-shadow: 0 4px 20px rgba(0,0,0,0.4), 0 0 20px rgba(136,85,255,0.08); }
@@ -817,75 +930,91 @@ body::after {
           <div class="rag-pills-row" id="rag-pills-row"></div>
         </div>
       </div>
-      <section style="margin-top:32px;border-top:1px solid #333;padding:16px 20px;overflow-y:auto;flex-shrink:0;">
-        <h3 style="margin:0 0 12px;color:var(--cyan);font-size:13px;letter-spacing:1px;">Wizard-LLM</h3>
-        <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;">
-          <input type="checkbox" id="wcfg-enabled"> Enabled</label></div>
-        <div style="margin:8px 0;"><label>Provider
-          <select id="wcfg-provider">
-            <option>Claude</option><option>OpenAI</option><option>Grok</option><option>OpenRouter</option>
-          </select></label></div>
-        <div style="margin:8px 0;"><label>API URL
-          <input type="text" id="wcfg-url" style="width:320px;"></label></div>
-        <div style="margin:8px 0;"><label>API Key
-          <input type="password" id="wcfg-key" style="width:320px;"></label></div>
-        <div style="margin:8px 0;"><label>Model
-          <div style="display:inline-flex;gap:6px;align-items:center;">
-            <select id="wcfg-model-select" style="min-width:220px;"
-                    onchange="if(ge('wcfg-model')) ge('wcfg-model').value=this.value"></select>
-            <input type="text" id="wcfg-model" style="width:200px;" placeholder="oder frei eingeben">
-            <button class="btn" type="button" onclick="refreshWizardModels()">Pull</button>
-            <button class="btn" type="button" onclick="testWizardConnection()">Test connection</button>
+      <section class="settings-accordion" id="wizard-settings-panel">
+        <button class="settings-accordion-toggle" type="button" id="wizard-settings-toggle">
+          <span class="settings-accordion-title">Wizard-LLM</span>
+          <span class="settings-accordion-summary" id="wizard-settings-summary">Configuration hidden</span>
+          <span class="settings-accordion-caret">▾</span>
+        </button>
+        <div class="settings-accordion-body">
+          <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="wcfg-enabled"> Enabled</label></div>
+          <div style="margin:8px 0;"><label>Provider
+            <select id="wcfg-provider">
+              <option>Claude</option><option>OpenAI</option><option>Grok</option><option>OpenRouter</option><option>Local/LAN</option>
+            </select></label></div>
+          <div style="margin:8px 0;"><label>API URL
+            <input type="text" id="wcfg-url" style="width:320px;"></label></div>
+          <div style="margin:8px 0;"><label>API Key
+            <input type="password" id="wcfg-key" style="width:320px;"></label></div>
+          <div style="margin:8px 0;"><label>Model
+            <div style="display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;">
+              <select id="wcfg-model-select" style="min-width:220px;"
+                      onchange="if(ge('wcfg-model')) ge('wcfg-model').value=this.value"></select>
+              <input type="text" id="wcfg-model" style="width:200px;" placeholder="oder frei eingeben">
+              <button class="btn" type="button" onclick="refreshWizardModels()">Pull</button>
+              <button class="btn" type="button" onclick="testWizardConnection()">Test connection</button>
+            </div>
+          </label></div>
+          <div style="margin:8px 0;"><label>Timeout (ms)
+            <input type="number" id="wcfg-timeout" value="30000" style="width:120px;"></label></div>
+          <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;">
+            <input type="checkbox" id="wcfg-codegen"> Allow code-gen (Phase 3)</label></div>
+          <div style="margin:8px 0;"><label>Max rounds/session
+            <input type="number" id="wcfg-rounds" value="30" style="width:120px;"></label></div>
+          <div style="margin:8px 0;"><label>Session timeout (s)
+            <input type="number" id="wcfg-session-timeout" value="600" style="width:120px;"></label></div>
+          <div style="margin:8px 0;"><label>Rate limit / min
+            <input type="number" id="wcfg-rate" value="10" style="width:120px;"></label></div>
+        </div>
+      </section>
+      <section class="settings-accordion" id="guardrail-settings-panel">
+        <button class="settings-accordion-toggle" type="button" id="guardrail-settings-toggle">
+          <span class="settings-accordion-title">Guardrail / Quality</span>
+          <span class="settings-accordion-summary" id="guardrail-settings-summary">Configuration hidden</span>
+          <span class="settings-accordion-caret">▾</span>
+        </button>
+        <div class="settings-accordion-body">
+          <div class="settings-help">
+            <strong>Was ist das?</strong>
+            Guardrail prueft LLM-Antworten auf kaputte oder fehlende Tool-Calls. Wenn ein Agent nur Prosa schreibt,
+            obwohl ein Tool-Call erwartet wird, kann er automatisch neu versuchen. Quality Alerts beobachten die
+            letzten Calls und melden, wenn zu viele davon ungueltig sind. Normalerweise musst du hier nichts anfassen.
           </div>
-        </label></div>
-        <div style="margin:8px 0;"><label>Timeout (ms)
-          <input type="number" id="wcfg-timeout" value="30000" style="width:120px;"></label></div>
-        <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;">
-          <input type="checkbox" id="wcfg-codegen"> Allow code-gen (Phase 3)</label></div>
-        <div style="margin:8px 0;"><label>Max rounds/session
-          <input type="number" id="wcfg-rounds" value="30" style="width:120px;"></label></div>
-        <div style="margin:8px 0;"><label>Session timeout (s)
-          <input type="number" id="wcfg-session-timeout" value="600" style="width:120px;"></label></div>
-        <div style="margin:8px 0;"><label>Rate limit / min
-          <input type="number" id="wcfg-rate" value="10" style="width:120px;"></label></div>
-      </section>
-      <section style="margin-top:32px;border-top:1px solid #333;padding-top:16px;">
-        <h3>Guardrail</h3>
-        <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="gcfg-enabled" checked> Enabled</label></div>
-        <div style="margin:8px 0;"><label>Max retries <input type="number" id="gcfg-max-retries" value="2" style="width:80px;"></label></div>
-        <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="gcfg-strict"> Strict mode (detect Prosa-statt-Tool-Call)</label></div>
-        <div style="margin:8px 0;"><label>Strict triggers (ein Wort pro Zeile — leer = Defaults)<br>
-          <textarea id="gcfg-strict-triggers" rows="4" style="width:300px;font-family:monospace;font-size:12px;"></textarea>
-        </label></div>
+          <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="gcfg-enabled" checked> Enabled</label></div>
+          <div style="margin:8px 0;"><label>Max retries <input type="number" id="gcfg-max-retries" value="2" style="width:80px;"></label></div>
+          <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="gcfg-strict"> Strict mode (detect Prosa-statt-Tool-Call)</label></div>
+          <div style="margin:8px 0;"><label>Strict triggers (ein Wort pro Zeile - leer = Defaults)<br>
+            <textarea id="gcfg-strict-triggers" rows="4" style="width:300px;font-family:monospace;font-size:12px;"></textarea>
+          </label></div>
 
-        <h4 style="margin-top:12px;">Quality Alerts</h4>
-        <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="galert-enabled"> Alerts enabled</label></div>
-        <div style="margin:8px 0;display:flex;gap:12px;flex-wrap:wrap;">
-          <label>Threshold valid-%: <input type="number" id="galert-threshold" value="70" style="width:70px;"></label>
-          <label>Min calls: <input type="number" id="galert-min" value="20" style="width:70px;"></label>
-          <label>Window (min): <input type="number" id="galert-window" value="30" style="width:70px;"></label>
-          <label>Cooldown (min): <input type="number" id="galert-cooldown" value="60" style="width:70px;"></label>
-        </div>
-        <div style="margin:8px 0;"><label>Notify via:
-          <select id="galert-notify-modul"><option value="">(keiner)</option></select>
-        </label></div>
+          <h4 style="margin-top:12px;">Quality Alerts</h4>
+          <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;"><input type="checkbox" id="galert-enabled"> Alerts enabled</label></div>
+          <div style="margin:8px 0;display:flex;gap:12px;flex-wrap:wrap;">
+            <label>Threshold valid-%: <input type="number" id="galert-threshold" value="70" style="width:70px;"></label>
+            <label>Min calls: <input type="number" id="galert-min" value="20" style="width:70px;"></label>
+            <label>Window (min): <input type="number" id="galert-window" value="30" style="width:70px;"></label>
+            <label>Cooldown (min): <input type="number" id="galert-cooldown" value="60" style="width:70px;"></label>
+          </div>
+          <div style="margin:8px 0;"><label>Notify via:
+            <select id="galert-notify-modul"><option value="">(keiner)</option></select>
+          </label></div>
 
-        <div id="guardrail-mini-card" style="margin-top:12px;padding:10px;background:#0d0d0d;border-radius:6px;font-size:13px;">
-          <div><strong>Last 24h:</strong> <span id="gml-total">0</span> Calls</div>
-          <div id="gml-valid-line">-</div>
-          <div id="gml-retries-line">-</div>
-          <div id="gml-errors-line"></div>
+          <div id="guardrail-mini-card" style="margin-top:12px;padding:10px;background:#0d0d0d;border-radius:6px;font-size:13px;">
+            <div><strong>Last 24h:</strong> <span id="gml-total">0</span> Calls</div>
+            <div id="gml-valid-line">-</div>
+            <div id="gml-retries-line">-</div>
+            <div id="gml-errors-line"></div>
+          </div>
         </div>
       </section>
       <section style="margin-top:32px;border-top:1px solid #333;padding-top:16px;">
-        <h3>Cost-Cap</h3>
-        <div style="margin:8px 0;"><label>Daily USD budget (leer = unbegrenzt)
-          <input type="number" step="0.01" id="ccfg-budget" style="width:120px;"> $
-        </label></div>
+        <h3>Cost-Caps</h3>
+        <div style="color:#aaa;font-size:12px;margin:8px 0;">Caps werden pro LLM Gem im LLM-Dialog gesetzt.</div>
         <div id="cost-mini-card" style="margin-top:12px;padding:10px;background:#0d0d0d;border-radius:6px;font-size:13px;">
-          <div><strong>Today (UTC):</strong> <span id="cost-today">$0.00</span> <span id="cost-bar-wrap" style="display:inline-block;margin-left:8px;"><span id="cost-bar" style="display:inline-block;height:8px;background:#2a5;width:0;border-radius:4px;min-width:2px;"></span></span></div>
+          <div><strong>Today (UTC):</strong> <span id="cost-today">$0.00</span></div>
           <div>Total seit Start: <span id="cost-total">$0.00</span></div>
-          <div style="color:#888;font-size:11px;margin-top:4px;">Preise hardcoded für Claude/GPT/Grok/Ollama-Familien. Unbekannte Modelle kosten 0$.</div>
+          <div style="color:#888;font-size:11px;margin-top:4px;">Preise kommen aus den LLM-Gem-Einstellungen. Ohne Preis zaehlt nur ein Call-Cap.</div>
         </div>
       </section>
       <section style="margin-top:32px;border-top:1px solid #333;padding-top:16px;">
@@ -912,8 +1041,11 @@ body::after {
           <span>Tasks done: <span class="hv" id="hb-done">-</span></span>
           <span>Since: <span class="hv" id="hb-since">-</span></span>
         </div>
-        <div id="hb-schedulers" style="display:flex;flex-direction:column;gap:0;margin-left:16px;"></div>
+        <button class="btn btn-sm" id="hb-schedulers-toggle" type="button">Schedulers</button>
         <button class="btn btn-sm" id="hb-refresh" style="margin-left:auto">&#x21BB; Refresh</button>
+      </div>
+      <div id="hb-schedulers-panel" class="hb-schedulers-panel">
+        <div id="hb-schedulers"></div>
       </div>
       <div class="hb-timeline" id="hb-timeline">
         <div class="hb-empty">Loading monitor data...</div>
@@ -1064,37 +1196,66 @@ body::after {
   </div>
 </div>
 
-<!-- LLM Backend Modal -->
+<!-- LLM Gem Modal -->
 <div class="modal-overlay" id="modal-llm">
   <div class="modal">
-    <h3 id="modal-llm-title">LLM Backend</h3>
-    <div class="form-row"><label>ID</label><input type="text" id="llm-id" placeholder="unique-id" /></div>
-    <div class="form-row"><label>Name</label><input type="text" id="llm-name" placeholder="Display name" /></div>
-    <div class="form-row"><label>Typ</label>
+    <h3 id="modal-llm-title">LLM Gem</h3>
+    <div class="form-row"><label>Provider</label>
       <select id="llm-typ">
-        <option value="Ollama">Ollama</option>
-        <option value="OpenAICompat">OpenAI Compatible</option>
-        <option value="Anthropic">Anthropic</option>
-        <option value="Grok">Grok (xAI)</option>
+        <option value="llamacpp">llama.cpp / LAN OpenAI-compatible</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="openai">OpenAI</option>
+        <option value="custom-openai">Custom OpenAI-compatible</option>
+        <option value="ollama">Ollama</option>
+        <option value="anthropic">Anthropic Claude</option>
+        <option value="grok">Grok (xAI)</option>
       </select>
     </div>
     <div class="form-row"><label>URL</label><input type="text" id="llm-url" placeholder="http://localhost:11434" /></div>
+    <div class="form-row"><label>API Key (optional)</label><input type="password" id="llm-apikey" placeholder="sk-..." /></div>
     <div class="form-row">
       <label>Model</label>
       <div style="display:flex;gap:4px;">
         <select id="llm-model-select" style="flex:1;display:none;"></select>
         <input type="text" id="llm-model" placeholder="model-name" style="flex:1;" />
-        <button class="btn btn-sm" id="llm-fetch-models" type="button" style="white-space:nowrap;">Modelle laden</button>
+        <button class="btn btn-sm" id="llm-fetch-models" type="button" style="white-space:nowrap;">Modelle pullen</button>
       </div>
     </div>
-    <div class="form-row"><label>API Key (optional)</label><input type="password" id="llm-apikey" placeholder="sk-..." /></div>
-    <div class="form-row"><label>Timeout (seconds)</label><input type="number" id="llm-timeout" value="120" /></div>
-    <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--purple);margin:12px 0 6px;">Agent Identity</div>
-    <div class="form-row"><label>Agent Name</label><input type="text" id="llm-bot-name" placeholder="Roland" /></div>
+    <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin:12px 0 6px;">Limits</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="form-row"><label>Timeout (seconds)</label><input type="number" id="llm-timeout" value="120" /></div>
+      <div class="form-row"><label>Max output tokens</label><input type="number" id="llm-max-tokens" placeholder="leer = default" /></div>
+    </div>
+    <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--orange);margin:12px 0 6px;">Cost / Call Cap</div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+      <label style="display:inline-flex;gap:6px;align-items:center;font-size:12px;"><input type="checkbox" id="llm-cap-enabled"> Enable cap for this LLM</label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="form-row"><label>Cycle</label>
+        <select id="llm-cap-cycle">
+          <option value="days">Days</option>
+          <option value="monthly">Monthly</option>
+        </select>
+      </div>
+      <div class="form-row"><label>Cycle days</label><input type="number" id="llm-cap-days" value="1" min="1" /></div>
+      <div class="form-row"><label>USD cap</label><input type="number" step="0.0001" id="llm-cap-budget" placeholder="leer/0 = unlimited" /></div>
+      <div class="form-row"><label>Max calls</label><input type="number" id="llm-cap-calls" placeholder="leer/0 = unlimited" /></div>
+      <div class="form-row"><label>Input $ / 1M tokens</label><input type="number" step="0.0001" id="llm-price-input" placeholder="0" /></div>
+      <div class="form-row"><label>Output $ / 1M tokens</label><input type="number" step="0.0001" id="llm-price-output" placeholder="0" /></div>
+    </div>
+    <div style="color:var(--text-dim);font-size:10px;margin-top:4px;">USD-Cap braucht Tokenpreise. Call-Cap funktioniert ohne Preise.</div>
+    <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-dim);margin:12px 0 6px;">Optional</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div class="form-row"><label>Name (auto wenn leer)</label><input type="text" id="llm-name" placeholder="z.B. llama.cpp" /></div>
+      <div class="form-row"><label>ID (auto wenn leer)</label><input type="text" id="llm-id" placeholder="z.B. llamacpp-lan" /></div>
+    </div>
+    <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--purple);margin:12px 0 6px;">Default Prompt (optional)</div>
+    <div class="form-row"><label>Default Name</label><input type="text" id="llm-bot-name" placeholder="Agent" /></div>
     <div class="form-row"><label>System Prompt</label><textarea id="llm-system-prompt" rows="6" placeholder="Du bist ein hilfreicher Assistent." style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:8px;border-radius:var(--radius);font-family:var(--font);font-size:12px;resize:vertical;"></textarea></div>
     <div class="form-actions">
       <button class="btn btn-danger" id="llm-delete" style="margin-right:auto;display:none">Delete</button>
       <button class="btn" id="modal-llm-cancel">Cancel</button>
+      <button class="btn" id="llm-test" type="button">Test</button>
       <button class="btn btn-primary" id="llm-submit">Save</button>
     </div>
   </div>
@@ -1189,10 +1350,10 @@ body::after {
     </div>
     <div class="form-row"><label>Instance ID</label><input type="text" id="mod-id" placeholder="z.B. chat.support, shell.deploy" /></div>
     <div class="form-row"><label>Display Name</label><input type="text" id="mod-display-name" placeholder="Anzeigename" /></div>
-    <div class="form-row"><label>LLM Backend</label><select id="mod-llm-backend"></select></div>
+    <div class="form-row"><label>Attached LLM Gem</label><select id="mod-llm-backend"></select></div>
     <input type="hidden" id="mod-perms" />
     <div style="margin-top:10px;">
-      <label style="color:var(--cyan);font-size:11px;text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:8px;">Module Linking -- select which modules this agent can communicate with</label>
+      <label style="color:var(--cyan);font-size:11px;text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:8px;">Linked Modules</label>
       <div id="mod-link-grid" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
     </div>
     <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:16px;">
@@ -1292,6 +1453,7 @@ var appConfig = null;
 var editingLlmIdx = -1;
 var editingModIdx = -1;
 var editingRagIdx = -1;
+var expandedModuleIds = {};
 
 // Heartbeat monitor state
 var hbStatusTimer = null;
@@ -1299,6 +1461,7 @@ var hbLogsTimer = null;
 var hbLogs = [];
 var hbStatus = null;
 var hbActive = false;
+var hbSchedulersExpanded = false;
 
 /* ═══════════════════════════════════════════════════════════
    UTILS
@@ -1306,6 +1469,19 @@ var hbActive = false;
 function qs(sel) { return document.querySelector(sel); }
 function qsa(sel) { return document.querySelectorAll(sel); }
 function ge(id) { return document.getElementById(id); }
+
+var TOKEN_PARAM = new URLSearchParams(window.location.search).get('token');
+if (TOKEN_PARAM) {
+  localStorage.setItem('api_auth_token', TOKEN_PARAM);
+  history.replaceState(null, '', window.location.pathname + window.location.hash);
+}
+
+function authHeaders(extra) {
+  var headers = extra || {};
+  var token = localStorage.getItem('api_auth_token') || '';
+  if (token) headers.Authorization = 'Bearer ' + token;
+  return headers;
+}
 
 function toast(msg, type) {
   type = type || 'info';
@@ -1627,7 +1803,7 @@ function populateModuleTypDropdown() {
   });
 }
 
-/* Populate LLM backend dropdown */
+/* Populate LLM gem dropdown */
 function populateLlmDropdown() {
   var sel = ge('mod-llm-backend');
   sel.innerHTML = '';
@@ -1635,7 +1811,7 @@ function populateLlmDropdown() {
   appConfig.llm_backends.forEach(function(b) {
     var opt = document.createElement('option');
     opt.value = b.id;
-    opt.textContent = b.name + ' (' + b.model + ')';
+    opt.textContent = b.name + ' - ' + b.model;
     sel.appendChild(opt);
   });
 }
@@ -1685,12 +1861,13 @@ function estimateTokens(messages) {
    API
    ═══════════════════════════════════════════════════════════ */
 function apiFetch(method, path, body) {
-  var opts = { method: method, headers: {} };
+  var opts = { method: method, headers: authHeaders({}) };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
   return fetch(path, opts).then(function(res) {
+    if (res.status === 401) throw new Error('HTTP 401: Admin token fehlt oder ist falsch. Dashboard mit ?token=... oeffnen.');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return res.json();
   });
@@ -1808,8 +1985,8 @@ function openCapModal(modulId) {
     var html = '';
     // Meta
     html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;">';
-    html += '<div><strong>LLM</strong><br><span style="color:var(--text-dim);">' + escapeHtml(c.llm_backend || '-') + '</span></div>';
-    html += '<div><strong>Backup-LLM</strong><br><span style="color:var(--text-dim);">' + escapeHtml(c.backup_llm || '—') + '</span></div>';
+    html += '<div><strong>LLM Gem</strong><br><span style="color:var(--text-dim);">' + escapeHtml(c.llm_backend || '-') + '</span></div>';
+    html += '<div><strong>Backup Gem</strong><br><span style="color:var(--text-dim);">' + escapeHtml(c.backup_llm || '—') + '</span></div>';
     html += '<div><strong>RAG-Pool</strong><br><span style="color:var(--text-dim);">' + escapeHtml(c.rag_pool || '—') + '</span></div>';
     html += '<div><strong>Timeout</strong><br><span style="color:var(--text-dim);">' + (c.timeout_s || 0) + 's</span></div>';
     html += '<div><strong>Retries</strong><br><span style="color:var(--text-dim);">' + (c.retry || 0) + '</span></div>';
@@ -1906,7 +2083,122 @@ function loadAufgaben() {
   });
 }
 
+var aufgabenChildMap = {};
+var aufgabenChildIds = {};
+var aufgabenSyntheticGroups = [];
+
+function allAufgaben(data) {
+  return (data.erledigt || []).concat(data.gestartet || []).concat(data.erstellt || []);
+}
+
+function taskTimeMs(task) {
+  var ms = Date.parse(task && task.erstellt || '');
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function taskCrawlId(task) {
+  var hay = [
+    task && task.anweisung || '',
+    task && task.ergebnis || '',
+    (task && task.params || []).join(' ')
+  ].join('\n');
+  var match = hay.match(/dd-\d{8}T\d{6}Z-[a-f0-9]{8}/);
+  return match ? match[0] : '';
+}
+
+function isToolSubtask(task) {
+  return !!(task && (task.tool || task.typ === 'direct'));
+}
+
+function buildAufgabenRelations(data) {
+  var childMap = {};
+  var childIds = {};
+  var syntheticByKey = {};
+  var all = allAufgaben(data).slice().sort(function(a, b) {
+    return (a.erstellt || '').localeCompare(b.erstellt || '');
+  });
+  var byId = {};
+  var origins = [];
+
+  all.forEach(function(t) {
+    byId[t.id] = t;
+    if (!t.parent_id && t.typ === 'llm_call') origins.push(t);
+  });
+
+  function addChild(parentId, child) {
+    if (!parentId || !child || childIds[child.id]) return;
+    if (!childMap[parentId]) childMap[parentId] = [];
+    childMap[parentId].push(child);
+    childIds[child.id] = true;
+  }
+
+  all.forEach(function(t) {
+    if (!t.parent_id) return;
+    if (!childMap[t.parent_id]) childMap[t.parent_id] = [];
+    childMap[t.parent_id].push(t);
+    childIds[t.id] = true;
+  });
+
+  all.forEach(function(t) {
+    if (t.parent_id || childIds[t.id] || !isToolSubtask(t)) return;
+    var tMs = taskTimeMs(t);
+    var parent = null;
+    for (var i = origins.length - 1; i >= 0; i--) {
+      var candidate = origins[i];
+      if (candidate.modul !== t.modul) continue;
+      var cMs = taskTimeMs(candidate);
+      if (!cMs || cMs > tMs) continue;
+      var delta = tMs - cMs;
+      if (delta > 30 * 60 * 1000) break;
+      parent = candidate;
+      break;
+    }
+    if (parent) {
+      addChild(parent.id, t);
+      return;
+    }
+
+    var crawlId = taskCrawlId(t);
+    var key = crawlId || ('orphan:' + (t.modul || 'unknown') + ':' + (t.erstellt || t.id));
+    if (!syntheticByKey[key]) {
+      syntheticByKey[key] = {
+        id: 'synthetic:' + key,
+        synthetic: true,
+        typ: 'flow',
+        modul: t.modul || 'unknown',
+        status: t.status || 'Success',
+        erstellt: t.erstellt,
+        anweisung: crawlId ? ('Rekonstruierter DeepDive-Flow ' + crawlId) : 'Direkte Tool-Handlung ohne gespeicherten Eingang',
+        ergebnis: 'Aus alten Tool-Aufgaben ohne parent_id rekonstruiert.',
+        subs: []
+      };
+    }
+    syntheticByKey[key].subs.push(t);
+    childIds[t.id] = true;
+  });
+
+  Object.keys(childMap).forEach(function(parentId) {
+    childMap[parentId].sort(function(a, b) {
+      return (a.erstellt || '').localeCompare(b.erstellt || '');
+    });
+  });
+  var syntheticGroups = Object.keys(syntheticByKey).map(function(key) {
+    var group = syntheticByKey[key];
+    group.subs.sort(function(a, b) {
+      return (a.erstellt || '').localeCompare(b.erstellt || '');
+    });
+    group.erstellt = group.subs[0] && group.subs[0].erstellt || group.erstellt;
+    group.status = group.subs.some(function(s) { return s.status === 'Failed'; }) ? 'Failed' : (group.subs.some(function(s) { return s.status === 'Gestartet'; }) ? 'Gestartet' : 'Success');
+    return group;
+  });
+  return { childMap: childMap, childIds: childIds, syntheticGroups: syntheticGroups };
+}
+
 function renderAufgaben(data) {
+  var relations = buildAufgabenRelations(data);
+  aufgabenChildMap = relations.childMap;
+  aufgabenChildIds = relations.childIds;
+  aufgabenSyntheticGroups = relations.syntheticGroups;
   if (flowMode) {
     renderFlow(data);
   } else {
@@ -1916,24 +2208,59 @@ function renderAufgaben(data) {
   }
 }
 
+function isCapHitTask(task) {
+  return /^CAP HIT/i.test(task && task.ergebnis || '');
+}
+
+function capContinueLabel(task) {
+  var when = Date.parse(task && task.wann || '');
+  if (!Number.isFinite(when)) return 'CAP HIT';
+  var ms = Math.max(0, when - Date.now());
+  var mins = Math.max(1, Math.ceil(ms / 60000));
+  if (mins >= 1440) return 'CAP HIT, continue in ' + Math.floor(mins / 1440) + 'd ' + Math.floor((mins % 1440) / 60) + 'h';
+  if (mins >= 60) return 'CAP HIT, continue in ' + Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+  return 'CAP HIT, continue in ' + mins + 'm';
+}
+
+function isStaleStartedTask(task) {
+  if (!task || task.status !== 'Gestartet') return false;
+  var ts = Date.parse(task.gestartet || task.erstellt || '');
+  if (!Number.isFinite(ts)) return true;
+  return Date.now() - ts > 2 * 60 * 1000;
+}
+
+function canRestartTask(task) {
+  if (!task || task.parent_id || task.synthetic) return false;
+  return task.status === 'Failed' || task.status === 'Cancelled' || isStaleStartedTask(task);
+}
+
 function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
   var container = ge(containerId);
-  ge(countId).textContent = tasks.length;
-  if (tasks.length === 0) {
+  var visibleTasks = tasks.filter(function(task) { return !task.parent_id && !aufgabenChildIds[task.id]; });
+  var childCount = tasks.length - visibleTasks.length;
+  var countEl = ge(countId);
+  countEl.textContent = childCount > 0 ? (visibleTasks.length + '+' + childCount) : String(visibleTasks.length);
+  countEl.title = childCount > 0 ? (visibleTasks.length + ' Hauptaufgaben, ' + childCount + ' Subtasks') : (visibleTasks.length + ' Hauptaufgaben');
+  if (visibleTasks.length === 0) {
     container.innerHTML = '<div class="kanban-empty">No tasks</div>';
     return;
   }
   container.innerHTML = '';
-  tasks.forEach(function(task) {
+  visibleTasks.forEach(function(task) {
     var status = task.status || defaultStatus;
     var card = document.createElement('div');
     card.className = 'kanban-card status-' + status;
+    card.dataset.anweisung = task.anweisung || '';
+    var anweisung = task.anweisung || '';
     /* Ergebnis — gekürzt */
     var resultText = task.ergebnis || '';
     var resultShort = resultText.length > 150 ? resultText.substring(0, 150) + '...' : resultText;
-    var resultHtml = resultText
-      ? '<div class="kanban-card-result" title="' + escHtml(resultText.substring(0, 500)) + '">' + escHtml(resultShort) + '</div>'
-      : '';
+	    var resultHtml = resultText
+	      ? '<div class="kanban-card-result" title="' + escHtml(resultText.substring(0, 500)) + '">' + escHtml(resultShort) + '</div>'
+	      : '';
+	    var capHtml = isCapHitTask(task)
+	      ? '<div style="margin:4px 0;padding:4px 6px;border:1px solid #a83;background:rgba(170,136,51,0.12);color:#ffd36a;border-radius:4px;font-size:10px;font-weight:700;">' + escHtml(capContinueLabel(task)) + '</div>'
+	      : '';
     /* Header: Typ + Tool + Ersteller */
     var toolInfo = task.tool ? '<span style="color:var(--cyan);font-weight:700;">' + escHtml(task.tool) + '</span> ' : '';
     var typBadge = task.typ ? '<span class="badge badge-' + (task.typ === 'direct' ? 'blue' : task.typ === 'llm_call' ? 'orange' : 'purple') + '">' + task.typ + '</span> ' : '';
@@ -1944,31 +2271,148 @@ function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
       var paramShort = task.params.map(function(p) { return p.length > 40 ? p.substring(0, 40) + '...' : p; }).join(', ');
       paramsHtml = '<div style="font-size:9px;color:var(--cyan);background:rgba(0,238,255,0.05);padding:2px 5px;border-radius:3px;margin:2px 0;word-break:break-all;">(' + escHtml(paramShort) + ')</div>';
     }
-    /* Action-Buttons: Cancel fuer Erstellt+Gestartet, Edit fuer Erstellt */
+    /* Action-Buttons */
     var actions = '';
-    if (status === 'Erstellt' || status === 'Gestartet') {
-      actions += '<button class="btn btn-danger btn-sm" onclick="cancelAufgabe(\'' + task.id + '\')">Cancel</button> ';
-    }
-    if (status === 'Erstellt') {
-      actions += '<button class="btn btn-sm" onclick="editAufgabe(\'' + task.id + '\',this)">Edit</button>';
-    }
+	    if (canRestartTask(task)) {
+	      actions += '<button class="btn btn-sm" onclick="restartAufgabe(\'' + task.id + '\')">Erneut starten</button> ';
+	    }
+	    if (status === 'Erstellt' || status === 'Gestartet') {
+	      actions += '<button class="btn btn-danger btn-sm" onclick="cancelAufgabe(\'' + task.id + '\')">Cancel</button> ';
+	    }
+	    if (isCapHitTask(task) && !task.cap_override && (status === 'Erstellt' || status === 'Gestartet')) {
+	      actions += '<button class="btn btn-sm" onclick="overrideAufgabeCap(\'' + task.id + '\')">Override cap</button> ';
+	    }
+	    if (status === 'Erstellt') {
+	      actions += '<button class="btn btn-sm" onclick="editAufgabe(\'' + task.id + '\',this)">Edit</button>';
+	    }
     card.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:start;">' +
         '<div class="kanban-card-title" style="flex:1;">' + toolInfo + '</div>' +
         '<span class="badge badge-' + statusBadgeColor(status) + '">' + status + '</span>' +
       '</div>' +
       paramsHtml +
-      '<div style="font-size:10px;color:var(--text);margin:3px 0;line-height:1.4;word-break:break-word;">' + escHtml(task.anweisung.length > 100 ? task.anweisung.substring(0, 100) + '...' : task.anweisung) + '</div>' +
+      '<div style="font-size:10px;color:var(--text);margin:3px 0;line-height:1.4;word-break:break-word;">' + escHtml(anweisung.length > 100 ? anweisung.substring(0, 100) + '...' : anweisung) + '</div>' +
       '<div class="kanban-card-meta">' +
         typBadge +
         '<span>' + escHtml(task.modul) + '</span>' +
         ersteller +
         (task.erstellt ? '<span>' + fmtDateTime(task.erstellt) + '</span>' : '') +
-      '</div>' +
-      resultHtml +
-      (actions ? '<div class="mod-card-actions" style="margin-top:4px">' + actions + '</div>' : '');
+	      '</div>' +
+	      capHtml +
+	      resultHtml +
+	      renderDeepDiveToolTrace(resultText) +
+	      renderTaskResultDetails(resultText, 'voller Task-Output') +
+	      renderKanbanChildren(task) +
+	      (actions ? '<div class="mod-card-actions" style="margin-top:4px">' + actions + '</div>' : '');
     container.appendChild(card);
   });
+}
+
+function extractDeepDiveToolTrace(result) {
+  if (!result) return [];
+  var marker = 'DEEPDIVE_TOOL_TRACE:';
+  var start = result.indexOf(marker);
+  if (start < 0) return [];
+  var tail = result.substring(start + marker.length);
+  var end = tail.length;
+  ['\nDEEPDIVE_TRACE:', '\nNEXT_STEP:'].forEach(function(stop) {
+    var idx = tail.indexOf(stop);
+    if (idx >= 0 && idx < end) end = idx;
+  });
+  return tail.substring(0, end).split('\n').map(function(line) {
+    return line.trim();
+  }).filter(function(line) {
+    return /^\d+\.\s+\S+\s+\S+\s+\S+/.test(line);
+  });
+}
+
+function parseDeepDiveToolTraceLine(line) {
+  var m = line.match(/^(\d+)\.\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+\|\s+(.*))?$/);
+  if (!m) return {idx: '', ts: '', tool: 'trace', status: 'INFO', detail: line};
+  return {idx: m[1], ts: m[2], tool: m[3], status: m[4], detail: m[5] || ''};
+}
+
+function renderDeepDiveToolTrace(result) {
+  var lines = extractDeepDiveToolTrace(result);
+  if (!lines.length) return '';
+  var parsed = lines.map(parseDeepDiveToolTraceLine);
+  var visible = parsed.slice(0, 12);
+  var html = '<div class="deepdive-tool-trace">';
+  html += '<div class="deepdive-tool-trace-title">DeepDive interne Tools (' + parsed.length + ')</div>';
+  visible.forEach(function(row) {
+    html += '<div class="deepdive-tool-row">';
+    html += '<span class="deepdive-tool-idx">' + escHtml(row.idx) + '</span>';
+    html += '<span class="deepdive-tool-name" title="' + escHtml(row.tool) + '">' + escHtml(row.tool) + '</span>';
+    html += '<span class="deepdive-tool-status ' + escHtml(row.status) + '">' + escHtml(row.status) + '</span>';
+    html += '<span class="deepdive-tool-detail">' + escHtml(row.detail) + '</span>';
+    html += '</div>';
+  });
+  if (parsed.length > visible.length) {
+    html += '<details class="kanban-child-details">';
+    html += '<summary>alle internen Tool-Aufrufe (' + parsed.length + ')</summary>';
+    html += '<pre>' + escHtml(lines.join('\n')) + '</pre>';
+    html += '</details>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderTaskResultDetails(result, label) {
+  if (!result || result.length <= 220) return '';
+  var hasTrace = result.indexOf('DEEPDIVE_TOOL_TRACE:') >= 0 || result.indexOf('DEEPDIVE_TRACE:') >= 0 || result.indexOf('DEEPDIVE_CRAWL_MANIFEST') >= 0;
+  return '<details class="kanban-child-details">' +
+    '<summary style="' + (hasTrace ? 'color:var(--cyan);' : '') + '">' + escHtml(label || 'voller Output') + ' (' + result.length + ' chars)</summary>' +
+    '<pre>' + escHtml(result) + '</pre>' +
+    '</details>';
+}
+
+function renderKanbanChildren(task) {
+  var children = (aufgabenChildMap[task.id] || []);
+  if (!children.length) return '';
+  var html = '<div class="kanban-child-flow" title="Tool-Subtasks dieser Aufgabe">';
+  children.forEach(function(child, idx) {
+    var status = child.status || 'Erstellt';
+    var color = taskStatusColor(status);
+    var toolName = child.tool || child.typ || 'subtask';
+    var params = (child.params || []).map(function(p) {
+      return p.length > 42 ? p.substring(0, 42) + '...' : p;
+    }).join(', ');
+    var result = child.ergebnis || '';
+    var resultShort = result.length > 110 ? result.substring(0, 110) + '...' : result;
+    var hasTrace = result.indexOf('DEEPDIVE_TRACE:') >= 0 || result.indexOf('DEEPDIVE_CRAWL_MANIFEST') >= 0;
+    html += '<div class="kanban-child-row">';
+    html += '<div class="kanban-child-spine">';
+    html += '<span class="kanban-child-dot" style="background:' + color + ';box-shadow:0 0 5px ' + color + ';"></span>';
+    if (idx < children.length - 1) html += '<span class="kanban-child-line"></span>';
+    html += '</div>';
+    html += '<div class="kanban-child-body">';
+    html += '<div class="kanban-child-head">';
+    html += '<span class="kanban-child-tool">' + escHtml(toolName) + '</span>';
+    html += '<span class="badge badge-' + statusBadgeColor(status) + '">' + escHtml(status) + '</span>';
+    if (params) html += '<span style="color:var(--text-dim);word-break:break-word;">(' + escHtml(params) + ')</span>';
+    html += '</div>';
+    if (resultShort) html += '<div class="kanban-child-result">' + escHtml(resultShort) + '</div>';
+    html += renderDeepDiveToolTrace(result);
+    if (result.length > 110) {
+      html += '<details class="kanban-child-details">';
+      html += '<summary style="' + (hasTrace ? 'color:var(--cyan);' : '') + '">' + (hasTrace ? 'DeepDive Trace / voller Tool-Output' : 'voller Tool-Output') + ' (' + result.length + ' chars)</summary>';
+      html += '<pre>' + escHtml(result) + '</pre>';
+      html += '</details>';
+    }
+    html += '</div></div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function taskStatusColor(status) {
+  switch(status) {
+    case 'Success': return 'var(--green)';
+    case 'Failed': return 'var(--red)';
+    case 'Gestartet': return 'var(--orange)';
+    case 'Cancelled': return 'var(--purple)';
+    default: return 'var(--blue)';
+  }
 }
 
 function getModulTyp(modulId) {
@@ -1991,10 +2435,27 @@ function statusBadgeColor(s) {
 /* Aufgabe abbrechen */
 function cancelAufgabe(id) {
   if (!confirm('Aufgabe abbrechen?')) return;
-  fetch('/api/aufgaben/' + id, {method: 'DELETE'})
-    .then(function(r) { return r.json(); })
+  apiFetch('DELETE', '/api/aufgaben/' + id)
     .then(function(res) {
       if (res.ok) { toast('Aufgabe abgebrochen', 'info'); loadAufgaben(); }
+      else { toast('Fehler: ' + (res.error || 'Unknown'), 'error'); }
+    }).catch(function(e) { toast('Fehler: ' + e.message, 'error'); });
+}
+
+function restartAufgabe(id) {
+  if (!confirm('Aufgabe erneut starten?')) return;
+  apiFetch('POST', '/api/aufgaben/' + id + '/restart', {})
+    .then(function(res) {
+      if (res.ok) { toast('Aufgabe neu gestartet', 'success'); loadAufgaben(); }
+      else { toast('Fehler: ' + (res.error || 'Unknown'), 'error'); }
+    }).catch(function(e) { toast('Fehler: ' + e.message, 'error'); });
+}
+
+function overrideAufgabeCap(id) {
+  if (!confirm('Cost-Cap fuer diese Aufgabe einmalig ueberschreiben?')) return;
+  apiFetch('POST', '/api/aufgaben/' + id + '/cap-override', {})
+    .then(function(res) {
+      if (res.ok) { toast('Cap-Override gesetzt', 'warning'); loadAufgaben(); }
       else { toast('Fehler: ' + (res.error || 'Unknown'), 'error'); }
     }).catch(function(e) { toast('Fehler: ' + e.message, 'error'); });
 }
@@ -2005,17 +2466,13 @@ function editAufgabe(id, btn) {
   editingAufgabeId = id;
   /* Aktuelle Anweisung aus der Karte lesen */
   var card = btn.closest('.kanban-card');
-  var title = card ? card.querySelector('.kanban-card-title') : null;
-  ge('aufgabe-edit-text').value = title ? title.textContent : '';
+  ge('aufgabe-edit-text').value = card ? (card.dataset.anweisung || '') : '';
   openModal('modal-aufgabe-edit');
 }
 ge('aufgabe-edit-submit').addEventListener('click', function() {
   var text = ge('aufgabe-edit-text').value.trim();
   if (!text) { toast('Anweisung darf nicht leer sein', 'error'); return; }
-  fetch('/api/aufgaben/' + editingAufgabeId, {
-    method: 'PATCH', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({anweisung: text})
-  }).then(function(r) { return r.json(); })
+  apiFetch('PATCH', '/api/aufgaben/' + editingAufgabeId, {anweisung: text})
     .then(function(res) {
       if (res.ok) { toast('Aufgabe aktualisiert', 'success'); closeModal('modal-aufgabe-edit'); loadAufgaben(); }
       else { toast('Fehler: ' + (res.error || 'Unknown'), 'error'); }
@@ -2120,29 +2577,42 @@ ge('aufgaben-view-toggle').addEventListener('click', function() {
 
 function renderFlow(data) {
   var container = ge('aufgaben-flow');
-  var all = (data.erledigt || []).concat(data.gestartet || []).concat(data.erstellt || []);
+  var all = allAufgaben(data);
   if (all.length === 0) {
     container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim);">No tasks</div>';
     return;
   }
 
-  /* Gruppiere: llm_call Tasks sind Haupt-Aufgaben, directs davor/danach sind Sub-Tasks */
+  /* Erst echte parent_id, dann rekonstruierte Legacy-Toolketten. */
   var groups = [];
-  var currentGroup = null;
+  var groupedIds = {};
 
   /* Sortiere nach Erstellungszeit */
   all.sort(function(a, b) { return (a.erstellt || '').localeCompare(b.erstellt || ''); });
 
   all.forEach(function(t) {
-    if (t.typ === 'llm_call') {
-      currentGroup = { main: t, subs: [] };
-      groups.push(currentGroup);
-    } else if (currentGroup) {
-      currentGroup.subs.push(t);
-    } else {
-      /* Orphan direct-Task */
-      groups.push({ main: null, subs: [t] });
+    if (!t.parent_id && !aufgabenChildIds[t.id] && (t.typ === 'llm_call' || aufgabenChildMap[t.id])) {
+      var subs = (aufgabenChildMap[t.id] || []).slice().sort(function(a, b) {
+        return (a.erstellt || '').localeCompare(b.erstellt || '');
+      });
+      groups.push({ main: t, subs: subs });
+      groupedIds[t.id] = true;
+      subs.forEach(function(s) { groupedIds[s.id] = true; });
     }
+  });
+
+  (aufgabenSyntheticGroups || []).forEach(function(synth) {
+    var subs = (synth.subs || []).filter(function(s) { return !groupedIds[s.id]; });
+    if (!subs.length) return;
+    groups.push({ main: synth, subs: subs });
+    groupedIds[synth.id] = true;
+    subs.forEach(function(s) { groupedIds[s.id] = true; });
+  });
+
+  all.forEach(function(t) {
+    if (groupedIds[t.id] || aufgabenChildIds[t.id]) return;
+    groups.push({ main: t, subs: [] });
+    groupedIds[t.id] = true;
   });
 
   var html = '';
@@ -2157,20 +2627,48 @@ function renderFlow(data) {
     /* Haupt-Aufgabe Header */
     if (main) {
       var statusColor = main.status === 'Success' ? 'var(--green)' : main.status === 'Failed' ? 'var(--red)' : 'var(--orange)';
-      var anw = main.anweisung.length > 80 ? main.anweisung.substring(0, 80) + '...' : main.anweisung;
+      var mainAnweisung = main.anweisung || '';
+      var anw = mainAnweisung.length > 110 ? mainAnweisung.substring(0, 110) + '...' : mainAnweisung;
       html += '<div style="padding:8px 12px;background:rgba(0,238,255,0.03);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">';
       html += '<div style="width:10px;height:10px;border-radius:50%;background:' + statusColor + ';box-shadow:0 0 6px ' + statusColor + ';flex-shrink:0;"></div>';
-      html += '<span style="color:var(--text-bright);font-size:11px;flex:1;">' + escHtml(anw) + '</span>';
+      html += '<div style="flex:1;min-width:0;">';
+      html += '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px;">';
+      html += '<span class="badge badge-blue">' + (main.synthetic ? 'REKONSTRUIERT' : 'EINGANG') + '</span>';
+      html += '<span style="font-size:9px;color:var(--text-dim);">' + escHtml(main.modul || '') + '</span>';
+      html += '</div>';
+      html += '<div style="color:var(--text-bright);font-size:11px;line-height:1.35;word-break:break-word;">' + escHtml(anw || '(keine Anweisung)') + '</div>';
+      html += '</div>';
       html += '<span style="font-size:9px;color:var(--text-dim);">' + (main.erstellt ? fmtDateTime(main.erstellt) : '') + '</span>';
       html += '<span class="badge badge-' + statusBadgeColor(main.status) + '">' + main.status + '</span>';
       html += '</div>';
 
-      /* Ergebnis */
-      if (main.ergebnis) {
-        var erg = main.ergebnis.length > 200 ? main.ergebnis.substring(0, 200) + '...' : main.ergebnis;
-        html += '<div style="padding:4px 12px 4px 30px;font-size:10px;color:var(--text-dim);border-bottom:1px solid rgba(255,255,255,0.02);">' + escHtml(erg) + '</div>';
-      }
-    }
+	    /* Ergebnis */
+	    if (main.ergebnis) {
+	        var erg = main.ergebnis.length > 200 ? main.ergebnis.substring(0, 200) + '...' : main.ergebnis;
+	        html += '<div style="padding:4px 12px 4px 30px;font-size:10px;color:var(--text-dim);border-bottom:1px solid rgba(255,255,255,0.02);">' + escHtml(erg) + '</div>';
+	        if (main.ergebnis.length > 200) {
+	          html += '<div style="padding:4px 12px 8px 30px;border-bottom:1px solid rgba(255,255,255,0.02);">' + renderTaskResultDetails(main.ergebnis, 'voller Task-Output') + '</div>';
+	        }
+	      }
+	      if (isCapHitTask(main) && !main.cap_override && (main.status === 'Erstellt' || main.status === 'Gestartet')) {
+	        html += '<div style="padding:6px 12px 6px 30px;border-bottom:1px solid rgba(255,255,255,0.04);">';
+	        html += '<span style="color:#ffd36a;font-size:10px;font-weight:700;margin-right:8px;">' + escHtml(capContinueLabel(main)) + '</span>';
+	        html += '<button class="btn btn-sm" onclick="overrideAufgabeCap(\'' + main.id + '\')">Override cap</button>';
+	        html += '</div>';
+	      }
+	      if (!main.synthetic) {
+	        var flowActions = '';
+	        if (canRestartTask(main)) {
+	          flowActions += '<button class="btn btn-sm" onclick="restartAufgabe(\'' + main.id + '\')">Erneut starten</button> ';
+	        }
+	        if (main.status === 'Erstellt' || main.status === 'Gestartet') {
+	          flowActions += '<button class="btn btn-danger btn-sm" onclick="cancelAufgabe(\'' + main.id + '\')">Cancel</button> ';
+	        }
+	        if (flowActions) {
+	          html += '<div style="padding:6px 12px 6px 30px;border-bottom:1px solid rgba(255,255,255,0.04);">' + flowActions + '</div>';
+	        }
+	      }
+	    }
 
     /* Sub-Tasks als Flow */
     if (subs.length > 0) {
@@ -2180,6 +2678,8 @@ function renderFlow(data) {
         var toolName = sub.tool || sub.typ;
         var paramShort = (sub.params && sub.params.length > 0) ? sub.params[0].substring(0, 40) : '';
         var ergShort = (sub.ergebnis || '').substring(0, 80);
+        var fullErg = sub.ergebnis || '';
+        var hasTrace = fullErg.indexOf('DEEPDIVE_TRACE:') >= 0 || fullErg.indexOf('DEEPDIVE_CRAWL_MANIFEST') >= 0;
 
         /* Verbindungslinie */
         html += '<div style="display:flex;align-items:stretch;gap:0;">';
@@ -2196,6 +2696,13 @@ function renderFlow(data) {
         html += '<span style="color:var(--cyan);font-weight:600;">' + escHtml(toolName) + '</span>';
         if (paramShort) html += '<span style="color:var(--text-dim);margin-left:4px;">(' + escHtml(paramShort) + ')</span>';
         if (ergShort) html += '<div style="color:var(--text-dim);font-size:9px;margin-top:1px;">' + escHtml(ergShort) + '</div>';
+        html += renderDeepDiveToolTrace(fullErg);
+        if (fullErg.length > 80) {
+          html += '<details style="margin-top:4px;border:1px solid rgba(255,255,255,0.08);border-radius:4px;background:rgba(0,0,0,0.18);">';
+          html += '<summary style="cursor:pointer;color:' + (hasTrace ? 'var(--cyan)' : 'var(--text-dim)') + ';font-size:9px;padding:3px 6px;">' + (hasTrace ? 'DeepDive Trace / voller Tool-Output' : 'voller Tool-Output') + ' (' + fullErg.length + ' chars)</summary>';
+          html += '<pre style="white-space:pre-wrap;word-break:break-word;margin:0;padding:8px;max-height:420px;overflow:auto;color:var(--text);font-size:10px;line-height:1.35;background:rgba(0,0,0,0.25);">' + escHtml(fullErg) + '</pre>';
+          html += '</details>';
+        }
         html += '</div>';
 
         html += '</div>';
@@ -2236,8 +2743,6 @@ function renderConfig() {
   populateWizardSettings(appConfig);
   populateGuardrailSettings(appConfig);
   refreshGuardrailMini();
-  // Cost-cap field
-  if (ge('ccfg-budget')) ge('ccfg-budget').value = (appConfig.daily_budget_usd == null) ? '' : String(appConfig.daily_budget_usd);
   refreshCostMini();
   refreshBackupsList();
 }
@@ -2252,7 +2757,11 @@ function populateWizardSettings(cfg) {
   var providerLabel = 'Claude';
   if (llm.typ === 'Anthropic') providerLabel = 'Claude';
   else if (llm.typ === 'Grok')  providerLabel = 'Grok';
-  else if (llm.typ === 'OpenAICompat') providerLabel = /openrouter/i.test(llm.url || '') ? 'OpenRouter' : 'OpenAI';
+  else if (llm.typ === 'OpenAICompat') {
+    providerLabel = /openrouter/i.test(llm.url || '') ? 'OpenRouter'
+      : /api\.openai\.com/i.test(llm.url || '') ? 'OpenAI'
+      : 'Local/LAN';
+  }
   if (ge('wcfg-provider')) ge('wcfg-provider').value = providerLabel;
   if (ge('wcfg-url'))      ge('wcfg-url').value = llm.url || '';
   if (ge('wcfg-key'))      ge('wcfg-key').value = llm.api_key || '';
@@ -2262,19 +2771,20 @@ function populateWizardSettings(cfg) {
   if (ge('wcfg-rounds'))   ge('wcfg-rounds').value = w.max_rounds_per_session || 30;
   if (ge('wcfg-session-timeout')) ge('wcfg-session-timeout').value = w.session_timeout_secs || 600;
   if (ge('wcfg-rate'))     ge('wcfg-rate').value = w.rate_limit_per_min || 10;
+  updateWizardSettingsSummary();
 }
 
 function collectWizardSettings() {
   if (!ge('wcfg-enabled')) return null;
   var providerLabel = ge('wcfg-provider').value;
   var typ = 'Anthropic';
-  if (providerLabel === 'OpenAI' || providerLabel === 'OpenRouter') typ = 'OpenAICompat';
+  if (providerLabel === 'OpenAI' || providerLabel === 'OpenRouter' || providerLabel === 'Local/LAN') typ = 'OpenAICompat';
   else if (providerLabel === 'Grok') typ = 'Grok';
   else if (providerLabel === 'Claude') typ = 'Anthropic';
   return {
     enabled: ge('wcfg-enabled').checked,
     llm: {
-      id: 'wizard', name: 'Wizard', typ: typ,
+      id: providerLabel === 'Local/LAN' ? 'wizard-local' : 'wizard', name: providerLabel === 'Local/LAN' ? 'Wizard Local/LAN' : 'Wizard', typ: typ,
       url: ge('wcfg-url').value, api_key: ge('wcfg-key').value,
       model: ge('wcfg-model').value,
       timeout_s: Math.max(1, Math.round((parseInt(ge('wcfg-timeout').value, 10) || 30000) / 1000)),
@@ -2289,6 +2799,28 @@ function collectWizardSettings() {
     max_system_prompt_chars: 20000
   };
 }
+
+function updateWizardSettingsSummary() {
+  var el = ge('wizard-settings-summary');
+  if (!el || !ge('wcfg-provider')) return;
+  var enabled = ge('wcfg-enabled') && ge('wcfg-enabled').checked;
+  var provider = ge('wcfg-provider').value || '-';
+  var model = ge('wcfg-model').value || '-';
+  var url = ge('wcfg-url').value || '';
+  el.textContent = (enabled ? 'Enabled' : 'Disabled') + ' · ' + provider + ' · ' + model + (url ? ' · ' + url : '');
+}
+
+if (ge('wizard-settings-toggle')) {
+  ge('wizard-settings-toggle').addEventListener('click', function() {
+    ge('wizard-settings-panel').classList.toggle('open');
+  });
+}
+['wcfg-enabled','wcfg-provider','wcfg-url','wcfg-model','wcfg-timeout','wcfg-rounds','wcfg-session-timeout','wcfg-rate'].forEach(function(id) {
+  var el = ge(id);
+  if (!el) return;
+  el.addEventListener('input', updateWizardSettingsSummary);
+  el.addEventListener('change', updateWizardSettingsSummary);
+});
 
 function populateGuardrailSettings(cfg) {
   var g = (cfg && cfg.guardrail) || {};
@@ -2313,7 +2845,37 @@ function populateGuardrailSettings(cfg) {
     sel.innerHTML = opts.join('');
     sel.value = current;
   }
+  updateGuardrailSettingsSummary();
 }
+
+function updateGuardrailSettingsSummary() {
+  var el = ge('guardrail-settings-summary');
+  if (!el || !ge('gcfg-enabled')) return;
+  var enabled = ge('gcfg-enabled').checked;
+  var retries = ge('gcfg-max-retries') ? (ge('gcfg-max-retries').value || '0') : '0';
+  var strict = ge('gcfg-strict') && ge('gcfg-strict').checked;
+  var alerts = ge('galert-enabled') && ge('galert-enabled').checked;
+  el.textContent = (enabled ? 'Enabled' : 'Disabled') +
+    ' · retries ' + retries +
+    ' · strict ' + (strict ? 'on' : 'off') +
+    ' · alerts ' + (alerts ? 'on' : 'off');
+}
+
+if (ge('guardrail-settings-toggle')) {
+  ge('guardrail-settings-toggle').addEventListener('click', function() {
+    ge('guardrail-settings-panel').classList.toggle('open');
+  });
+}
+[
+  'gcfg-enabled','gcfg-max-retries','gcfg-strict','gcfg-strict-triggers',
+  'galert-enabled','galert-threshold','galert-min','galert-window','galert-cooldown','galert-notify-modul'
+].forEach(function(id) {
+  var el = ge(id);
+  if (!el) return;
+  el.addEventListener('input', updateGuardrailSettingsSummary);
+  el.addEventListener('change', updateGuardrailSettingsSummary);
+});
+
 function collectGuardrailSettings() {
   if (!ge('gcfg-enabled')) return null;
   return {
@@ -2366,16 +2928,6 @@ async function refreshCostMini() {
     if (ge('cost-today')) ge('cost-today').textContent = fmt(today);
     if (ge('cost-total')) ge('cost-total').textContent = fmt(total);
     // Budget bar
-    var budget = parseFloat(ge('ccfg-budget') && ge('ccfg-budget').value || '0');
-    var bar = ge('cost-bar');
-    if (bar && budget > 0) {
-      var pct = Math.min(100, (today / budget) * 100);
-      bar.style.width = pct + '%';
-      bar.style.background = pct >= 90 ? '#c33' : (pct >= 70 ? '#a83' : '#2a5');
-      bar.parentElement.title = 'Heute: ' + fmt(today) + ' von $' + budget.toFixed(2) + ' (' + pct.toFixed(0) + '%)';
-    } else if (bar) {
-      bar.style.width = '0';
-    }
   } catch(e) {}
 }
 setInterval(refreshCostMini, 15000);
@@ -2454,7 +3006,8 @@ async function testWizardConnection() {
     if (!sel) return;
     sel.addEventListener('change', function() {
       var urls = { Claude: 'https://api.anthropic.com', OpenAI: 'https://api.openai.com',
-                   Grok: 'https://api.x.ai', OpenRouter: 'https://openrouter.ai' };
+                   Grok: 'https://api.x.ai', OpenRouter: 'https://openrouter.ai',
+                   'Local/LAN': '' };
       if (ge('wcfg-url')) ge('wcfg-url').value = urls[this.value] || '';
     });
   });
@@ -2499,8 +3052,11 @@ function renderChatLinks() {
   }
   chatMods.forEach(function(m) {
     var chatPort = m.settings && m.settings.port;
+    var token = localStorage.getItem('api_auth_token') || '';
+    var href = chatPort ? ('http://' + window.location.hostname + ':' + chatPort) : ('/chat/' + m.id);
+    if (token) href += '?token=' + encodeURIComponent(token);
     var link = document.createElement('a');
-    link.href = chatPort ? ('http://' + window.location.hostname + ':' + chatPort) : ('/chat/' + m.id);
+    link.href = href;
     link.target = '_blank';
     link.style.cssText = 'display:flex;align-items:center;gap:5px;padding:4px 12px;background:var(--bg-card);border:1px solid rgba(0,238,255,0.2);border-radius:14px;text-decoration:none;color:var(--cyan);font-size:11px;transition:all 0.2s;cursor:pointer;';
     link.onmouseover = function() { this.style.borderColor = 'var(--cyan)'; this.style.boxShadow = '0 0 12px rgba(0,238,255,0.2)'; };
@@ -2705,7 +3261,7 @@ function toggleMateria(backendId, moduleType, attach) {
   renderModuleCards();
   renderChatLinks();
   setTimeout(drawConnections, 50);
-  autoSave();
+  autoSave('module');
 }
 
 function toggleAgentLink(fromBackendId, toBackendId, link) {
@@ -2729,7 +3285,7 @@ function toggleAgentLink(fromBackendId, toBackendId, link) {
   openMateriaPanel(fromBackendId);
   renderModuleCards();
   setTimeout(drawConnections, 50);
-  autoSave();
+  autoSave('module');
 }
 
 function updateMateriaPerms(backendId) {
@@ -2743,17 +3299,72 @@ function updateMateriaPerms(backendId) {
   ge('materia-perms').textContent = permsText;
 }
 
+var LLM_COLOR_PALETTE = ['#00eeff', '#00ff88', '#ffaa00', '#ff4466', '#b47cff', '#35a7ff', '#f4d35e', '#6ee7b7'];
+
+function hexToRgb(hex) {
+  var clean = String(hex || '').replace('#', '');
+  if (clean.length === 3) clean = clean.split('').map(function(ch) { return ch + ch; }).join('');
+  var n = parseInt(clean, 16);
+  if (!Number.isFinite(n)) return {r: 0, g: 238, b: 255};
+  return {r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255};
+}
+
+function colorAlpha(color, alpha) {
+  var rgb = hexToRgb(color);
+  return 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + alpha + ')';
+}
+
+function llmById(id) {
+  return (appConfig && appConfig.llm_backends || []).find(function(b) { return b.id === id; }) || null;
+}
+
+function llmColor(id) {
+  var backends = appConfig && appConfig.llm_backends || [];
+  var idx = backends.findIndex(function(b) { return b.id === id; });
+  if (idx < 0) idx = Math.abs(String(id || '').split('').reduce(function(acc, ch) { return ((acc << 5) - acc) + ch.charCodeAt(0); }, 0));
+  return LLM_COLOR_PALETTE[idx % LLM_COLOR_PALETTE.length];
+}
+
+function llmStyleVars(id) {
+  var color = llmColor(id);
+  return '--llm-color:' + color + ';--llm-soft:' + colorAlpha(color, 0.08) + ';--llm-glow:' + colorAlpha(color, 0.38) + ';';
+}
+
+function moduleRenderEntries() {
+  var entries = [];
+  var used = {};
+  (appConfig.llm_backends || []).forEach(function(backend) {
+    var mods = (appConfig.module || []).filter(function(m) { return m.llm_backend === backend.id; });
+    if (!mods.length) return;
+    entries.push({kind: 'group', backend: backend, modules: mods});
+    mods.forEach(function(m) {
+      used[m.id] = true;
+      entries.push({kind: 'module', module: m, idx: appConfig.module.indexOf(m)});
+    });
+  });
+  var unassigned = (appConfig.module || []).filter(function(m) { return !used[m.id]; });
+  if (unassigned.length) {
+    entries.push({kind: 'group', backend: null, modules: unassigned});
+    unassigned.forEach(function(m) {
+      entries.push({kind: 'module', module: m, idx: appConfig.module.indexOf(m)});
+    });
+  }
+  return entries;
+}
+
 function renderLlmGems() {
   var row = ge('llm-gems-row');
   row.innerHTML = '';
   (appConfig.llm_backends || []).forEach(function(b, idx) {
+    var color = llmColor(b.id);
     var item = document.createElement('div');
     item.className = 'llm-gem-item' + (activeMateriaBackend === b.id ? ' gem-active' : '');
     item.setAttribute('data-llm-idx', idx);
     item.setAttribute('data-llm-id', b.id);
+    item.setAttribute('style', llmStyleVars(b.id));
     item.innerHTML =
-      '<div class="llm-gem-orb typ-' + escHtml(b.typ) + '">' + llmTypIcon(b.typ) + '</div>' +
-      '<div class="llm-gem-name">' + escHtml(b.name) + '</div>' +
+      '<div class="llm-gem-orb typ-' + escHtml(b.typ) + '" style="border-color:' + color + ';box-shadow:0 0 28px ' + colorAlpha(color, 0.38) + ', inset 0 0 22px ' + colorAlpha(color, 0.25) + ';">' + llmTypIcon(b.typ) + '</div>' +
+      '<div class="llm-gem-name" style="color:' + color + ';">' + escHtml(b.name) + '</div>' +
       '<div class="llm-gem-model">' + escHtml(b.model) + '</div>';
     item.addEventListener('click', function(e) { e.stopPropagation(); openMateriaPanel(b.id); });
     row.appendChild(item);
@@ -2761,9 +3372,9 @@ function renderLlmGems() {
   var addBtn = document.createElement('button');
   addBtn.className = 'add-gem-btn';
   addBtn.textContent = '+';
-  addBtn.title = 'Add LLM Backend';
+  addBtn.title = 'Add LLM Gem';
   addBtn.addEventListener('click', function() {
-    openModal('modal-new-agent-splash');
+    openNewLlmGem();
   });
   row.appendChild(addBtn);
 }
@@ -2771,14 +3382,32 @@ function renderLlmGems() {
 function renderModuleCards() {
   var grid = ge('module-grid');
   grid.innerHTML = '';
-  (appConfig.module || []).forEach(function(m, idx) {
+  moduleRenderEntries().forEach(function(entry) {
+    if (entry.kind === 'group') {
+      var header = document.createElement('div');
+      var backend = entry.backend;
+      var color = backend ? llmColor(backend.id) : '#8888aa';
+      header.className = 'module-group-header';
+      header.setAttribute('style', '--llm-color:' + color + ';--llm-soft:' + colorAlpha(color, 0.07) + ';--llm-glow:' + colorAlpha(color, 0.35) + ';');
+      header.innerHTML =
+        '<span class="module-group-dot"></span>' +
+        '<span class="module-group-title">' + escHtml(backend ? backend.name : 'Ohne LLM') + '</span>' +
+        '<span class="module-group-meta">' + escHtml(backend ? backend.model : 'nicht verbunden') + ' · ' + entry.modules.length + ' module</span>';
+      grid.appendChild(header);
+      return;
+    }
+    var m = entry.module;
+    var idx = entry.idx;
     var card = document.createElement('div');
-    card.className = 'mod-card';
+    var expanded = !!expandedModuleIds[m.id];
+    card.className = 'mod-card' + (expanded ? ' expanded' : '');
     card.setAttribute('data-mod-idx', idx);
     card.setAttribute('data-mod-id', m.id);
 
     var llm = appConfig.llm_backends.find(function(b) { return b.id === m.llm_backend; });
     var llmName = llm ? llm.name : (m.llm_backend || '');
+    if (m.llm_backend) card.setAttribute('data-llm-id', m.llm_backend);
+    if (m.llm_backend) card.setAttribute('style', llmStyleVars(m.llm_backend));
     var backupLlm = m.backup_llm ? appConfig.llm_backends.find(function(b) { return b.id === m.backup_llm; }) : null;
     var backupName = backupLlm ? backupLlm.name : (m.backup_llm || '');
     var ragPool = m.rag_pool || '';
@@ -2786,10 +3415,14 @@ function renderModuleCards() {
     var ragName = ragObj ? ragObj.name : ragPool;
 
     /* Linked modules — linking IS the permission system */
-    var links = (m.linked_modules && m.linked_modules.length)
+    var linkLabels = (m.linked_modules && m.linked_modules.length)
       ? m.linked_modules.map(function(l) {
           var linkedMod = appConfig.module.find(function(mm) { return mm.id === l; });
-          var label = linkedMod ? linkedMod.display_name : l;
+          return linkedMod ? linkedMod.display_name : l;
+        })
+      : [];
+    var links = linkLabels.length
+      ? linkLabels.map(function(label) {
           return '<span style="background:rgba(0,170,255,0.1);border:1px solid rgba(0,170,255,0.25);padding:2px 6px;border-radius:3px;font-size:10px;color:var(--cyan);">' + escHtml(label) + '</span>';
         }).join(' ')
       : '<span style="color:var(--text-dim);font-size:10px;">No links</span>';
@@ -2810,18 +3443,41 @@ function renderModuleCards() {
       });
       toolsHtml += '</div>';
     }
+    var toolSummary = tools.length ? tools.slice(0, 3).join(', ') + (tools.length > 3 ? ' +' + (tools.length - 3) : '') : 'no tools';
+    var capSummary = [];
+    if (m.berechtigungen && m.berechtigungen.length) capSummary.push(m.berechtigungen.join(', '));
+    if (linkLabels.length) capSummary.push('links ' + linkLabels.length);
+    if (ragName) capSummary.push('rag ' + ragName);
+    var stateLabel = m.persistent === false ? 'TEMP' : (llmName ? 'active' : 'no llm');
+    var tooltip =
+      '<strong>' + escHtml(m.display_name) + '</strong><br>' +
+      '<span class="muted">' + escHtml(m.id) + ' · ' + escHtml(m.typ) + '</span><br>' +
+      'LLM: ' + escHtml(llmName || 'not connected') + '<br>' +
+      'RAG: ' + escHtml(ragName || 'none') + '<br>' +
+      'Tools: ' + escHtml(toolSummary) + '<br>' +
+      'Links: ' + escHtml(linkLabels.length ? linkLabels.join(', ') : 'none') + '<br>' +
+      '<span class="muted">Click to expand settings.</span>';
+    card.title = [
+      m.display_name + ' (' + m.id + ')',
+      'Typ: ' + m.typ,
+      'LLM: ' + (llmName || 'not connected'),
+      'RAG: ' + (ragName || 'none'),
+      'Tools: ' + toolSummary,
+      'Links: ' + (linkLabels.length ? linkLabels.join(', ') : 'none')
+    ].join('\n');
 
     card.innerHTML =
       '<div class="mod-card-head">' +
         '<div class="mod-card-icon">' + moduleTypIcon(m.typ) + '</div>' +
-        '<div><div class="mod-card-title">' + escHtml(m.display_name) + '</div>' +
+        '<div class="mod-card-head-main"><div class="mod-card-title">' + escHtml(m.display_name) + '</div>' +
         '<div class="mod-card-sub">' + escHtml(m.id) + ' &middot; ' + escHtml(m.typ) + '</div></div>' +
+        '<div class="mod-card-state">' + escHtml(stateLabel) + '</div>' +
+        '<div class="mod-card-toggle">' + (expanded ? '−' : '+') + '</div>' +
       '</div>' +
-      toolsHtml +
       '<div class="mod-sockets">' +
         '<div class="mod-socket-row" data-socket="primary" data-mod-idx="' + idx + '">' +
           '<div class="socket-dot primary' + (m.llm_backend ? ' connected' : '') + '"></div>' +
-          '<span class="socket-label">LLM</span>' +
+          '<span class="socket-label">GEM</span>' +
           '<span class="socket-value ' + (llmName ? 'primary-val' : 'empty-val') + '">' + escHtml(llmName || 'not connected') + '</span>' +
         '</div>' +
         '<div class="mod-socket-row" data-socket="backup" data-mod-idx="' + idx + '">' +
@@ -2835,13 +3491,17 @@ function renderModuleCards() {
           '<span class="socket-value ' + (ragName ? 'rag-val' : 'empty-val') + '">' + escHtml(ragName || 'none') + '</span>' +
         '</div>' +
       '</div>' +
-      '<div class="mod-card-meta">timeout: ' + m.timeout_s + 's &middot; retry: ' + m.retry + budget + '</div>' +
-      '<div style="margin-top:6px;"><span style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-dim);">Linked: </span>' + links + persistent + '</div>' +
-      '<div class="mod-card-actions"><button class="btn btn-sm" data-edit-mod="' + idx + '">Edit</button>' +
-      '<button class="btn btn-sm" onclick="openCapModal(\'' + escHtml(m.id) + '\')" title="Was darf + was kann dieser Agent konkret?" style="font-size:10px;">🔍 Details</button>' +
-      '<button class="btn btn-sm" onclick="showPromptPreview(\'' + escHtml(m.id) + '\')" title="Preview System Prompt" style="font-size:10px;">Prompt</button>' +
-      '<button class="btn btn-sm" onclick="openWizard(\'edit\',\'' + escHtml(m.id) + '\')" style="font-size:10px;">Edit with AI</button>' +
-      '<button class="btn btn-sm" onclick="openWizard(\'copy\',\'' + escHtml(m.id) + '\')" style="font-size:10px;">Copy with AI</button></div>';
+      '<div class="mod-card-detail">' +
+        toolsHtml +
+        '<div class="mod-card-meta">timeout: ' + m.timeout_s + 's &middot; retry: ' + m.retry + budget + '</div>' +
+        '<div style="margin-top:6px;"><span style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-dim);">Links: </span>' + links + persistent + '</div>' +
+        '<div class="mod-card-actions"><button class="btn btn-sm" data-edit-mod="' + idx + '">Edit</button>' +
+        '<button class="btn btn-sm" data-cap-mod="' + escHtml(m.id) + '" title="Was darf + was kann dieser Agent konkret?" style="font-size:10px;">Details</button>' +
+        '<button class="btn btn-sm" data-prompt-mod="' + escHtml(m.id) + '" title="Preview System Prompt" style="font-size:10px;">Prompt</button>' +
+        '<button class="btn btn-sm" data-wizard-edit="' + escHtml(m.id) + '" style="font-size:10px;">AI edit</button>' +
+        '<button class="btn btn-sm" data-wizard-copy="' + escHtml(m.id) + '" style="font-size:10px;">Copy</button></div>' +
+      '</div>' +
+      '<div class="mod-card-tooltip">' + tooltip + '</div>';
 
     grid.appendChild(card);
   });
@@ -2850,6 +3510,11 @@ function renderModuleCards() {
   addCard.className = 'add-module-card';
   addCard.textContent = '+ Add Module';
   addCard.addEventListener('click', function() {
+    loadAvailableModules().then(openAddModuleModal).catch(openAddModuleModal);
+  });
+  grid.appendChild(addCard);
+
+  function openAddModuleModal() {
     editingModIdx = -1;
     ge('modal-module-title').textContent = 'Add module';
     populateModuleTypDropdown();
@@ -2874,8 +3539,7 @@ function renderModuleCards() {
     updateModTypInfo();
     renderSettingsFields(firstTyp, {});
     openModal('modal-module');
-  });
-  grid.appendChild(addCard);
+  }
 
   /* Socket click handlers */
   grid.querySelectorAll('.mod-socket-row').forEach(function(row) {
@@ -2890,6 +3554,41 @@ function renderModuleCards() {
     btn.addEventListener('click', function(e) {
       e.stopPropagation();
       editModule(parseInt(btn.dataset.editMod));
+    });
+  });
+
+  grid.querySelectorAll('[data-cap-mod]').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openCapModal(btn.dataset.capMod);
+    });
+  });
+  grid.querySelectorAll('[data-prompt-mod]').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      showPromptPreview(btn.dataset.promptMod);
+    });
+  });
+  grid.querySelectorAll('[data-wizard-edit]').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openWizard('edit', btn.dataset.wizardEdit);
+    });
+  });
+  grid.querySelectorAll('[data-wizard-copy]').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      openWizard('copy', btn.dataset.wizardCopy);
+    });
+  });
+
+  grid.querySelectorAll('.mod-card').forEach(function(card) {
+    card.addEventListener('click', function(e) {
+      if (e.target.closest('button') || e.target.closest('.mod-socket-row') || e.target.closest('.mod-card-detail')) return;
+      var id = card.dataset.modId;
+      expandedModuleIds[id] = !expandedModuleIds[id];
+      renderModuleCards();
+      setTimeout(drawConnections, 50);
     });
   });
 }
@@ -2907,7 +3606,7 @@ function showSocketDropdown(anchorEl, modIdx, socketType) {
       if (socketType === 'primary') appConfig.module[modIdx].llm_backend = '';
       else appConfig.module[modIdx].backup_llm = null;
       dd.classList.remove('open');
-      renderModuleCards(); setTimeout(drawConnections, 50); autoSave();
+      renderModuleCards(); setTimeout(drawConnections, 50); autoSave('module');
     });
     dd.appendChild(noneItem);
 
@@ -2921,7 +3620,7 @@ function showSocketDropdown(anchorEl, modIdx, socketType) {
         if (socketType === 'primary') appConfig.module[modIdx].llm_backend = b.id;
         else appConfig.module[modIdx].backup_llm = b.id;
         dd.classList.remove('open');
-        renderModuleCards(); setTimeout(drawConnections, 50); autoSave();
+        renderModuleCards(); setTimeout(drawConnections, 50); autoSave('module');
       });
       dd.appendChild(item);
     });
@@ -2932,7 +3631,7 @@ function showSocketDropdown(anchorEl, modIdx, socketType) {
     noneRag.addEventListener('click', function() {
       appConfig.module[modIdx].rag_pool = null;
       dd.classList.remove('open');
-      renderModuleCards(); setTimeout(drawConnections, 50); autoSave();
+      renderModuleCards(); setTimeout(drawConnections, 50); autoSave('module');
     });
     dd.appendChild(noneRag);
 
@@ -2944,7 +3643,7 @@ function showSocketDropdown(anchorEl, modIdx, socketType) {
       item.addEventListener('click', function() {
         appConfig.module[modIdx].rag_pool = r.id;
         dd.classList.remove('open');
-        renderModuleCards(); setTimeout(drawConnections, 50); autoSave();
+        renderModuleCards(); setTimeout(drawConnections, 50); autoSave('module');
       });
       dd.appendChild(item);
     });
@@ -2985,6 +3684,7 @@ function drawConnections() {
       if (gem) {
         var sockEl = card.querySelector('.mod-socket-row[data-socket="primary"] .socket-dot');
         if (sockEl) {
+          var primaryColor = llmColor(m.llm_backend);
           var g = gem.querySelector('.llm-gem-orb').getBoundingClientRect();
           var s = sockEl.getBoundingClientRect();
           var x1 = g.left + g.width/2 - boardRect.left;
@@ -2992,8 +3692,8 @@ function drawConnections() {
           var x2 = s.left + s.width/2 - boardRect.left;
           var y2 = s.top + s.height/2 - boardRect.top;
           var cy1 = y1 + (y2-y1)*0.3; var cy2 = y2 - (y2-y1)*0.3;
-          lines += '<path d="M'+x1+','+y1+' C'+x1+','+cy1+' '+x2+','+cy2+' '+x2+','+y2+'" fill="none" stroke="rgba(0,238,255,0.35)" stroke-width="2"/>';
-          lines += '<path d="M'+x1+','+y1+' C'+x1+','+cy1+' '+x2+','+cy2+' '+x2+','+y2+'" fill="none" stroke="rgba(0,238,255,0.1)" stroke-width="6"/>';
+          lines += '<path d="M'+x1+','+y1+' C'+x1+','+cy1+' '+x2+','+cy2+' '+x2+','+y2+'" fill="none" stroke="' + colorAlpha(primaryColor, 0.55) + '" stroke-width="2"/>';
+          lines += '<path d="M'+x1+','+y1+' C'+x1+','+cy1+' '+x2+','+cy2+' '+x2+','+y2+'" fill="none" stroke="' + colorAlpha(primaryColor, 0.14) + '" stroke-width="6"/>';
         }
       }
     }
@@ -3003,6 +3703,7 @@ function drawConnections() {
       if (gem2) {
         var sockEl2 = card.querySelector('.mod-socket-row[data-socket="backup"] .socket-dot');
         if (sockEl2) {
+          var backupColor = llmColor(m.backup_llm);
           var g2 = gem2.querySelector('.llm-gem-orb').getBoundingClientRect();
           var s2 = sockEl2.getBoundingClientRect();
           var x1b = g2.left + g2.width/2 - boardRect.left;
@@ -3010,8 +3711,8 @@ function drawConnections() {
           var x2b = s2.left + s2.width/2 - boardRect.left;
           var y2b = s2.top + s2.height/2 - boardRect.top;
           var cy1b = y1b + (y2b-y1b)*0.3; var cy2b = y2b - (y2b-y1b)*0.3;
-          lines += '<path d="M'+x1b+','+y1b+' C'+x1b+','+cy1b+' '+x2b+','+cy2b+' '+x2b+','+y2b+'" fill="none" stroke="rgba(255,170,0,0.3)" stroke-width="1.5" stroke-dasharray="6,4"/>';
-          lines += '<path d="M'+x1b+','+y1b+' C'+x1b+','+cy1b+' '+x2b+','+cy2b+' '+x2b+','+y2b+'" fill="none" stroke="rgba(255,170,0,0.08)" stroke-width="5" stroke-dasharray="6,4"/>';
+          lines += '<path d="M'+x1b+','+y1b+' C'+x1b+','+cy1b+' '+x2b+','+cy2b+' '+x2b+','+y2b+'" fill="none" stroke="' + colorAlpha(backupColor, 0.42) + '" stroke-width="1.5" stroke-dasharray="6,4"/>';
+          lines += '<path d="M'+x1b+','+y1b+' C'+x1b+','+cy1b+' '+x2b+','+cy2b+' '+x2b+','+y2b+'" fill="none" stroke="' + colorAlpha(backupColor, 0.12) + '" stroke-width="5" stroke-dasharray="6,4"/>';
         }
       }
     }
@@ -3021,6 +3722,7 @@ function drawConnections() {
       if (pill) {
         var sockEl3 = card.querySelector('.mod-socket-row[data-socket="rag"] .socket-dot');
         if (sockEl3) {
+          var ragColor = m.llm_backend ? llmColor(m.llm_backend) : '#8855ff';
           var s3 = sockEl3.getBoundingClientRect();
           var p3 = pill.getBoundingClientRect();
           var x1r = s3.left + s3.width/2 - boardRect.left;
@@ -3028,8 +3730,8 @@ function drawConnections() {
           var x2r = p3.left + p3.width/2 - boardRect.left;
           var y2r = p3.top - boardRect.top;
           var cy1r = y1r + (y2r-y1r)*0.4; var cy2r = y2r - (y2r-y1r)*0.4;
-          lines += '<path d="M'+x1r+','+y1r+' C'+x1r+','+cy1r+' '+x2r+','+cy2r+' '+x2r+','+y2r+'" fill="none" stroke="rgba(136,85,255,0.3)" stroke-width="1.5"/>';
-          lines += '<path d="M'+x1r+','+y1r+' C'+x1r+','+cy1r+' '+x2r+','+cy2r+' '+x2r+','+y2r+'" fill="none" stroke="rgba(136,85,255,0.08)" stroke-width="5"/>';
+          lines += '<path d="M'+x1r+','+y1r+' C'+x1r+','+cy1r+' '+x2r+','+cy2r+' '+x2r+','+y2r+'" fill="none" stroke="' + colorAlpha(ragColor, 0.42) + '" stroke-width="1.5"/>';
+          lines += '<path d="M'+x1r+','+y1r+' C'+x1r+','+cy1r+' '+x2r+','+cy2r+' '+x2r+','+y2r+'" fill="none" stroke="' + colorAlpha(ragColor, 0.11) + '" stroke-width="5"/>';
         }
       }
     }
@@ -3065,14 +3767,15 @@ function drawConnections() {
       var x2 = g2.left + g2.width/2 - boardRect.left;
       var y2 = g2.top + g2.height/2 - boardRect.top;
       var midY = Math.min(y1, y2) - 30;
+      var linkColor = llmColor(m.llm_backend);
       if (reverseExists) {
         // Bidirectional: solid line, arrows on both ends
-        lines += '<path d="M'+x1+','+y1+' Q'+((x1+x2)/2)+','+midY+' '+x2+','+y2+'" fill="none" stroke="rgba(255,170,0,0.6)" stroke-width="2.5" marker-start="url(#arrow-orange-rev)" marker-end="url(#arrow-orange)"/>';
-        lines += '<path d="M'+x1+','+y1+' Q'+((x1+x2)/2)+','+midY+' '+x2+','+y2+'" fill="none" stroke="rgba(255,170,0,0.12)" stroke-width="8"/>';
+        lines += '<path d="M'+x1+','+y1+' Q'+((x1+x2)/2)+','+midY+' '+x2+','+y2+'" fill="none" stroke="' + colorAlpha(linkColor, 0.62) + '" stroke-width="2.5" marker-start="url(#arrow-orange-rev)" marker-end="url(#arrow-orange)"/>';
+        lines += '<path d="M'+x1+','+y1+' Q'+((x1+x2)/2)+','+midY+' '+x2+','+y2+'" fill="none" stroke="' + colorAlpha(linkColor, 0.14) + '" stroke-width="8"/>';
       } else {
         // Unidirectional: dashed line, arrow at target end
-        lines += '<path d="M'+x1+','+y1+' Q'+((x1+x2)/2)+','+midY+' '+x2+','+y2+'" fill="none" stroke="rgba(255,170,0,0.6)" stroke-width="2.5" stroke-dasharray="8,4" marker-end="url(#arrow-orange)"/>';
-        lines += '<path d="M'+x1+','+y1+' Q'+((x1+x2)/2)+','+midY+' '+x2+','+y2+'" fill="none" stroke="rgba(255,170,0,0.12)" stroke-width="8" stroke-dasharray="8,4"/>';
+        lines += '<path d="M'+x1+','+y1+' Q'+((x1+x2)/2)+','+midY+' '+x2+','+y2+'" fill="none" stroke="' + colorAlpha(linkColor, 0.62) + '" stroke-width="2.5" stroke-dasharray="8,4" marker-end="url(#arrow-orange)"/>';
+        lines += '<path d="M'+x1+','+y1+' Q'+((x1+x2)/2)+','+midY+' '+x2+','+y2+'" fill="none" stroke="' + colorAlpha(linkColor, 0.14) + '" stroke-width="8" stroke-dasharray="8,4"/>';
       }
     });
   });
@@ -3109,61 +3812,108 @@ function renderRagPills() {
   row.appendChild(addBtn);
 }
 
+function setLlmCostCapForm(cap) {
+  cap = cap || {};
+  ge('llm-cap-enabled').checked = !!cap.enabled;
+  ge('llm-cap-cycle').value = cap.cycle || 'days';
+  ge('llm-cap-days').value = cap.cycle_days || 1;
+  ge('llm-cap-budget').value = cap.budget_usd == null ? '' : String(cap.budget_usd);
+  ge('llm-cap-calls').value = cap.max_calls == null ? '' : String(cap.max_calls);
+  ge('llm-price-input').value = cap.input_per_1m == null ? '' : String(cap.input_per_1m);
+  ge('llm-price-output').value = cap.output_per_1m == null ? '' : String(cap.output_per_1m);
+}
+
+function readNullableFloat(id) {
+  var raw = (ge(id).value || '').trim();
+  if (raw === '') return null;
+  var n = parseFloat(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function readNullableInt(id) {
+  var raw = (ge(id).value || '').trim();
+  if (raw === '') return null;
+  var n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function collectLlmCostCap() {
+  var cap = {
+    enabled: ge('llm-cap-enabled').checked,
+    cycle: ge('llm-cap-cycle').value || 'days',
+    cycle_days: parseInt(ge('llm-cap-days').value, 10) || 1,
+    budget_usd: readNullableFloat('llm-cap-budget'),
+    max_calls: readNullableInt('llm-cap-calls'),
+    input_per_1m: readNullableFloat('llm-price-input'),
+    output_per_1m: readNullableFloat('llm-price-output')
+  };
+  if (!cap.enabled && cap.budget_usd == null && cap.max_calls == null && cap.input_per_1m == null && cap.output_per_1m == null) return null;
+  return cap;
+}
+
 function editLlm(idx) {
   editingLlmIdx = idx;
   var b = appConfig.llm_backends[idx];
-  ge('modal-llm-title').textContent = 'Edit LLM Backend';
+  ge('modal-llm-title').textContent = 'Edit LLM Gem';
   ge('llm-id').value = b.id; ge('llm-id').disabled = true;
-  ge('llm-name').value = b.name; ge('llm-typ').value = b.typ;
+  ge('llm-name').value = b.name; ge('llm-typ').value = providerFromBackend(b);
   ge('llm-url').value = b.url; ge('llm-model').value = b.model;
   ge('llm-apikey').value = b.api_key || ''; ge('llm-timeout').value = b.timeout_s;
+  ge('llm-max-tokens').value = b.max_tokens || '';
+  setLlmCostCapForm(b.cost_cap || null);
   ge('llm-bot-name').value = (b.identity && b.identity.bot_name) || '';
   ge('llm-system-prompt').value = (b.identity && b.identity.system_prompt) || '';
   ge('llm-delete').style.display = 'inline-block';
   openModal('modal-llm');
 }
 
+function openNewLlmGem() {
+  editingLlmIdx = -1;
+  ge('modal-llm-title').textContent = 'Add LLM Gem';
+  ge('llm-id').value = '';
+  ge('llm-id').disabled = false;
+  ge('llm-name').value = '';
+  ge('llm-typ').value = 'llamacpp';
+  ge('llm-url').value = '';
+  ge('llm-model').value = '';
+  ge('llm-model').style.display = 'block';
+  ge('llm-model-select').style.display = 'none';
+  ge('llm-model-select').innerHTML = '';
+  ge('llm-apikey').value = '';
+  ge('llm-timeout').value = 120;
+  ge('llm-max-tokens').value = '';
+  setLlmCostCapForm(null);
+  ge('llm-bot-name').value = '';
+  ge('llm-system-prompt').value = 'Du bist ein hilfreicher Assistent.';
+  ge('llm-delete').style.display = 'none';
+  updateLlmProviderUi(true);
+  openModal('modal-llm');
+}
+
 /* Modelle live vom Backend laden */
 ge('llm-fetch-models').addEventListener('click', function() {
-  // Wir brauchen die Backend-ID. Bei neuem Backend: temporaer speichern und dann laden.
-  // Einfacher: direkt die URL + Key nutzen um Modelle abzurufen
-  var typ = ge('llm-typ').value;
+  var provider = ge('llm-typ').value;
+  var typ = llmProviderToTyp(provider);
+  updateLlmProviderUi(false);
   var url = ge('llm-url').value.trim();
   var apikey = ge('llm-apikey').value.trim();
   if (!url) { toast('URL eingeben', 'error'); return; }
 
-  // Wenn wir ein bestehendes Backend editieren, nutze den API-Endpoint
   var backendId = ge('llm-id').value.trim();
-  if (backendId && editingLlmIdx >= 0) {
-    // Existierendes Backend — Models-API nutzen
-    apiFetch('GET', '/api/llm-models/' + backendId).then(function(data) {
-      if (data.error && (!data.models || data.models.length === 0)) {
-        toast('Fehler: ' + data.error, 'error');
-        return;
-      }
-      _showModelList(data.models || []);
-    }).catch(function(e) { toast('Fehler: ' + e.message, 'error'); });
-  } else {
-    // Neues Backend — direkt abrufen
-    var modelsUrl = '';
-    var headers = {};
-    if (typ === 'Ollama') {
-      modelsUrl = url + '/api/tags';
-    } else {
-      modelsUrl = url + '/v1/models';
-      if (apikey) headers['Authorization'] = 'Bearer ' + apikey;
-      if (typ === 'Anthropic') { headers['x-api-key'] = apikey; headers['anthropic-version'] = '2023-06-01'; delete headers['Authorization']; }
-    }
-    fetch(modelsUrl, {headers: headers}).then(function(r) { return r.json(); }).then(function(data) {
-      var models = [];
-      if (typ === 'Ollama') {
-        models = (data.models || []).map(function(m) { return m.name; });
-      } else {
-        models = (data.data || []).map(function(m) { return m.id; });
-      }
-      _showModelList(models);
-    }).catch(function(e) { toast('Modelle laden fehlgeschlagen: ' + e.message, 'error'); });
-  }
+  apiFetch('POST', '/api/setup/models', {
+    id: backendId || 'draft',
+    name: ge('llm-name').value.trim() || providerLabel(provider),
+    typ: typ,
+    url: url,
+    api_key: apikey || null,
+    model: ge('llm-model').value.trim() || 'local',
+    timeout_s: parseInt(ge('llm-timeout').value) || 120,
+    max_tokens: parseInt(ge('llm-max-tokens').value) || null,
+    identity: { bot_name: 'Agent', greeting: '', system_prompt: 'Du bist ein hilfreicher Assistent.' }
+  }).then(function(data) {
+    if (data.error) { toast('Modelle laden fehlgeschlagen: ' + data.error, 'error'); return; }
+    _showModelList(data.models || []);
+  }).catch(function(e) { toast('Modelle laden fehlgeschlagen: ' + e.message, 'error'); });
 });
 
 function _showModelList(models) {
@@ -3191,19 +3941,116 @@ function _showModelList(models) {
   toast(models.length + ' Modelle geladen', 'success');
 }
 
+function slugifyId(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'llm';
+}
+
+function uniqueLlmId(baseId) {
+  var base = slugifyId(baseId);
+  var id = base;
+  var n = 2;
+  while (appConfig.llm_backends.some(function(b) { return b.id === id; })) {
+    id = base + '-' + n;
+    n++;
+  }
+  return id;
+}
+
+var LLM_PROVIDER_DEFAULT_URLS = {
+  llamacpp: '',
+  openrouter: 'https://openrouter.ai/api',
+  openai: 'https://api.openai.com',
+  'custom-openai': '',
+  ollama: 'http://localhost:11434',
+  anthropic: 'https://api.anthropic.com',
+  grok: 'https://api.x.ai'
+};
+
+var LLM_PROVIDER_PLACEHOLDERS = {
+  llamacpp: 'http://192.168.x.x:8080',
+  openrouter: 'https://openrouter.ai/api',
+  openai: 'https://api.openai.com',
+  'custom-openai': 'https://host.example/v1',
+  ollama: 'http://localhost:11434',
+  anthropic: 'https://api.anthropic.com',
+  grok: 'https://api.x.ai'
+};
+
+function llmProviderToTyp(provider) {
+  if (provider === 'ollama') return 'Ollama';
+  if (provider === 'anthropic') return 'Anthropic';
+  if (provider === 'grok') return 'Grok';
+  return 'OpenAICompat';
+}
+
+function providerFromBackend(backend) {
+  if (!backend) return 'llamacpp';
+  if (backend.typ === 'Ollama') return 'ollama';
+  if (backend.typ === 'Anthropic') return 'anthropic';
+  if (backend.typ === 'Grok') return 'grok';
+  var url = (backend.url || '').toLowerCase();
+  if (url.indexOf('openrouter') >= 0) return 'openrouter';
+  if (url.indexOf('api.openai.com') >= 0) return 'openai';
+  if (/localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])\./.test(url)) return 'llamacpp';
+  return 'custom-openai';
+}
+
+function providerLabel(provider) {
+  if (provider === 'llamacpp') return 'llama.cpp';
+  if (provider === 'openrouter') return 'OpenRouter';
+  if (provider === 'openai') return 'OpenAI';
+  if (provider === 'custom-openai') return 'OpenAI-compatible';
+  if (provider === 'ollama') return 'Ollama';
+  if (provider === 'anthropic') return 'Claude';
+  if (provider === 'grok') return 'Grok';
+  return provider || 'LLM';
+}
+
+function isKnownProviderDefaultUrl(url) {
+  var current = String(url || '').trim();
+  return Object.keys(LLM_PROVIDER_DEFAULT_URLS).some(function(k) {
+    return LLM_PROVIDER_DEFAULT_URLS[k] && LLM_PROVIDER_DEFAULT_URLS[k] === current;
+  });
+}
+
+function updateLlmProviderUi(forceDefault) {
+  var provider = ge('llm-typ').value;
+  var urlEl = ge('llm-url');
+  var current = urlEl.value.trim();
+  var next = LLM_PROVIDER_DEFAULT_URLS[provider] || '';
+  urlEl.placeholder = LLM_PROVIDER_PLACEHOLDERS[provider] || 'https://host.example/v1';
+  if (forceDefault || !current || isKnownProviderDefaultUrl(current)) urlEl.value = next;
+  ge('llm-model-select').style.display = 'none';
+  ge('llm-model-select').innerHTML = '';
+  ge('llm-model').style.display = 'block';
+}
+
+ge('llm-typ').addEventListener('change', function() { updateLlmProviderUi(false); });
+
 ge('llm-submit').addEventListener('click', function() {
+  var provider = ge('llm-typ').value;
+  var typ = llmProviderToTyp(provider);
+  updateLlmProviderUi(false);
+  var model = ge('llm-model').value.trim();
+  var name = ge('llm-name').value.trim() || providerLabel(provider);
+  var id = ge('llm-id').value.trim();
+  if (!id && editingLlmIdx === -1) id = uniqueLlmId(name + '-' + (model || typ));
+  if (!id && editingLlmIdx >= 0) id = appConfig.llm_backends[editingLlmIdx].id;
+  var maxTokens = parseInt(ge('llm-max-tokens').value, 10) || null;
   var entry = {
-    id: ge('llm-id').value.trim(), name: ge('llm-name').value.trim(),
-    typ: ge('llm-typ').value, url: ge('llm-url').value.trim(),
-    model: ge('llm-model').value.trim(), api_key: ge('llm-apikey').value.trim() || null,
-    timeout_s: parseInt(ge('llm-timeout').value) || 120,
-    identity: {
+    id: id, name: name,
+    typ: typ, url: ge('llm-url').value.trim(),
+	    model: model, api_key: ge('llm-apikey').value.trim() || null,
+	    timeout_s: parseInt(ge('llm-timeout').value) || 120,
+	    max_tokens: maxTokens,
+	    cost_cap: collectLlmCostCap(),
+	    identity: {
       bot_name: ge('llm-bot-name').value.trim() || 'Agent',
       greeting: '',
       system_prompt: ge('llm-system-prompt').value.trim() || 'Du bist ein hilfreicher Assistent.',
     },
   };
-  if (!entry.id || !entry.name) { toast('ID and Name required', 'error'); return; }
+  if (!entry.url || !entry.model) { toast('URL and model required', 'error'); return; }
   if (editingLlmIdx === -1) {
     if (appConfig.llm_backends.some(function(b) { return b.id === entry.id; })) { toast('ID already exists', 'error'); return; }
     appConfig.llm_backends.push(entry);
@@ -3212,14 +4059,38 @@ ge('llm-submit').addEventListener('click', function() {
     appConfig.llm_backends[editingLlmIdx] = entry;
   }
   closeModal('modal-llm');
-  renderLlmGems(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave();
+  renderLlmGems(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('llm');
+});
+
+ge('llm-test').addEventListener('click', function() {
+  var provider = ge('llm-typ').value;
+  var typ = llmProviderToTyp(provider);
+  updateLlmProviderUi(false);
+  var model = ge('llm-model').value.trim();
+  var url = ge('llm-url').value.trim();
+  if (!url || !model) { toast('URL und Model eingeben', 'error'); return; }
+  toast('Teste LLM Gem ...', 'info');
+  apiFetch('POST', '/api/setup/test-backend', {
+    id: ge('llm-id').value.trim() || 'draft',
+    name: ge('llm-name').value.trim() || providerLabel(provider),
+    typ: typ,
+    url: url,
+    api_key: ge('llm-apikey').value.trim() || null,
+    model: model,
+    timeout_s: parseInt(ge('llm-timeout').value) || 120,
+    max_tokens: parseInt(ge('llm-max-tokens').value) || 24,
+    identity: { bot_name: 'Agent', greeting: '', system_prompt: 'Du bist ein hilfreicher Assistent.' }
+  }).then(function(data) {
+    if (data.ok) toast('LLM Test OK', 'success');
+    else toast('LLM Test fehlgeschlagen: ' + (data.error || 'unknown'), 'error');
+  }).catch(function(e) { toast('LLM Test fehlgeschlagen: ' + e.message, 'error'); });
 });
 
 ge('llm-delete').addEventListener('click', function() {
-  if (editingLlmIdx >= 0 && confirm('Delete this LLM backend?')) {
+  if (editingLlmIdx >= 0 && confirm('Delete this LLM gem?')) {
     appConfig.llm_backends.splice(editingLlmIdx, 1);
     closeModal('modal-llm');
-    renderLlmGems(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave();
+    renderLlmGems(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('llm');
   }
 });
 
@@ -3310,7 +4181,7 @@ function finishWizard() {
   renderLlmGems();
   renderModuleCards();
   setTimeout(drawConnections, 50);
-  autoSave();
+  autoSave('all');
   toast('Agent "' + name + '" created! Click the orb to attach modules.', 'success');
 }
 
@@ -3439,13 +4310,14 @@ ge('module-submit').addEventListener('click', function() {
       toast('Modul-Config gespeichert', 'success');
     });
   }
+  autoSave('module');
 });
 
 ge('module-delete').addEventListener('click', function() {
   if (editingModIdx >= 0 && confirm('Delete this module?')) {
     appConfig.module.splice(editingModIdx, 1);
     closeModal('modal-module');
-    renderModuleCards(); populateChatModules(); setTimeout(drawConnections, 50);
+    renderModuleCards(); populateChatModules(); setTimeout(drawConnections, 50); autoSave('module');
   }
 });
 
@@ -3472,14 +4344,14 @@ ge('rag-submit').addEventListener('click', function() {
     appConfig.rag_pools[editingRagIdx] = entry;
   }
   closeModal('modal-rag');
-  renderRagPills(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave();
+  renderRagPills(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('rag');
 });
 
 ge('rag-delete').addEventListener('click', function() {
   if (editingRagIdx >= 0 && confirm('Delete this RAG pool?')) {
     appConfig.rag_pools.splice(editingRagIdx, 1);
     closeModal('modal-rag');
-    renderRagPills(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave();
+    renderRagPills(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('rag');
   }
 });
 
@@ -3487,21 +4359,41 @@ ge('modal-rag-cancel').addEventListener('click', function() { closeModal('modal-
 
 /* Auto-Save: jede Aenderung wird sofort gespeichert. Debounced. */
 var _saveTimer = null;
-function autoSave() {
+var _pendingSaveScopes = {};
+function autoSave(scope) {
+  _pendingSaveScopes[scope || 'settings'] = true;
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(_doSave, 300);
 }
 function _doSave() {
   if (!appConfig) return;
+  var scopes = _pendingSaveScopes;
+  _pendingSaveScopes = {};
   appConfig.name = ge('cfg-name').value.trim() || appConfig.name || 'Agent Platform';
   appConfig.web_port = parseInt(ge('cfg-port').value) || appConfig.web_port || 8090;
   appConfig.cycle_interval_ms = parseInt(ge('cfg-cycle').value) || appConfig.cycle_interval_ms || 2000;
   var wizardCfg = collectWizardSettings();
   if (wizardCfg) appConfig.wizard = wizardCfg;
   var g = collectGuardrailSettings(); if (g) appConfig.guardrail = g;
-  var budgetRaw = (ge('ccfg-budget') && ge('ccfg-budget').value || '').trim();
-  appConfig.daily_budget_usd = budgetRaw === '' ? null : (parseFloat(budgetRaw) || null);
-  apiFetch('POST', '/api/config', appConfig).then(function(res) {
+  appConfig.daily_budget_usd = null;
+  var payload = JSON.parse(JSON.stringify(appConfig));
+  payload._save_scope = Object.keys(scopes);
+
+  function postConfig(cfgToSave) {
+    return apiFetch('POST', '/api/config', cfgToSave).then(function(res) {
+      if (res.ok) appConfig = cfgToSave;
+      return res;
+    });
+  }
+
+  apiFetch('GET', '/api/config').then(function(latest) {
+    if (!scopes.all && !scopes.llm) payload.llm_backends = latest.llm_backends || [];
+    if (!scopes.all && !scopes.module) payload.module = latest.module || [];
+    if (!scopes.all && !scopes.rag) payload.rag_pools = latest.rag_pools || [];
+    return postConfig(payload);
+  }).catch(function() {
+    return postConfig(payload);
+  }).then(function(res) {
     if (!res.ok) toast('Speichern fehlgeschlagen', 'error');
   }).catch(function() {});
 }
@@ -3572,6 +4464,8 @@ function updateHbStatusBar(status) {
   var pill = ge('hb-status-pill');
   var txt = ge('hb-status-text');
   var schedulersEl = ge('hb-schedulers');
+  var schedPanel = ge('hb-schedulers-panel');
+  var schedToggle = ge('hb-schedulers-toggle');
   if (!status) {
     pill.className = 'hb-status-pill dead';
     txt.textContent = 'Unreachable';
@@ -3579,23 +4473,36 @@ function updateHbStatusBar(status) {
     ge('hb-done').textContent = '-';
     ge('hb-since').textContent = '-';
     if (schedulersEl) schedulersEl.innerHTML = '';
+    if (schedPanel) schedPanel.classList.remove('open');
+    if (schedToggle) schedToggle.textContent = 'Schedulers';
     return;
   }
 
   /* Per-scheduler display */
   if (status.schedulers && schedulersEl) {
     var schedulerHtml = '';
+    var schedulerCount = 0;
+    var deadCount = 0;
     for (var id in status.schedulers) {
       if (!status.schedulers.hasOwnProperty(id)) continue;
+      schedulerCount++;
       var info = status.schedulers[id];
+      if (!info.alive) deadCount++;
       var dot = info.alive ? '&#x1F7E2;' : '&#x1F534;';
-      schedulerHtml += '<div style="display:flex;gap:8px;align-items:center;padding:2px 0;">'
+      schedulerHtml += '<div class="hb-scheduler-row">'
         + '<span>' + dot + '</span>'
-        + '<span style="min-width:180px;color:var(--text)">' + escHtml(id) + '</span>'
-        + '<span style="color:var(--text-dim)">' + Math.round(info.since_s || 0) + 's ago</span>'
+        + '<span class="name">' + escHtml(id) + '</span>'
+        + '<span class="age">' + Math.round(info.since_s || 0) + 's</span>'
         + '</div>';
     }
     schedulersEl.innerHTML = schedulerHtml;
+    if (schedToggle) {
+      schedToggle.textContent = deadCount
+        ? ('Schedulers ' + schedulerCount + ' / ' + deadCount + ' dead')
+        : ('Schedulers ' + schedulerCount);
+      schedToggle.classList.toggle('btn-danger', deadCount > 0);
+    }
+    if (schedPanel) schedPanel.classList.toggle('open', hbSchedulersExpanded);
 
     /* Derive overall alive from schedulers */
     var anyAlive = false;
@@ -3607,6 +4514,8 @@ function updateHbStatusBar(status) {
   } else {
     /* Legacy single-heartbeat format */
     if (schedulersEl) schedulersEl.innerHTML = '';
+    if (schedPanel) schedPanel.classList.remove('open');
+    if (schedToggle) schedToggle.textContent = 'Schedulers';
     var alive = status.alive && status.since_s < 30;
     pill.className = 'hb-status-pill ' + (alive ? 'alive' : 'dead');
     txt.textContent = alive ? 'Alive' : ('Dead (' + Math.round(status.since_s) + 's)');
@@ -3718,6 +4627,11 @@ function renderHeartbeatTimeline() {
 ge('hb-refresh').addEventListener('click', function() {
   fetchHbStatus();
   fetchHbLogs();
+});
+ge('hb-schedulers-toggle').addEventListener('click', function() {
+  hbSchedulersExpanded = !hbSchedulersExpanded;
+  var panel = ge('hb-schedulers-panel');
+  if (panel) panel.classList.toggle('open', hbSchedulersExpanded);
 });
 
 /* ═══════════════════════════════════════════════════════════

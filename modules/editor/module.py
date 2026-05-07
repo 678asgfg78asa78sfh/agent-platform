@@ -15,6 +15,7 @@ MODULE = {
     "tools": [
         {"name": "editor.view", "description": "Zeigt Datei-Ausschnitt mit Zeilennummern. Format: pfad:start-ende oder nur pfad fuer erste 50 Zeilen", "params": ["pfad_und_bereich"]},
         {"name": "editor.replace", "description": "Ersetzt EXAKTEN Text. Param1=pfad, Param2=ALTER_TEXT dann ===REPLACE=== dann NEUER_TEXT", "params": ["pfad", "aenderung"]},
+        {"name": "editor.overwrite", "description": "Schreibt den KOMPLETTEN Dateiinhalt. Erstellt neue Datei oder ueberschreibt vorhandene Datei mit Backup. Ideal fuer module.py.", "params": ["pfad", "inhalt"]},
         {"name": "editor.insert", "description": "Fuegt Text NACH Zeile ein. Format: pfad:zeilennummer, neuer_text", "params": ["pfad_und_zeile", "neuer_text"]},
         {"name": "editor.create", "description": "Erstellt neue Datei", "params": ["pfad", "inhalt"]},
         {"name": "editor.delete_lines", "description": "Loescht Zeilen. Format: pfad:start-ende", "params": ["pfad_und_bereich"]},
@@ -27,20 +28,57 @@ BLOCKED_EXT = [".exe",".bin",".so",".dll",".zip",".tar",".gz",".png",".jpg",".gi
 
 # ═══ Path Security ═══════════════════════════════════
 
+def _strip_named_value(raw, allowed_keys):
+    """Entfernt LLM-typische Prefixe wie 'pfad: ...' oder 'inhalt=\"...'."""
+    s = (raw or "").strip()
+    for sep in (":", "="):
+        if sep not in s:
+            continue
+        key, value = s.split(sep, 1)
+        if key.strip().lower() in allowed_keys:
+            return value.strip()
+    return s
+
+def _strip_content_wrapper(raw):
+    s = _strip_named_value(raw, {"inhalt", "content", "code", "aenderung", "änderung", "text"})
+    s = s.strip()
+    for quote in ('"""', "'''"):
+        if s.startswith(quote) and s.endswith(quote) and len(s) >= 6:
+            return s[3:-3].lstrip("\n")
+    if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+        return s[1:-1]
+    return s
+
 def _resolve_path(raw, config):
     """Pfad aufloesen und validieren. Returns (abs_path, error)."""
-    p = raw.strip().strip('"').strip("'")
-    if p.startswith("./") and len(p) > 2:
-        rest = p[2:]
-        if rest.startswith(("home","tmp","etc","var","usr")):
-            p = "/" + rest
+    p = _strip_named_value(raw, {"pfad", "path", "datei", "file", "pfad_und_bereich", "pfad_und_zeile"}).strip().strip('"').strip("'")
+    p_key = p.replace("\\", "/")
 
     # Home-Verzeichnis als Basis
     home = config.get("home_dir", "")
     if home:
         home = os.path.abspath(home)
+    modules_dir = config.get("modules_dir", "")
+    if modules_dir:
+        modules_dir = os.path.abspath(modules_dir)
+
+    # Plattform-Module liegen NICHT im Agent-Home. Pfade aus module_builder
+    # sind absichtlich "modules/<name>/module.py" und muessen auf den echten
+    # Repo-Modules-Ordner zeigen, nicht auf agent-data/home/<agent>/modules.
+    if not os.path.isabs(p) and modules_dir and (p_key == "modules" or p_key.startswith("modules/")):
+        rel = p_key.split("/", 1)[1] if "/" in p_key else ""
+        p = os.path.join(modules_dir, rel)
+    # Hauefiger Agentenfehler: "deepdive/module.py" statt
+    # "modules/deepdive/module.py". Wenn der Zielpfad oder der Modulordner im
+    # Plattform-Modules-Ordner existiert, mappe ihn dorthin.
+    elif not os.path.isabs(p) and modules_dir:
+        candidate = os.path.join(modules_dir, p_key)
+        first_segment = p_key.split("/", 1)[0]
+        first_dir = os.path.join(modules_dir, first_segment)
+        if os.path.exists(candidate) or ("/" in p_key and os.path.isdir(first_dir)):
+            p = candidate
     # Relativer Pfad → im Home joinen
-    if not os.path.isabs(p) and home:
+    elif not os.path.isabs(p) and home:
         p = os.path.join(home, p)
     # Absolut machen
     p = os.path.abspath(p)
@@ -51,34 +89,26 @@ def _resolve_path(raw, config):
     if ext in blocked:
         return None, f"Blockierte Dateiendung: {ext}"
 
-    # Allowed paths check — alle absolut machen
-    allowed = [os.path.abspath(a) for a in config.get("allowed_paths", [])]
+    # Allowed paths check — alle kanonisch machen
+    allowed = [os.path.realpath(os.path.abspath(a)) for a in config.get("allowed_paths", [])]
     if home:
-        allowed.append(home)
+        allowed.append(os.path.realpath(home))
+    if modules_dir:
+        allowed.append(os.path.realpath(modules_dir))
 
     if not allowed:
         return None, "Keine erlaubten Pfade konfiguriert"
 
     try:
-        # Fuer existierende Dateien
-        if os.path.exists(p):
-            canonical = os.path.realpath(p)
-        else:
-            # Fuer neue Dateien: Parent pruefen
-            parent = os.path.dirname(p)
-            if parent and os.path.exists(parent):
-                canonical = os.path.join(os.path.realpath(parent), os.path.basename(p))
-            else:
-                canonical = os.path.abspath(p)
+        canonical = os.path.realpath(p)
 
         ok = False
         for a in allowed:
             try:
-                a_real = os.path.realpath(a) if os.path.exists(a) else os.path.abspath(a)
-                if canonical.startswith(a_real):
+                if os.path.commonpath([canonical, a]) == a:
                     ok = True
                     break
-            except Exception:
+            except (OSError, ValueError):
                 continue
         if not ok:
             return None, f"Pfad nicht erlaubt: {p}"
@@ -89,7 +119,7 @@ def _resolve_path(raw, config):
 
 def _parse_path_range(param):
     """Parst 'pfad:start-ende' oder 'pfad:zeile' oder 'pfad'. Returns (pfad, start, end)."""
-    param = param.strip().strip('"').strip("'")
+    param = _strip_named_value(param, {"pfad", "path", "datei", "file", "pfad_und_bereich", "pfad_und_zeile"}).strip().strip('"').strip("'")
     # Letzten Doppelpunkt finden (nicht Teil von C:\)
     last_colon = param.rfind(':')
     if last_colon <= 0 or last_colon == len(param) - 1:
@@ -184,6 +214,8 @@ def handle_tool(tool_name, params, config):
             return _view(params, config)
         elif tool_name == "editor.replace":
             return _replace(params, config)
+        elif tool_name == "editor.overwrite":
+            return _overwrite(params, config)
         elif tool_name == "editor.insert":
             return _insert(params, config)
         elif tool_name == "editor.create":
@@ -237,7 +269,7 @@ def _view(params, config):
 
 def _replace(params, config):
     path = params[0] if params else ""
-    change = params[1] if len(params) > 1 else ""
+    change = _strip_content_wrapper(params[1] if len(params) > 1 else "")
     filepath, err = _resolve_path(path, config)
     if err: return {"success": False, "data": err}
     if not os.path.exists(filepath):
@@ -293,6 +325,24 @@ def _replace(params, config):
     return {"success": True, "data": f"Ersetzt in {os.path.basename(filepath)}: {old_count} → {new_count} Zeilen{delta_str}.{bak_str}"}
 
 
+def _overwrite(params, config):
+    path = params[0] if params else ""
+    content = _strip_content_wrapper(params[1] if len(params) > 1 else "")
+    if not path:
+        return {"success": False, "data": "Pfad fehlt"}
+    filepath, err = _resolve_path(path, config)
+    if err: return {"success": False, "data": err}
+
+    max_backups = config.get("max_backups", 5)
+    bak = _create_backup(filepath, max_backups)
+    _write_file(filepath, content)
+
+    lines = content.count('\n') + (1 if content and not content.endswith('\n') else 0)
+    bak_str = f" Backup: {os.path.basename(bak)}" if bak else ""
+    action = "ueberschrieben" if bak else "erstellt"
+    return {"success": True, "data": f"Datei {action}: {os.path.basename(filepath)} ({lines} Zeilen, {len(content.encode('utf-8'))} bytes).{bak_str}"}
+
+
 def _insert(params, config):
     raw = params[0] if params else ""
     new_text = params[1] if len(params) > 1 else ""
@@ -331,7 +381,7 @@ def _insert(params, config):
 
 def _create(params, config):
     path = params[0] if params else ""
-    content = params[1] if len(params) > 1 else ""
+    content = _strip_content_wrapper(params[1] if len(params) > 1 else "")
     filepath, err = _resolve_path(path, config)
     if err: return {"success": False, "data": err}
     if os.path.exists(filepath):

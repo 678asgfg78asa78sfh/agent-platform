@@ -1,11 +1,11 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::io::AsyncWriteExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 /// Beschreibung eines Python-Moduls (aus MODULE dict)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +45,14 @@ struct PyProcess {
     module_path: PathBuf,
 }
 
+fn python_timeout_s(config: &serde_json::Value) -> u64 {
+    config
+        .get("python_timeout_s")
+        .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|n| n as u64)))
+        .unwrap_or(30)
+        .clamp(5, 180)
+}
+
 impl PyProcessPool {
     pub fn new(max_idle_secs: u64) -> Arc<Self> {
         Arc::new(Self {
@@ -71,8 +79,11 @@ impl PyProcessPool {
         // der Response kommt nie aus stdout raus. Background-Task liest stderr
         // zeilenweise und loggt via tracing::debug. Gemini-Finding (run 4).
         if let Some(stderr) = child.stderr.take() {
-            let name = module_path.file_stem().and_then(|s| s.to_str())
-                .unwrap_or("py").to_string();
+            let name = module_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("py")
+                .to_string();
             tokio::spawn(async move {
                 use tokio::io::AsyncBufReadExt;
                 let mut reader = BufReader::new(stderr).lines();
@@ -128,8 +139,8 @@ impl PyProcessPool {
             "params": params,
             "config": config,
         });
-        let request_str = serde_json::to_string(&request)
-            .map_err(|e| format!("serialize request: {e}"))? + "\n";
+        let request_str =
+            serde_json::to_string(&request).map_err(|e| format!("serialize request: {e}"))? + "\n";
 
         if let Err(e) = proc.stdin.write_all(request_str.as_bytes()).await {
             *guard = None;
@@ -146,8 +157,8 @@ impl PyProcessPool {
         // wäre für immer kaputt (Gemini-Finding Round-SQLite-1). Max 50
         // Non-JSON-Lines, danach Abbruch — das verhindert Infinite-Skipping
         // wenn das Modul nur Müll schickt.
+        let timeout_s = python_timeout_s(config);
         let result: serde_json::Value = {
-            let mut parsed: Option<serde_json::Value> = None;
             let mut skipped = 0usize;
             loop {
                 if skipped > 50 {
@@ -156,33 +167,55 @@ impl PyProcessPool {
                 }
                 let mut line = String::new();
                 let res = tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
+                    std::time::Duration::from_secs(timeout_s),
                     proc.stdout.read_line(&mut line),
-                ).await;
+                )
+                .await;
                 match res {
-                    Ok(Ok(0)) => { *guard = None; return Err("Python process died".to_string()); }
-                    Ok(Err(e)) => { *guard = None; return Err(format!("read_line: {e}")); }
-                    Err(_) => { *guard = None; return Err("Python module timeout (30s)".to_string()); }
+                    Ok(Ok(0)) => {
+                        *guard = None;
+                        return Err("Python process died".to_string());
+                    }
+                    Ok(Err(e)) => {
+                        *guard = None;
+                        return Err(format!("read_line: {e}"));
+                    }
+                    Err(_) => {
+                        *guard = None;
+                        return Err(format!("Python module timeout ({}s)", timeout_s));
+                    }
                     Ok(Ok(_)) => {}
                 }
                 let trimmed = line.trim();
-                if trimmed.is_empty() { skipped += 1; continue; }
+                if trimmed.is_empty() {
+                    skipped += 1;
+                    continue;
+                }
                 // Nur Zeilen die wie JSON-Objekte aussehen parsen
                 if !trimmed.starts_with('{') {
                     skipped += 1;
-                    tracing::debug!("[py:{}] skipping non-JSON stdout: {}", module_name, crate::util::safe_truncate(trimmed, 120));
+                    tracing::debug!(
+                        "[py:{}] skipping non-JSON stdout: {}",
+                        module_name,
+                        crate::util::safe_truncate(trimmed, 120)
+                    );
                     continue;
                 }
                 match serde_json::from_str::<serde_json::Value>(trimmed) {
-                    Ok(v) => { parsed = Some(v); break; }
+                    Ok(v) => {
+                        break v;
+                    }
                     Err(_) => {
                         skipped += 1;
-                        tracing::debug!("[py:{}] non-parseable stdout-line: {}", module_name, crate::util::safe_truncate(trimmed, 120));
+                        tracing::debug!(
+                            "[py:{}] non-parseable stdout-line: {}",
+                            module_name,
+                            crate::util::safe_truncate(trimmed, 120)
+                        );
                         continue;
                     }
                 }
             }
-            parsed.unwrap()  // loop above garantiert Some oder return Err
         };
 
         if let Some(err) = result.get("error").and_then(|v| v.as_str()) {
@@ -230,16 +263,29 @@ pub fn discover_modules(modules_dir: &Path) -> Vec<PyModuleMeta> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() { continue; }
+        if !path.is_dir() {
+            continue;
+        }
 
         let module_py = path.join("module.py");
-        if !module_py.exists() { continue; }
+        if !module_py.exists() {
+            continue;
+        }
 
         // Module-Metadaten per "describe" Action holen
         match describe_module_sync(&module_py) {
             Ok(mut meta) => {
+                if let Err(e) = validate_module_meta(&path, &meta) {
+                    tracing::warn!("Python-Modul in {:?} ungueltig: {}", path, e);
+                    continue;
+                }
                 meta.path = module_py;
-                tracing::info!("Python-Modul entdeckt: {} v{} ({} tools)", meta.name, meta.version, meta.tools.len());
+                tracing::info!(
+                    "Python-Modul entdeckt: {} v{} ({} tools)",
+                    meta.name,
+                    meta.version,
+                    meta.tools.len()
+                );
                 modules.push(meta);
             }
             Err(e) => {
@@ -249,6 +295,55 @@ pub fn discover_modules(modules_dir: &Path) -> Vec<PyModuleMeta> {
     }
 
     modules
+}
+
+fn is_module_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn is_tool_name(s: &str) -> bool {
+    let mut parts = s.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if !is_module_ident(first) {
+        return false;
+    }
+    let mut action_parts = 0;
+    for part in parts {
+        action_parts += 1;
+        if !is_module_ident(part) {
+            return false;
+        }
+    }
+    action_parts > 0
+}
+
+fn validate_module_meta(module_dir: &Path, meta: &PyModuleMeta) -> Result<(), String> {
+    if !is_module_ident(&meta.name) {
+        return Err(format!(
+            "MODULE.name '{}' ist kein lowercase Modulname",
+            meta.name
+        ));
+    }
+    let dir_name = module_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if dir_name != meta.name {
+        return Err(format!(
+            "Ordner '{}' passt nicht zu MODULE.name '{}'",
+            dir_name, meta.name
+        ));
+    }
+    for tool in &meta.tools {
+        if !is_tool_name(&tool.name) {
+            return Err(format!("Tool '{}' ist kein gueltiger Toolname", tool.name));
+        }
+    }
+    Ok(())
 }
 
 /// Holt MODULE-Metadaten synchron per subprocess
@@ -293,8 +388,8 @@ pub async fn call_python_tool(
         "config": config,
     });
 
-    let request_str = serde_json::to_string(&request)
-        .map_err(|e| format!("serialize request: {e}"))? + "\n";
+    let request_str =
+        serde_json::to_string(&request).map_err(|e| format!("serialize request: {e}"))? + "\n";
 
     let mut child = tokio::process::Command::new("python3")
         .arg(module_py)
@@ -307,20 +402,27 @@ pub async fn call_python_tool(
 
     // Request schreiben
     if let Some(ref mut stdin) = child.stdin {
-        stdin.write_all(request_str.as_bytes()).await
+        stdin
+            .write_all(request_str.as_bytes())
+            .await
             .map_err(|e| format!("stdin write: {}", e))?;
         stdin.shutdown().await.ok(); // EOF senden
     }
 
-    // Timeout: 30 Sekunden
+    let timeout_s = python_timeout_s(config);
     let output = match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        child.wait_with_output()
-    ).await {
+        std::time::Duration::from_secs(timeout_s),
+        child.wait_with_output(),
+    )
+    .await
+    {
         Ok(result) => result.map_err(|e| format!("Python Prozess Fehler: {}", e))?,
         Err(_) => {
             // child wird hier gedroppt → kill_on_drop killt den Prozess
-            return Err("Python-Modul Timeout (30s) — Prozess gekillt".to_string());
+            return Err(format!(
+                "Python-Modul Timeout ({}s) — Prozess gekillt",
+                timeout_s
+            ));
         }
     };
 
@@ -338,4 +440,48 @@ pub async fn call_python_tool(
     let data = result["data"].as_str().unwrap_or("").to_string();
 
     Ok((success, data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(name: &str, tool_name: &str) -> PyModuleMeta {
+        PyModuleMeta {
+            name: name.into(),
+            description: "test".into(),
+            version: "1.0".into(),
+            settings: HashMap::new(),
+            tools: vec![PyToolDef {
+                name: tool_name.into(),
+                description: "tool".into(),
+                params: vec![],
+            }],
+            path: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn validate_module_meta_rejects_uppercase_names() {
+        let module = meta("DEEPDIVE", "DEEPDIVE.search");
+        assert!(validate_module_meta(Path::new("DEEPDIVE"), &module).is_err());
+    }
+
+    #[test]
+    fn validate_module_meta_rejects_description_as_tool_action() {
+        let module = meta("deepdive", "deepdive.mehrstufige Recherchen zu einem Thema");
+        assert!(validate_module_meta(Path::new("deepdive"), &module).is_err());
+    }
+
+    #[test]
+    fn validate_module_meta_accepts_lowercase_tool_actions() {
+        let module = meta("deepdive", "deepdive.search");
+        assert!(validate_module_meta(Path::new("deepdive"), &module).is_ok());
+    }
+
+    #[test]
+    fn validate_module_meta_accepts_legacy_alias_tool_prefixes() {
+        let module = meta("agent_meta", "agent.capabilities");
+        assert!(validate_module_meta(Path::new("agent_meta"), &module).is_ok());
+    }
 }

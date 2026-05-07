@@ -1,11 +1,11 @@
-use std::sync::Arc;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
-use crate::pipeline::Pipeline;
-use crate::types::*;
 use crate::llm::LlmRouter;
+use crate::pipeline::Pipeline;
 use crate::tools;
+use crate::types::*;
 use crate::util;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 const MAX_TOOL_ROUNDS: usize = 30;
 
@@ -15,21 +15,47 @@ const MAX_TOOL_ROUNDS: usize = 30;
 fn cron_matches_now(expression: &str) -> bool {
     let now = chrono::Local::now();
     let parts: Vec<&str> = expression.split_whitespace().collect();
-    if parts.len() != 5 { return false; }
+    if parts.len() != 5 {
+        return false;
+    }
 
     let checks = [
-        (parts[0], now.format("%M").to_string().parse::<u32>().unwrap_or(0), 59),
-        (parts[1], now.format("%H").to_string().parse::<u32>().unwrap_or(0), 23),
-        (parts[2], now.format("%d").to_string().parse::<u32>().unwrap_or(0), 31),
-        (parts[3], now.format("%m").to_string().parse::<u32>().unwrap_or(0), 12),
-        (parts[4], now.format("%u").to_string().parse::<u32>().unwrap_or(0), 7), // 1=Mon, 7=Sun
+        (
+            parts[0],
+            now.format("%M").to_string().parse::<u32>().unwrap_or(0),
+            59,
+        ),
+        (
+            parts[1],
+            now.format("%H").to_string().parse::<u32>().unwrap_or(0),
+            23,
+        ),
+        (
+            parts[2],
+            now.format("%d").to_string().parse::<u32>().unwrap_or(0),
+            31,
+        ),
+        (
+            parts[3],
+            now.format("%m").to_string().parse::<u32>().unwrap_or(0),
+            12,
+        ),
+        (
+            parts[4],
+            now.format("%u").to_string().parse::<u32>().unwrap_or(0),
+            7,
+        ), // 1=Mon, 7=Sun
     ];
 
-    checks.iter().all(|(pattern, current, _max)| cron_field_matches(pattern, *current))
+    checks
+        .iter()
+        .all(|(pattern, current, _max)| cron_field_matches(pattern, *current))
 }
 
 fn cron_field_matches(pattern: &str, value: u32) -> bool {
-    if pattern == "*" { return true; }
+    if pattern == "*" {
+        return true;
+    }
     // */N — every N
     if let Some(step) = pattern.strip_prefix("*/") {
         if let Ok(n) = step.parse::<u32>() {
@@ -47,7 +73,8 @@ fn cron_field_matches(pattern: &str, value: u32) -> bool {
     }
     // Comma list: 1,3,5
     if pattern.contains(',') {
-        return pattern.split(',')
+        return pattern
+            .split(',')
             .filter_map(|p| p.trim().parse::<u32>().ok())
             .any(|v| v == value);
     }
@@ -73,14 +100,20 @@ struct BusyGuard {
 
 impl BusyGuard {
     fn new(busy: BusyMap, handles: HandleMap, modul_id: String, aufgabe_id: String) -> Self {
-        Self { busy: Some(busy), handles: Some(handles), modul_id, aufgabe_id }
+        Self {
+            busy: Some(busy),
+            handles: Some(handles),
+            modul_id,
+            aufgabe_id,
+        }
     }
 }
 
 impl Drop for BusyGuard {
     fn drop(&mut self) {
-        let (Some(busy), Some(handles)) = (self.busy.take(), self.handles.take())
-            else { return };
+        let (Some(busy), Some(handles)) = (self.busy.take(), self.handles.take()) else {
+            return;
+        };
         let modul_id = std::mem::take(&mut self.modul_id);
         let aufgabe_id = std::mem::take(&mut self.aufgabe_id);
         // Cleanup-Task in Tokio-Runtime spawnen. Wenn die Runtime schon weg ist
@@ -92,14 +125,18 @@ impl Drop for BusyGuard {
                     let mut b = busy.write().await;
                     if let Some(ids) = b.get_mut(&modul_id) {
                         ids.retain(|id| id != &aufgabe_id);
-                        if ids.is_empty() { b.remove(&modul_id); }
+                        if ids.is_empty() {
+                            b.remove(&modul_id);
+                        }
                     }
                 }
                 {
                     let mut h = handles.write().await;
                     if let Some(map) = h.get_mut(&modul_id) {
                         map.remove(&aufgabe_id);
-                        if map.is_empty() { h.remove(&modul_id); }
+                        if map.is_empty() {
+                            h.remove(&modul_id);
+                        }
                     }
                 }
             });
@@ -178,7 +215,8 @@ impl Orchestrator {
     }
 
     pub async fn run(&self) {
-        self.pipeline.log("orchestrator", None, LogTyp::Info, "Orchestrator gestartet");
+        self.pipeline
+            .log("orchestrator", None, LogTyp::Info, "Orchestrator gestartet");
 
         let mut handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
         let mut last_cleanup = std::time::Instant::now();
@@ -213,9 +251,7 @@ impl Orchestrator {
             };
             for modul_id in &modul_ids {
                 let needs_spawn = match handles.get(modul_id) {
-                    Some(handle) => {
-                        handle.is_finished() || !hb_snapshot.contains(modul_id)
-                    }
+                    Some(handle) => handle.is_finished() || !hb_snapshot.contains(modul_id),
                     None => true,
                 };
 
@@ -238,11 +274,15 @@ impl Orchestrator {
                     }
                     // Intervall aus Config holen
                     let cfg = self.config.read().await;
-                    let interval_ms = cfg.module.iter()
+                    let interval_ms = cfg
+                        .module
+                        .iter()
                         .find(|m| m.id == *modul_id)
                         .and_then(|m| m.scheduler_interval_ms)
                         .unwrap_or(cfg.cycle_interval_ms);
-                    let max_concurrent = cfg.module.iter()
+                    let max_concurrent = cfg
+                        .module
+                        .iter()
                         .find(|m| m.id == *modul_id)
                         .and_then(|m| m.max_concurrent_tasks)
                         .unwrap_or(1);
@@ -263,8 +303,15 @@ impl Orchestrator {
                         tokens: self.tokens.clone(),
                     };
 
-                    self.pipeline.log("orchestrator", None, LogTyp::Info,
-                        &format!("Scheduler '{}' wird gestartet (interval: {}ms)", modul_id, interval_ms));
+                    self.pipeline.log(
+                        "orchestrator",
+                        None,
+                        LogTyp::Info,
+                        &format!(
+                            "Scheduler '{}' wird gestartet (interval: {}ms)",
+                            modul_id, interval_ms
+                        ),
+                    );
 
                     let handle = tokio::spawn(async move {
                         scheduler.run().await;
@@ -274,15 +321,20 @@ impl Orchestrator {
             }
 
             // 3. Handles fuer entfernte Module abbrechen
-            let stale: Vec<String> = handles.keys()
+            let stale: Vec<String> = handles
+                .keys()
                 .filter(|id| !modul_ids.contains(id))
                 .cloned()
                 .collect();
             for id in stale {
                 if let Some(handle) = handles.remove(&id) {
                     handle.abort();
-                    self.pipeline.log("orchestrator", None, LogTyp::Warning,
-                        &format!("Scheduler '{}' gestoppt (Modul entfernt)", id));
+                    self.pipeline.log(
+                        "orchestrator",
+                        None,
+                        LogTyp::Warning,
+                        &format!("Scheduler '{}' gestoppt (Modul entfernt)", id),
+                    );
                 }
                 // Heartbeat entfernen
                 self.heartbeats.write().await.remove(&id);
@@ -298,7 +350,10 @@ impl Orchestrator {
             // 4b. Cleanup nach konfiguriertem Intervall (default 60s)
             let cleanup_interval = {
                 let cfg = self.config.read().await;
-                cfg.cleanup.as_ref().map(|c| c.cleanup_interval_s).unwrap_or(60)
+                cfg.cleanup
+                    .as_ref()
+                    .map(|c| c.cleanup_interval_s)
+                    .unwrap_or(60)
             };
             if last_cleanup.elapsed().as_secs() >= cleanup_interval {
                 last_cleanup = std::time::Instant::now();
@@ -310,7 +365,8 @@ impl Orchestrator {
                 // Stale IN_PROGRESS-Marker nach 10 Minuten auto-expiren.
                 // Crash-dead-end-Protection: sonst würde ein einmal hängen-
                 // gebliebener Marker alle zukünftigen Retries blocken.
-                let _ = crate::store::idempotency_expire_in_progress(&self.pipeline.store.pool, 600);
+                let _ =
+                    crate::store::idempotency_expire_in_progress(&self.pipeline.store.pool, 600);
                 // Alte completed Idempotency-Einträge wegrotieren (30 Tage)
                 let _ = crate::store::idempotency_cleanup(&self.pipeline.store.pool, 30);
             }
@@ -322,8 +378,12 @@ impl Orchestrator {
     async fn tick_cron(&self) {
         let cfg = self.config.read().await;
         for modul in cfg.module.iter().filter(|m| m.typ == "cron") {
-            let Some(ref schedule) = modul.settings.schedule else { continue; };
-            if !cron_matches_now(schedule) { continue; }
+            let Some(ref schedule) = modul.settings.schedule else {
+                continue;
+            };
+            if !cron_matches_now(schedule) {
+                continue;
+            }
 
             // Dedup guard: store::cron_try_claim atomar in SQL-Transaktion. Schließt
             // die Race zwischen "dedup-check" und "task-spawn" die das alte JSON-
@@ -332,10 +392,14 @@ impl Orchestrator {
             let now_key = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
             match crate::store::cron_try_claim(&self.pipeline.store.pool, &modul.id, &now_key) {
                 Ok(true) => { /* claimed — weiter */ }
-                Ok(false) => continue,  // schon gefeuert diese Minute
+                Ok(false) => continue, // schon gefeuert diese Minute
                 Err(e) => {
-                    self.pipeline.log("cron", None, LogTyp::Error,
-                        &format!("cron_try_claim fehlgeschlagen: {}", e));
+                    self.pipeline.log(
+                        "cron",
+                        None,
+                        LogTyp::Error,
+                        &format!("cron_try_claim fehlgeschlagen: {}", e),
+                    );
                     continue;
                 }
             }
@@ -360,7 +424,11 @@ impl Orchestrator {
                         if let Some(ref on_success) = modul.settings.on_success {
                             chain_steps.push(crate::types::ChainStep {
                                 tool: on_success.clone(),
-                                params: modul.settings.on_success_params.clone().unwrap_or_default(),
+                                params: modul
+                                    .settings
+                                    .on_success_params
+                                    .clone()
+                                    .unwrap_or_default(),
                                 condition: Some("success".to_string()),
                                 stop_on_fail: false,
                             });
@@ -368,7 +436,11 @@ impl Orchestrator {
                         if let Some(ref on_failure) = modul.settings.on_failure {
                             chain_steps.push(crate::types::ChainStep {
                                 tool: on_failure.clone(),
-                                params: modul.settings.on_failure_params.clone().unwrap_or_default(),
+                                params: modul
+                                    .settings
+                                    .on_failure_params
+                                    .clone()
+                                    .unwrap_or_default(),
                                 condition: Some("failed".to_string()),
                                 stop_on_fail: false,
                             });
@@ -376,23 +448,39 @@ impl Orchestrator {
 
                         if chain_steps.len() > 1 {
                             // Has callbacks — use chain execution
-                            let chain_json = serde_json::to_string(&chain_steps).unwrap_or_default();
+                            let chain_json =
+                                serde_json::to_string(&chain_steps).unwrap_or_default();
                             let mut aufgabe = Aufgabe::direct(
-                                "__chain__", vec![chain_json], target, &modul.id, None, None,
+                                "__chain__",
+                                vec![chain_json],
+                                target,
+                                &modul.id,
+                                None,
+                                None,
                             );
                             aufgabe.anweisung = format!("Cron: {} + callbacks", tool);
                             if self.pipeline.speichern(&aufgabe).is_ok() {
-                                self.pipeline.log("cron", Some(&aufgabe.id), LogTyp::Info,
-                                    &format!("Cron '{}' triggered: {} (with callbacks)", modul.id, tool));
+                                self.pipeline.log(
+                                    "cron",
+                                    Some(&aufgabe.id),
+                                    LogTyp::Info,
+                                    &format!(
+                                        "Cron '{}' triggered: {} (with callbacks)",
+                                        modul.id, tool
+                                    ),
+                                );
                             }
                         } else {
                             // Simple direct task, no callbacks
-                            let aufgabe = Aufgabe::direct(
-                                tool, params, target, &modul.id, None, None,
-                            );
+                            let aufgabe =
+                                Aufgabe::direct(tool, params, target, &modul.id, None, None);
                             if self.pipeline.speichern(&aufgabe).is_ok() {
-                                self.pipeline.log("cron", Some(&aufgabe.id), LogTyp::Info,
-                                    &format!("Cron '{}' triggered: {}()", modul.id, tool));
+                                self.pipeline.log(
+                                    "cron",
+                                    Some(&aufgabe.id),
+                                    LogTyp::Info,
+                                    &format!("Cron '{}' triggered: {}()", modul.id, tool),
+                                );
                             }
                         }
                     }
@@ -400,35 +488,61 @@ impl Orchestrator {
                 "llm" => {
                     // LLM task
                     let target = modul.settings.target_modul.as_deref().unwrap_or(&modul.id);
-                    let anweisung = modul.settings.cron_anweisung.as_deref().unwrap_or("Cron task");
+                    let anweisung = modul
+                        .settings
+                        .cron_anweisung
+                        .as_deref()
+                        .unwrap_or("Cron task");
                     let aufgabe = Aufgabe::llm_call(anweisung, target, &modul.id, None);
                     if self.pipeline.speichern(&aufgabe).is_ok() {
-                        self.pipeline.log("cron", Some(&aufgabe.id), LogTyp::Info,
-                            &format!("Cron '{}' triggered: LLM task for {}", modul.id, target));
+                        self.pipeline.log(
+                            "cron",
+                            Some(&aufgabe.id),
+                            LogTyp::Info,
+                            &format!("Cron '{}' triggered: LLM task for {}", modul.id, target),
+                        );
                     }
                 }
                 "chain" => {
                     if let Some(ref chain) = modul.settings.chain {
-                        if chain.is_empty() { continue; }
+                        if chain.is_empty() {
+                            continue;
+                        }
                         let target = modul.settings.target_modul.as_deref().unwrap_or(&modul.id);
 
                         // Create a task that will execute the full chain
                         // We store the chain spec in the params field as JSON
                         let chain_json = serde_json::to_string(chain).unwrap_or_default();
                         let mut aufgabe = Aufgabe::direct(
-                            "__chain__", vec![chain_json], target, &modul.id,
-                            None, None,
+                            "__chain__",
+                            vec![chain_json],
+                            target,
+                            &modul.id,
+                            None,
+                            None,
                         );
                         aufgabe.anweisung = format!("Chain: {} steps", chain.len());
                         if self.pipeline.speichern(&aufgabe).is_ok() {
-                            self.pipeline.log("cron", Some(&aufgabe.id), LogTyp::Info,
-                                &format!("Cron chain '{}' triggered: {} steps", modul.id, chain.len()));
+                            self.pipeline.log(
+                                "cron",
+                                Some(&aufgabe.id),
+                                LogTyp::Info,
+                                &format!(
+                                    "Cron chain '{}' triggered: {} steps",
+                                    modul.id,
+                                    chain.len()
+                                ),
+                            );
                         }
                     }
                 }
                 _ => {
-                    self.pipeline.log("cron", None, LogTyp::Warning,
-                        &format!("Unknown cron_typ '{}' for {}", cron_typ, modul.id));
+                    self.pipeline.log(
+                        "cron",
+                        None,
+                        LogTyp::Warning,
+                        &format!("Unknown cron_typ '{}' for {}", cron_typ, modul.id),
+                    );
                 }
             }
         }
@@ -437,7 +551,8 @@ impl Orchestrator {
     async fn run_cleanup(&self, cleanup_cfg: &Option<CleanupConfig>) {
         // Erledigt-Cleanup
         if let Some(cc) = cleanup_cfg {
-            self.pipeline.cleanup_erledigt(cc.max_erledigt, cc.max_alter_tage);
+            self.pipeline
+                .cleanup_erledigt(cc.max_erledigt, cc.max_alter_tage);
         }
 
         // Temp-Agent-Cleanup: TTL gegen `created_at` prüfen, NICHT gegen Heartbeat.
@@ -446,7 +561,9 @@ impl Orchestrator {
         // prüfen wir "wann wurde das Modul geboren?" gegen TTL.
         let cfg = self.config.read().await;
         let now = chrono::Utc::now().timestamp() as u64;
-        let expired: Vec<String> = cfg.module.iter()
+        let expired: Vec<String> = cfg
+            .module
+            .iter()
             .filter(|m| m.spawned_by.is_some() && m.spawn_ttl_s.is_some())
             .filter(|m| {
                 let ttl = m.spawn_ttl_s.unwrap();
@@ -481,28 +598,51 @@ impl Orchestrator {
             let before_count = cfg.module.len();
 
             cfg.module.retain(|m| {
-                if m.persistent { return true; }
-                if m.spawned_by.is_none() { return true; }
+                if m.persistent {
+                    return true;
+                }
+                if m.spawned_by.is_none() {
+                    return true;
+                }
 
                 if expired.contains(&m.id) {
-                    self.pipeline.log("orchestrator", None, LogTyp::Info,
-                        &format!("Temp-Agent '{}' TTL abgelaufen — wird entfernt", m.id));
+                    self.pipeline.log(
+                        "orchestrator",
+                        None,
+                        LogTyp::Info,
+                        &format!("Temp-Agent '{}' TTL abgelaufen — wird entfernt", m.id),
+                    );
                     return false;
                 }
 
                 let has_active = erstellt.iter().any(|a| a.modul == m.id)
                     || gestartet.iter().any(|a| a.modul == m.id);
-                if has_active { return true; }
-                if busy_snapshot.contains_key(&m.id) { return true; }
+                if has_active {
+                    return true;
+                }
+                if busy_snapshot.contains_key(&m.id) {
+                    return true;
+                }
 
-                self.pipeline.log("orchestrator", None, LogTyp::Info,
-                    &format!("Temp-Agent '{}' aufgeraeumt (idle, spawned by {})",
-                        m.id, m.spawned_by.as_deref().unwrap_or("?")));
+                self.pipeline.log(
+                    "orchestrator",
+                    None,
+                    LogTyp::Info,
+                    &format!(
+                        "Temp-Agent '{}' aufgeraeumt (idle, spawned by {})",
+                        m.id,
+                        m.spawned_by.as_deref().unwrap_or("?")
+                    ),
+                );
                 false
             });
 
             let changed = cfg.module.len() < before_count;
-            let json = if changed { serde_json::to_string_pretty(&*cfg).ok() } else { None };
+            let json = if changed {
+                serde_json::to_string_pretty(&*cfg).ok()
+            } else {
+                None
+            };
             (json, changed)
             // RwLock-Write gedroppt beim scope-exit — Reader können wieder durch
         };
@@ -512,7 +652,7 @@ impl Orchestrator {
                 let _ = util::atomic_write(&path, json.as_bytes());
             }
         }
-        drop(write_guard);  // Mutex explizit droppen für Klarheit
+        drop(write_guard); // Mutex explizit droppen für Klarheit
 
         // Prune stale cron fire tracking (Module die nicht mehr existieren).
         // Read-only snapshot — kein Write-Lock mehr nötig da cfg oben gedroppt.
@@ -537,8 +677,15 @@ impl Orchestrator {
                                 a.modul,
                             ));
                             let _ = self.pipeline.verschieben(&mut a, AufgabeStatus::Failed);
-                            self.pipeline.log("orchestrator", Some(&a.id), LogTyp::Warning,
-                                &format!("Orphan-Task (Modul '{}' weg) auf FAILED gesetzt", row.modul));
+                            self.pipeline.log(
+                                "orchestrator",
+                                Some(&a.id),
+                                LogTyp::Warning,
+                                &format!(
+                                    "Orphan-Task (Modul '{}' weg) auf FAILED gesetzt",
+                                    row.modul
+                                ),
+                            );
                         }
                     }
                 }
@@ -556,13 +703,17 @@ impl Orchestrator {
     /// Temp-Agent weg, Task aber bereits in erstellt/, blieb für immer orphan.
     async fn load_temp_modules(&self) {
         let temp_dir = self.pipeline.base.join("temp_modules");
-        if !temp_dir.exists() { return; }
+        if !temp_dir.exists() {
+            return;
+        }
 
         let entries: Vec<_> = match std::fs::read_dir(&temp_dir) {
             Ok(e) => e.flatten().collect(),
             Err(_) => return,
         };
-        if entries.is_empty() { return; }
+        if entries.is_empty() {
+            return;
+        }
 
         let config_path = self.pipeline.base.join("config.json");
 
@@ -571,7 +722,9 @@ impl Orchestrator {
         // solange alle Schreiber dieser Ordnung folgen. Keine stale-snapshot-
         // Races mehr (GLM-Finding Run SQLite-9).
         for entry in entries {
-            if !entry.path().extension().is_some_and(|e| e == "json") { continue; }
+            if !entry.path().extension().is_some_and(|e| e == "json") {
+                continue;
+            }
 
             let content = match std::fs::read_to_string(entry.path()) {
                 Ok(c) => c,
@@ -581,7 +734,11 @@ impl Orchestrator {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let Ok(modul) = serde_json::from_value::<crate::types::ModulConfig>(spec["module"].clone()) else { continue };
+            let Ok(modul) =
+                serde_json::from_value::<crate::types::ModulConfig>(spec["module"].clone())
+            else {
+                continue;
+            };
 
             let write_guard = self.pipeline.config_write_lock.lock().await;
             let mut cfg = self.config.write().await;
@@ -593,8 +750,12 @@ impl Orchestrator {
                 continue;
             }
 
-            self.pipeline.log("orchestrator", None, LogTyp::Info,
-                &format!("Temp-Agent '{}' aus spec geladen", modul.id));
+            self.pipeline.log(
+                "orchestrator",
+                None,
+                LogTyp::Info,
+                &format!("Temp-Agent '{}' aus spec geladen", modul.id),
+            );
             cfg.module.push(modul.clone());
 
             let persist_ok = match serde_json::to_string_pretty(&*cfg) {
@@ -607,8 +768,15 @@ impl Orchestrator {
                 cfg.module.retain(|m| m.id != modul.id);
                 drop(cfg);
                 drop(write_guard);
-                self.pipeline.log("orchestrator", None, LogTyp::Error,
-                    &format!("load_temp_modules '{}': config persist failed, rollback", modul.id));
+                self.pipeline.log(
+                    "orchestrator",
+                    None,
+                    LogTyp::Error,
+                    &format!(
+                        "load_temp_modules '{}': config persist failed, rollback",
+                        modul.id
+                    ),
+                );
                 continue;
             }
 
@@ -645,8 +813,15 @@ struct ModulScheduler {
 
 impl ModulScheduler {
     async fn run(&self) {
-        self.pipeline.log(&self.modul_id, None, LogTyp::Info,
-            &format!("ModulScheduler '{}' laeuft (interval: {}ms)", self.modul_id, self.interval_ms));
+        self.pipeline.log(
+            &self.modul_id,
+            None,
+            LogTyp::Info,
+            &format!(
+                "ModulScheduler '{}' laeuft (interval: {}ms)",
+                self.modul_id, self.interval_ms
+            ),
+        );
 
         loop {
             // Heartbeat updaten
@@ -664,16 +839,39 @@ impl ModulScheduler {
     async fn tick(&self) {
         // Crash recovery — nur wenn Instanz noch Kapazitaet hat
         for aufgabe in self.pipeline.gestartet() {
-            if aufgabe.modul != self.modul_id { continue; } // Nur EIGENE Aufgaben
-            if aufgabe.status == AufgabeStatus::Failed { continue; }
+            if aufgabe.modul != self.modul_id {
+                continue;
+            } // Nur EIGENE Aufgaben
+            if aufgabe.erstellt_von.starts_with("chat:") {
+                continue;
+            } // Live-HTTP-Chat gehoert nicht dem Scheduler
+            if aufgabe.parent_id.is_some() {
+                continue;
+            } // Tool-Subtasks sind Nachvollziehbarkeits-Records, keine eigenstaendigen Recovery-Jobs
+            if aufgabe.status == AufgabeStatus::Failed {
+                continue;
+            }
             let b = self.busy.read().await;
             let current = b.get(&self.modul_id).map(|v| v.len()).unwrap_or(0);
-            if current >= self.max_concurrent as usize { drop(b); continue; } // Kapazitaet erreicht
+            if current >= self.max_concurrent as usize {
+                drop(b);
+                continue;
+            } // Kapazitaet erreicht
             // Check if this specific task is already being processed
-            if b.get(&self.modul_id).map(|v| v.contains(&aufgabe.id)).unwrap_or(false) { drop(b); continue; }
+            if b.get(&self.modul_id)
+                .map(|v| v.contains(&aufgabe.id))
+                .unwrap_or(false)
+            {
+                drop(b);
+                continue;
+            }
             drop(b);
-            self.pipeline.log(&self.modul_id, Some(&aufgabe.id), LogTyp::Warning,
-                "Recovery: Aufgabe wird fortgesetzt");
+            self.pipeline.log(
+                &self.modul_id,
+                Some(&aufgabe.id),
+                LogTyp::Warning,
+                "Recovery: Aufgabe wird fortgesetzt",
+            );
             self.spawn_aufgabe(aufgabe).await;
         }
 
@@ -685,15 +883,22 @@ impl ModulScheduler {
         loop {
             let b = self.busy.read().await;
             let current = b.get(&self.modul_id).map(|v| v.len()).unwrap_or(0);
-            if current >= self.max_concurrent as usize { drop(b); break; }
+            if current >= self.max_concurrent as usize {
+                drop(b);
+                break;
+            }
             drop(b);
 
             match self.pipeline.claim_for_modul(&self.modul_id) {
                 Ok(Some(aufgabe)) => self.spawn_aufgabe(aufgabe).await,
-                Ok(None) => break,  // keine fälligen Tasks mehr in dieser Tick
+                Ok(None) => break, // keine fälligen Tasks mehr in dieser Tick
                 Err(e) => {
-                    self.pipeline.log(&self.modul_id, None, LogTyp::Error,
-                        &format!("claim_for_modul failed: {}", e));
+                    self.pipeline.log(
+                        &self.modul_id,
+                        None,
+                        LogTyp::Error,
+                        &format!("claim_for_modul failed: {}", e),
+                    );
                     break;
                 }
             }
@@ -705,9 +910,16 @@ impl ModulScheduler {
         // Only crash-recovery path comes in with status=Gestartet already too — so we
         // never need to call verschieben here; just ensure status is Gestartet.
         if aufgabe.status == AufgabeStatus::Erstellt {
-            if let Err(e) = self.pipeline.verschieben(&mut aufgabe, AufgabeStatus::Gestartet) {
-                self.pipeline.log(&self.modul_id, Some(&aufgabe.id), LogTyp::Error,
-                    &format!("Verschieben failed: {e}"));
+            if let Err(e) = self
+                .pipeline
+                .verschieben(&mut aufgabe, AufgabeStatus::Gestartet)
+            {
+                self.pipeline.log(
+                    &self.modul_id,
+                    Some(&aufgabe.id),
+                    LogTyp::Error,
+                    &format!("Verschieben failed: {e}"),
+                );
                 return;
             }
         }
@@ -720,15 +932,25 @@ impl ModulScheduler {
                 // At capacity — another tick beat us to it, skip
                 return;
             }
-            b.entry(aufgabe.modul.clone()).or_default().push(aufgabe.id.clone());
+            b.entry(aufgabe.modul.clone())
+                .or_default()
+                .push(aufgabe.id.clone());
         }
 
-        self.pipeline.log(&self.modul_id, Some(&aufgabe.id), LogTyp::Info,
-            &format!("[{}] {} (async)", match aufgabe.typ {
-                AufgabeTyp::Direct => "DIRECT",
-                AufgabeTyp::LlmCall => "LLM",
-                AufgabeTyp::ChatReply => "REPLY",
-            }, util::safe_truncate(&aufgabe.anweisung, 80)));
+        self.pipeline.log(
+            &self.modul_id,
+            Some(&aufgabe.id),
+            LogTyp::Info,
+            &format!(
+                "[{}] {} (async)",
+                match aufgabe.typ {
+                    AufgabeTyp::Direct => "DIRECT",
+                    AufgabeTyp::LlmCall => "LLM",
+                    AufgabeTyp::ChatReply => "REPLY",
+                },
+                util::safe_truncate(&aufgabe.anweisung, 80)
+            ),
+        );
 
         // Alles clonen fuer den spawned Task
         let pipeline = self.pipeline.clone();
@@ -755,30 +977,68 @@ impl ModulScheduler {
             // abrupt killen und die Map-Einträge für immer stehenlassen
             // (→ Modul frozen bei max_concurrent).
             let _guard = BusyGuard::new(
-                busy.clone(), handles.clone(),
-                aufgabe_modul.clone(), aufgabe_id.clone(),
+                busy.clone(),
+                handles.clone(),
+                aufgabe_modul.clone(),
+                aufgabe_id.clone(),
             );
 
             let timed_out = tokio::time::timeout(timeout_duration, async {
                 match aufgabe.typ {
-                    AufgabeTyp::Direct => exec_direct(&mut aufgabe, &pipeline, &config, &llm, &py_modules, &py_pool).await,
-                    AufgabeTyp::LlmCall => exec_llm(&mut aufgabe, &pipeline, &config, &llm, &py_modules, &py_pool, &tokens).await,
+                    AufgabeTyp::Direct => {
+                        exec_direct(
+                            &mut aufgabe,
+                            &pipeline,
+                            &config,
+                            &llm,
+                            &py_modules,
+                            &py_pool,
+                        )
+                        .await
+                    }
+                    AufgabeTyp::LlmCall => {
+                        exec_llm(
+                            &mut aufgabe,
+                            &pipeline,
+                            &config,
+                            &llm,
+                            &py_modules,
+                            &py_pool,
+                            &tokens,
+                        )
+                        .await
+                    }
                     AufgabeTyp::ChatReply => {
                         aufgabe.ergebnis = Some(aufgabe.anweisung.clone());
                         if let Err(e) = pipeline.verschieben(&mut aufgabe, AufgabeStatus::Success) {
-                            pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                            pipeline.log(
+                                "cycle",
+                                Some(&aufgabe.id),
+                                LogTyp::Error,
+                                &format!("Verschieben failed: {e}"),
+                            );
                         }
                     }
                 }
-            }).await;
+            })
+            .await;
 
             if timed_out.is_err() {
-                pipeline.log("cycle", Some(&aufgabe_id), LogTyp::Error,
-                    &format!("Task timeout nach {}s — abgebrochen", aufgabe_timeout));
+                pipeline.log(
+                    "cycle",
+                    Some(&aufgabe_id),
+                    LogTyp::Error,
+                    &format!("Task timeout nach {}s — abgebrochen", aufgabe_timeout),
+                );
                 if let Ok(Some(mut failed)) = pipeline.laden_by_id(&aufgabe_id) {
                     failed.ergebnis = Some(format!("FAILED: Timeout nach {}s", aufgabe_timeout));
                     if let Err(e) = pipeline.verschieben(&mut failed, AufgabeStatus::Failed) {
-                        pipeline.log("cycle", Some(&aufgabe_id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                        pipeline.log(
+                            "cycle",
+                            Some(&aufgabe_id),
+                            LogTyp::Error,
+                            &format!("Verschieben failed: {e}"),
+                        );
                     }
                 }
             }
@@ -792,7 +1052,9 @@ impl ModulScheduler {
         // denselben Task re-pickt (Double-Execution, das 7/7-Finding).
         {
             let mut h = self.handles.write().await;
-            h.entry(aufgabe_modul_outer).or_default().insert(aufgabe_id_outer, join.abort_handle());
+            h.entry(aufgabe_modul_outer)
+                .or_default()
+                .insert(aufgabe_id_outer, join.abort_handle());
         }
     }
 }
@@ -826,38 +1088,79 @@ async fn execute_chain(
         // Evaluate condition if present
         if let Some(ref cond) = step.condition {
             if !evaluate_condition(cond, &last_result, last_success) {
-                pipeline.log("chain", None, LogTyp::Info,
-                    &format!("Step {} skipped (condition '{}' not met)", i + 1, cond));
+                pipeline.log(
+                    "chain",
+                    None,
+                    LogTyp::Info,
+                    &format!("Step {} skipped (condition '{}' not met)", i + 1, cond),
+                );
                 continue;
             }
         }
 
         // Replace {result} placeholder in params
-        let params: Vec<String> = step.params.iter()
+        let params: Vec<String> = step
+            .params
+            .iter()
             .map(|p| p.replace("{result}", &last_result))
             .collect();
 
-        pipeline.log("chain", None, LogTyp::Info,
-            &format!("Chain step {}/{}: {}({})", i + 1, chain.len(), step.tool, params.join(", ")));
+        pipeline.log(
+            "chain",
+            None,
+            LogTyp::Info,
+            &format!(
+                "Chain step {}/{}: {}({})",
+                i + 1,
+                chain.len(),
+                step.tool,
+                params.join(", ")
+            ),
+        );
 
         // Chain-Step-Idempotency: task_id + Step-Index als stabiler Key. Ein
         // bereits-erfolgreicher Step wird bei Retry (Watchdog-Abort + Re-Claim)
         // aus Cache bedient, sein Seiteneffekt nicht doppelt ausgeführt.
         let step_task_id = task_id.map(|t| format!("{}#step{}", t, i));
-        let result = exec_tool(&step.tool, &params, modul_id, step_task_id.as_deref(), pipeline, config, llm, py_modules, py_pool).await;
+        let result = exec_tool(
+            &step.tool,
+            &params,
+            modul_id,
+            step_task_id.as_deref(),
+            pipeline,
+            config,
+            llm,
+            py_modules,
+            py_pool,
+        )
+        .await;
         last_success = result.0;
         last_result = result.1;
 
-        pipeline.log("chain", None,
-            if last_success { LogTyp::Success } else { LogTyp::Failed },
-            &format!("Chain step {}: {} -> {}", i + 1,
+        pipeline.log(
+            "chain",
+            None,
+            if last_success {
+                LogTyp::Success
+            } else {
+                LogTyp::Failed
+            },
+            &format!(
+                "Chain step {}: {} -> {}",
+                i + 1,
                 if last_success { "OK" } else { "FAIL" },
-                util::safe_truncate(&last_result, 80)));
+                util::safe_truncate(&last_result, 80)
+            ),
+        );
 
         // Stop on failure if configured
         if !last_success && step.stop_on_fail {
-            pipeline.log("chain", None, LogTyp::Warning,
-                &format!("Chain aborted at step {} (stop_on_fail=true)", i + 1));
+            pipeline.log(
+                "chain",
+                None,
+                LogTyp::Warning,
+                &format!("Chain aborted at step {} (stop_on_fail=true)", i + 1),
+            );
             break;
         }
     }
@@ -869,8 +1172,12 @@ async fn execute_chain(
 fn evaluate_condition(condition: &str, last_result: &str, last_success: bool) -> bool {
     let cond = condition.trim();
 
-    if cond == "success" { return last_success; }
-    if cond == "failed" { return !last_success; }
+    if cond == "success" {
+        return last_success;
+    }
+    if cond == "failed" {
+        return !last_success;
+    }
 
     if let Some(text) = cond.strip_prefix("contains:") {
         return last_result.contains(text.trim());
@@ -904,7 +1211,12 @@ async fn exec_direct(
         None => {
             aufgabe.ergebnis = Some("FAILED: Kein Tool angegeben".into());
             if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
-                pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                pipeline.log(
+                    "cycle",
+                    Some(&aufgabe.id),
+                    LogTyp::Error,
+                    &format!("Verschieben failed: {e}"),
+                );
             }
             return;
         }
@@ -915,10 +1227,32 @@ async fn exec_direct(
         let chain_json = aufgabe.params.first().map(|s| s.as_str()).unwrap_or("[]");
         match serde_json::from_str::<Vec<crate::types::ChainStep>>(chain_json) {
             Ok(chain) => {
-                let (success, result) = execute_chain(&chain, &aufgabe.modul, Some(&aufgabe.id), pipeline, config, llm, py_modules, py_pool).await;
+                let (success, result) = execute_chain(
+                    &chain,
+                    &aufgabe.modul,
+                    Some(&aufgabe.id),
+                    pipeline,
+                    config,
+                    llm,
+                    py_modules,
+                    py_pool,
+                )
+                .await;
                 aufgabe.ergebnis = Some(result);
-                if let Err(e) = pipeline.verschieben(aufgabe, if success { AufgabeStatus::Success } else { AufgabeStatus::Failed }) {
-                    pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                if let Err(e) = pipeline.verschieben(
+                    aufgabe,
+                    if success {
+                        AufgabeStatus::Success
+                    } else {
+                        AufgabeStatus::Failed
+                    },
+                ) {
+                    pipeline.log(
+                        "cycle",
+                        Some(&aufgabe.id),
+                        LogTyp::Error,
+                        &format!("Verschieben failed: {e}"),
+                    );
                 }
                 // Route result
                 let cfg = config.read().await;
@@ -928,22 +1262,54 @@ async fn exec_direct(
             Err(e) => {
                 aufgabe.ergebnis = Some(format!("FAILED: Chain parse error: {}", e));
                 if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
-                    pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                    pipeline.log(
+                        "cycle",
+                        Some(&aufgabe.id),
+                        LogTyp::Error,
+                        &format!("Verschieben failed: {e}"),
+                    );
                 }
                 return;
             }
         }
     }
 
-    pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Info,
-        &format!("Direct tool: {}({})", tool_name, aufgabe.params.join(", ")));
+    pipeline.log(
+        "cycle",
+        Some(&aufgabe.id),
+        LogTyp::Info,
+        &format!("Direct tool: {}({})", tool_name, aufgabe.params.join(", ")),
+    );
 
-    let result = exec_tool(&tool_name, &aufgabe.params, &aufgabe.modul, Some(&aufgabe.id), pipeline, config, llm, py_modules, py_pool).await;
+    let result = exec_tool(
+        &tool_name,
+        &aufgabe.params,
+        &aufgabe.modul,
+        Some(&aufgabe.id),
+        pipeline,
+        config,
+        llm,
+        py_modules,
+        py_pool,
+    )
+    .await;
 
     let status = if result.0 { "SUCCESS" } else { "FAILED" };
-    pipeline.log("cycle", Some(&aufgabe.id),
-        if result.0 { LogTyp::Success } else { LogTyp::Failed },
-        &format!("Tool {}: {} → {}", tool_name, status, util::safe_truncate(&result.1, 100)));
+    pipeline.log(
+        "cycle",
+        Some(&aufgabe.id),
+        if result.0 {
+            LogTyp::Success
+        } else {
+            LogTyp::Failed
+        },
+        &format!(
+            "Tool {}: {} → {}",
+            tool_name,
+            status,
+            util::safe_truncate(&result.1, 100)
+        ),
+    );
 
     let antwort = if let Some(template) = &aufgabe.antwort_template {
         template.replace("<RESULT>", &result.1)
@@ -952,8 +1318,20 @@ async fn exec_direct(
     };
 
     aufgabe.ergebnis = Some(antwort);
-    if let Err(e) = pipeline.verschieben(aufgabe, if result.0 { AufgabeStatus::Success } else { AufgabeStatus::Failed }) {
-        pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+    if let Err(e) = pipeline.verschieben(
+        aufgabe,
+        if result.0 {
+            AufgabeStatus::Success
+        } else {
+            AufgabeStatus::Failed
+        },
+    ) {
+        pipeline.log(
+            "cycle",
+            Some(&aufgabe.id),
+            LogTyp::Error,
+            &format!("Verschieben failed: {e}"),
+        );
     }
     // Route result back if zurueck_an is set
     if aufgabe.status == AufgabeStatus::Success || aufgabe.status == AufgabeStatus::Failed {
@@ -972,7 +1350,10 @@ async fn exec_llm(
     tokens: &crate::web::TokenTracker,
 ) {
     let cfg = config.read().await;
-    let modul = cfg.module.iter().find(|m| m.id == aufgabe.modul)
+    let modul = cfg
+        .module
+        .iter()
+        .find(|m| m.id == aufgabe.modul)
         .or_else(|| cfg.module.iter().find(|m| m.name == aufgabe.modul));
     let Some(modul) = modul.cloned() else {
         aufgabe.ergebnis = Some(format!("FAILED: Modul '{}' nicht gefunden", aufgabe.modul));
@@ -1006,13 +1387,17 @@ async fn exec_llm(
     // Snapshot guardrail config and full config once before the loop.
     let (gcfg, cfg_snap) = {
         let cfg_guard = config.read().await;
-        let gcfg = cfg_guard.guardrail.clone()
+        let gcfg = cfg_guard
+            .guardrail
+            .clone()
             .unwrap_or_else(crate::types::GuardrailConfig::default);
         let cfg_snap = cfg_guard.clone();
         (gcfg, cfg_snap)
     };
     let mut backend_id = modul.llm_backend.clone();
-    let mut model_str = cfg_snap.llm_backends.iter()
+    let mut model_str = cfg_snap
+        .llm_backends
+        .iter()
         .find(|b| b.id == backend_id)
         .map(|b| b.model.clone())
         .unwrap_or_default();
@@ -1029,57 +1414,130 @@ async fn exec_llm(
 
     loop {
         if tool_round >= MAX_TOOL_ROUNDS {
-            aufgabe.ergebnis = Some(format!("FAILED: Maximum tool rounds ({}) erreicht", MAX_TOOL_ROUNDS));
-            pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Failed,
-                &format!("Max tool rounds ({}) erreicht — Task abgebrochen", MAX_TOOL_ROUNDS));
+            aufgabe.ergebnis = Some(format!(
+                "FAILED: Maximum tool rounds ({}) erreicht",
+                MAX_TOOL_ROUNDS
+            ));
+            pipeline.log(
+                &modul.name,
+                Some(&aufgabe.id),
+                LogTyp::Failed,
+                &format!(
+                    "Max tool rounds ({}) erreicht — Task abgebrochen",
+                    MAX_TOOL_ROUNDS
+                ),
+            );
             if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
-                pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                pipeline.log(
+                    "cycle",
+                    Some(&aufgabe.id),
+                    LogTyp::Error,
+                    &format!("Verschieben failed: {e}"),
+                );
             }
             return;
         }
 
         // Token budget check (per-modul, zählt Tokens dieses Tasks)
         if token_budget > 0 && total_tokens > token_budget {
-            aufgabe.ergebnis = Some(format!("FAILED: Token-Budget ueberschritten ({}/{})", total_tokens, token_budget));
-            pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Failed,
-                &format!("Token-Budget ueberschritten: {}/{} — Task abgebrochen", total_tokens, token_budget));
+            aufgabe.ergebnis = Some(format!(
+                "FAILED: Token-Budget ueberschritten ({}/{})",
+                total_tokens, token_budget
+            ));
+            pipeline.log(
+                &modul.name,
+                Some(&aufgabe.id),
+                LogTyp::Failed,
+                &format!(
+                    "Token-Budget ueberschritten: {}/{} — Task abgebrochen",
+                    total_tokens, token_budget
+                ),
+            );
             if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
-                pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                pipeline.log(
+                    "cycle",
+                    Some(&aufgabe.id),
+                    LogTyp::Error,
+                    &format!("Verschieben failed: {e}"),
+                );
             }
             return;
         }
 
-        // Global daily USD budget check — pre-call, fail-closed. Liest den aktuellen
-        // Config-Snapshot (nicht cfg_snap) damit UI-seitige Cap-Änderungen sofort greifen.
+        // Per-LLM Cost/Call-Cap. Wenn erreicht, wird der Task bis zum Fenster-Reset
+        // zurueckgestellt statt als Failed markiert.
         {
             let cfg_live = config.read().await;
-            if let Err(msg) = crate::web::check_daily_budget(&pipeline.store.pool, tokens, &cfg_live, &model_str).await {
+            if let Err(hit) = crate::web::check_llm_cap(
+                &pipeline.store.pool,
+                &cfg_live,
+                &backend_id,
+                &messages,
+                aufgabe.cap_override,
+            )
+            .await
+            {
                 drop(cfg_live);
-                pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Failed, &msg);
-                aufgabe.ergebnis = Some(format!("FAILED: {}", msg));
-                if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
-                    pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                let msg = format!(
+                    "{} (backend={}, model={}, reset={})",
+                    hit.message(),
+                    hit.backend_id,
+                    hit.model,
+                    hit.reset_iso()
+                );
+                pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Warning, &msg);
+                aufgabe.ergebnis = Some(msg);
+                if let Err(e) = pipeline.reschedule(aufgabe, hit.reset_iso()) {
+                    pipeline.log(
+                        "cycle",
+                        Some(&aufgabe.id),
+                        LogTyp::Error,
+                        &format!("Reschedule failed: {e}"),
+                    );
                 }
                 return;
             }
         }
 
-        let result = llm.chat_with_tools(&backend_id, modul.backup_llm.as_deref(), &messages, &openai_tools).await;
+        let result = llm
+            .chat_with_tools(
+                &backend_id,
+                modul.backup_llm.as_deref(),
+                &messages,
+                &openai_tools,
+            )
+            .await;
 
         match result {
             Ok((response, mut raw_data)) => {
                 // Token tracking lokal (Modul-Budget) + global (USD-Cap über web::track_tokens).
-                let input_tokens = raw_data.pointer("/usage/prompt_tokens").and_then(|v| v.as_u64())
-                    .or_else(|| raw_data.pointer("/prompt_eval_count").and_then(|v| v.as_u64()))
+                let input_tokens = raw_data
+                    .pointer("/usage/prompt_tokens")
+                    .and_then(|v| v.as_u64())
+                    .or_else(|| {
+                        raw_data
+                            .pointer("/prompt_eval_count")
+                            .and_then(|v| v.as_u64())
+                    })
                     .unwrap_or(0);
-                let output_tokens = raw_data.pointer("/usage/completion_tokens").and_then(|v| v.as_u64())
+                let output_tokens = raw_data
+                    .pointer("/usage/completion_tokens")
+                    .and_then(|v| v.as_u64())
                     .or_else(|| raw_data.pointer("/eval_count").and_then(|v| v.as_u64()))
                     .unwrap_or(0);
                 total_tokens += input_tokens + output_tokens;
 
-                // Globaler Token/USD-Tracker — damit daily_budget_usd aus dem nächsten
-                // exec_llm-Call (und /api/chat) den Stand sehen kann.
-                crate::web::track_tokens(&pipeline.store.pool, tokens, &backend_id, &model_str, &aufgabe.modul, &raw_data).await;
+                let cfg_accounting = config.read().await.clone();
+                crate::web::track_tokens(
+                    &pipeline.store.pool,
+                    tokens,
+                    &cfg_accounting,
+                    &backend_id,
+                    &model_str,
+                    &aufgabe.modul,
+                    &raw_data,
+                )
+                .await;
 
                 // Guardrail-Bypass-Fix: wenn das LLM ein <tool>name(params)</tool> im
                 // Response-Text hatte statt OpenAI tool_calls, injiziere den Call als
@@ -1092,7 +1550,8 @@ async fn exec_llm(
                 // das gewünschte Verhalten (fail-safe).
                 if raw_data.pointer("/choices/0/message/tool_calls").is_none() {
                     if let Some((t_name, t_params)) = crate::tools::parse_tool_call(&response) {
-                        let schema = crate::tools::schema_required_for(&t_name, &modul, &py_mods_snap);
+                        let schema =
+                            crate::tools::schema_required_for(&t_name, &modul, &py_mods_snap);
                         let mut args = serde_json::Map::new();
                         if let Some(ref schema_keys) = schema {
                             // Schema-Reihenfolge: mappt params positionsweise auf required-Namen
@@ -1116,34 +1575,57 @@ async fn exec_llm(
                         });
                         if let Some(choice) = raw_data.pointer_mut("/choices/0/message") {
                             if let Some(obj) = choice.as_object_mut() {
-                                obj.insert("tool_calls".into(), serde_json::json!([synthetic_call]));
+                                obj.insert(
+                                    "tool_calls".into(),
+                                    serde_json::json!([synthetic_call]),
+                                );
                             }
-                        } else if let Some(choices) = raw_data.pointer_mut("/choices").and_then(|v| v.as_array_mut()) {
+                        } else if let Some(choices) = raw_data
+                            .pointer_mut("/choices")
+                            .and_then(|v| v.as_array_mut())
+                        {
                             if choices.is_empty() {
                                 choices.push(serde_json::json!({"message": {"tool_calls": [synthetic_call]}}));
                             }
                         } else if let Some(obj) = raw_data.as_object_mut() {
-                            obj.insert("choices".into(), serde_json::json!([
-                                {"message": {"tool_calls": [synthetic_call]}}
-                            ]));
+                            obj.insert(
+                                "choices".into(),
+                                serde_json::json!([
+                                    {"message": {"tool_calls": [synthetic_call]}}
+                                ]),
+                            );
                         }
                     }
                 }
 
                 // Token budget warning (pro Modul)
-                if token_budget_warning > 0 && total_tokens > token_budget_warning && total_tokens - (input_tokens + output_tokens) <= token_budget_warning {
-                    pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Warning,
-                        &format!("Token-Budget Warnung: {}/{} Tokens verbraucht", total_tokens, token_budget));
+                if token_budget_warning > 0
+                    && total_tokens > token_budget_warning
+                    && total_tokens - (input_tokens + output_tokens) <= token_budget_warning
+                {
+                    pipeline.log(
+                        &modul.name,
+                        Some(&aufgabe.id),
+                        LogTyp::Warning,
+                        &format!(
+                            "Token-Budget Warnung: {}/{} Tokens verbraucht",
+                            total_tokens, token_budget
+                        ),
+                    );
                 }
 
                 // ── Guardrail validation ───────────────────────────────────
                 if gcfg.enabled {
-                    let last_user_msg = messages.iter().rev()
+                    let last_user_msg = messages
+                        .iter()
+                        .rev()
                         .find(|m| m["role"] == "user")
                         .and_then(|m| m["content"].as_str())
                         .map(|s| s.to_string());
-                    let max_retries_for_backend = gcfg.per_backend_overrides
-                        .get(&backend_id).copied()
+                    let max_retries_for_backend = gcfg
+                        .per_backend_overrides
+                        .get(&backend_id)
+                        .copied()
                         .unwrap_or(gcfg.max_retries);
                     let vctx = crate::guardrail::ValidatorContext {
                         modul_id: &aufgabe.modul,
@@ -1163,7 +1645,11 @@ async fn exec_llm(
                                 passed: true,
                                 errors: vec![],
                                 retry_attempt: guardrail_retries,
-                                final_outcome: if guardrail_retries > 0 { "retried".into() } else { "ok".into() },
+                                final_outcome: if guardrail_retries > 0 {
+                                    "retried".into()
+                                } else {
+                                    "ok".into()
+                                },
                                 similar_suggestion: None,
                             };
                             let _ = crate::guardrail::log_event(&pipeline.base, &ev).await;
@@ -1180,42 +1666,72 @@ async fn exec_llm(
                                 passed: false,
                                 errors: errors.clone(),
                                 retry_attempt: guardrail_retries,
-                                final_outcome: if is_last { "hard_fail".into() } else { "retried".into() },
+                                final_outcome: if is_last {
+                                    "hard_fail".into()
+                                } else {
+                                    "retried".into()
+                                },
                                 similar_suggestion: None,
                             };
                             let _ = crate::guardrail::log_event(&pipeline.base, &ev).await;
                             if is_last {
                                 // Check if backup_llm available + fallback flag on
-                                let mod_cfg = cfg_snap.module.iter().find(|m| m.id == aufgabe.modul);
+                                let mod_cfg =
+                                    cfg_snap.module.iter().find(|m| m.id == aufgabe.modul);
                                 let backup_id = mod_cfg.and_then(|m| m.backup_llm.clone());
-                                if gcfg.fallback_on_hard_fail && backup_id.is_some() && !used_fallback {
+                                if gcfg.fallback_on_hard_fail
+                                    && backup_id.is_some()
+                                    && !used_fallback
+                                {
                                     if let Some(bid) = backup_id {
-                                        if let Some(bb) = cfg_snap.llm_backends.iter().find(|b| b.id == bid).cloned() {
-                                            let codes: Vec<String> = errors.iter().map(|e| e.code.clone()).collect();
-                                            let _ = crate::guardrail::log_fallback_event(&pipeline.base, &backend_id, &bid, &aufgabe.modul, &codes).await;
+                                        if let Some(bb) = cfg_snap
+                                            .llm_backends
+                                            .iter()
+                                            .find(|b| b.id == bid)
+                                            .cloned()
+                                        {
+                                            let codes: Vec<String> =
+                                                errors.iter().map(|e| e.code.clone()).collect();
+                                            let _ = crate::guardrail::log_fallback_event(
+                                                &pipeline.base,
+                                                &backend_id,
+                                                &bid,
+                                                &aufgabe.modul,
+                                                &codes,
+                                            )
+                                            .await;
                                             backend_id = bb.id.clone();
                                             model_str = bb.model.clone();
                                             used_fallback = true;
                                             guardrail_retries = 0;
-                                            continue;  // retry with backup
+                                            continue; // retry with backup
                                         }
                                     }
                                 }
                                 // Real hard-fail
-                                let codes: Vec<String> = errors.iter().map(|e| e.code.clone()).collect();
+                                let codes: Vec<String> =
+                                    errors.iter().map(|e| e.code.clone()).collect();
                                 let msg = format!("Guardrail hard-fail: {}", codes.join(", "));
                                 pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Failed, &msg);
                                 aufgabe.ergebnis = Some(format!("FAILED: {}", msg));
-                                if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
-                                    pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error,
-                                        &format!("Verschieben failed: {e}"));
+                                if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed)
+                                {
+                                    pipeline.log(
+                                        "cycle",
+                                        Some(&aufgabe.id),
+                                        LogTyp::Error,
+                                        &format!("Verschieben failed: {e}"),
+                                    );
                                 }
                                 return;
                             } else {
                                 let feedback = crate::guardrail::synth_feedback_user_message(
-                                    &errors, max_retries_for_backend, guardrail_retries,
+                                    &errors,
+                                    max_retries_for_backend,
+                                    guardrail_retries,
                                 );
-                                messages.push(serde_json::json!({"role": "user", "content": feedback}));
+                                messages
+                                    .push(serde_json::json!({"role": "user", "content": feedback}));
                                 guardrail_retries += 1;
                                 continue;
                             }
@@ -1241,12 +1757,19 @@ async fn exec_llm(
                         }
                         None => None,
                     }
-                } else { None }.or_else(|| tools::parse_tool_call(&response));
+                } else {
+                    None
+                }
+                .or_else(|| tools::parse_tool_call(&response));
 
                 if let Some((tool_name, params)) = tool_call {
                     tool_round += 1;
-                    pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Info,
-                        &format!("Tool call: {}({})", tool_name, params.join(", ")));
+                    pipeline.log(
+                        &modul.name,
+                        Some(&aufgabe.id),
+                        LogTyp::Info,
+                        &format!("Tool call: {}({})", tool_name, params.join(", ")),
+                    );
 
                     // Tool-Round im Idempotency-Key: LLM kann dasselbe Tool in einer
                     // Task mehrfach rufen (unterschiedliche Intent-Iterationen) — wir
@@ -1254,14 +1777,65 @@ async fn exec_llm(
                     // jeden Tool-Round. task_id + round macht den Key eindeutig pro
                     // Iteration.
                     let tool_task_id = format!("{}#r{}", aufgabe.id, tool_round);
-                    let tool_result = exec_tool(&tool_name, &params, &aufgabe.modul, Some(&tool_task_id), pipeline, config, llm, py_modules, py_pool).await;
-                    let status = if tool_result.0 { "SUCCESS" } else { "FAILED" };
-                    pipeline.log(&modul.name, Some(&aufgabe.id),
-                        if tool_result.0 { LogTyp::Success } else { LogTyp::Failed },
-                        &format!("Tool {}: {} → {}", tool_name, status, util::safe_truncate(&tool_result.1, 100)));
+                    let mut tool_subtask = Aufgabe::direct(
+                        &tool_name,
+                        params.clone(),
+                        &aufgabe.modul,
+                        &format!("task:{}", aufgabe.id),
+                        None,
+                        None,
+                    );
+                    tool_subtask.parent_id = Some(aufgabe.id.clone());
+                    tool_subtask.status = AufgabeStatus::Gestartet;
+                    tool_subtask.gestartet = Some(chrono::Utc::now());
+                    let tool_subtask_id = tool_subtask.id.clone();
+                    let _ = pipeline.speichern(&tool_subtask);
 
-                    let call_id = raw_data.pointer("/choices/0/message/tool_calls/0/id")
-                        .and_then(|v| v.as_str()).unwrap_or("call_0").to_string();
+                    let tool_result = exec_tool(
+                        &tool_name,
+                        &params,
+                        &aufgabe.modul,
+                        Some(&tool_task_id),
+                        pipeline,
+                        config,
+                        llm,
+                        py_modules,
+                        py_pool,
+                    )
+                    .await;
+                    let status = if tool_result.0 { "SUCCESS" } else { "FAILED" };
+                    if let Ok(Some(mut sub)) = pipeline.laden_by_id(&tool_subtask_id) {
+                        sub.ergebnis = Some(tool_result.1.clone());
+                        let _ = pipeline.verschieben(
+                            &mut sub,
+                            if tool_result.0 {
+                                AufgabeStatus::Success
+                            } else {
+                                AufgabeStatus::Failed
+                            },
+                        );
+                    }
+                    pipeline.log(
+                        &modul.name,
+                        Some(&aufgabe.id),
+                        if tool_result.0 {
+                            LogTyp::Success
+                        } else {
+                            LogTyp::Failed
+                        },
+                        &format!(
+                            "Tool {}: {} → {}",
+                            tool_name,
+                            status,
+                            util::safe_truncate(&tool_result.1, 100)
+                        ),
+                    );
+
+                    let call_id = raw_data
+                        .pointer("/choices/0/message/tool_calls/0/id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("call_0")
+                        .to_string();
                     messages.push(serde_json::json!({"role": "assistant", "content": serde_json::Value::Null,
                         "tool_calls": [{"id": &call_id, "type": "function", "function": {"name": &tool_name, "arguments": "{}"}}]}));
                     messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call_id,
@@ -1272,9 +1846,14 @@ async fn exec_llm(
                     if messages.len() > 2 + keep_full + 4 {
                         for i in 2..(messages.len().saturating_sub(keep_full)) {
                             if messages[i].get("role").and_then(|v| v.as_str()) == Some("tool") {
-                                if let Some(content) = messages[i].get("content").and_then(|v| v.as_str()) {
+                                if let Some(content) =
+                                    messages[i].get("content").and_then(|v| v.as_str())
+                                {
                                     if content.len() > 100 {
-                                        let short = format!("{}...[gekuerzt]", util::safe_truncate(content, 100));
+                                        let short = format!(
+                                            "{}...[gekuerzt]",
+                                            util::safe_truncate(content, 100)
+                                        );
                                         messages[i]["content"] = serde_json::json!(short);
                                     }
                                 }
@@ -1293,20 +1872,45 @@ async fn exec_llm(
                 // hier NICHT gerufen (keine Response), also muss release explizit.
                 {
                     let cfg_live = config.read().await;
-                    crate::web::release_reservation(&pipeline.store.pool, tokens, &cfg_live, &model_str).await;
+                    crate::web::release_reservation(
+                        &pipeline.store.pool,
+                        tokens,
+                        &cfg_live,
+                        &model_str,
+                    )
+                    .await;
                 }
                 aufgabe.retry_count += 1;
                 if aufgabe.retry_count <= aufgabe.retry {
-                    pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Warning,
-                        &format!("RETRY {}/{}: {}", aufgabe.retry_count, aufgabe.retry, e));
+                    pipeline.log(
+                        &modul.name,
+                        Some(&aufgabe.id),
+                        LogTyp::Warning,
+                        &format!("RETRY {}/{}: {}", aufgabe.retry_count, aufgabe.retry, e),
+                    );
                     if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Erstellt) {
-                        pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                        pipeline.log(
+                            "cycle",
+                            Some(&aufgabe.id),
+                            LogTyp::Error,
+                            &format!("Verschieben failed: {e}"),
+                        );
                     }
                 } else {
                     aufgabe.ergebnis = Some(format!("FAILED: {e}"));
-                    pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Failed, &format!("FAILED: {e}"));
+                    pipeline.log(
+                        &modul.name,
+                        Some(&aufgabe.id),
+                        LogTyp::Failed,
+                        &format!("FAILED: {e}"),
+                    );
                     if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
-                        pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+                        pipeline.log(
+                            "cycle",
+                            Some(&aufgabe.id),
+                            LogTyp::Error,
+                            &format!("Verschieben failed: {e}"),
+                        );
                     }
                 }
                 return;
@@ -1315,10 +1919,19 @@ async fn exec_llm(
     }
 
     aufgabe.ergebnis = Some(final_answer.clone());
-    pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Success,
-        &format!("SUCCESS: {}", util::safe_truncate(&final_answer, 100)));
+    pipeline.log(
+        "cycle",
+        Some(&aufgabe.id),
+        LogTyp::Success,
+        &format!("SUCCESS: {}", util::safe_truncate(&final_answer, 100)),
+    );
     if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Success) {
-        pipeline.log("cycle", Some(&aufgabe.id), LogTyp::Error, &format!("Verschieben failed: {e}"));
+        pipeline.log(
+            "cycle",
+            Some(&aufgabe.id),
+            LogTyp::Error,
+            &format!("Verschieben failed: {e}"),
+        );
     }
     // Route result back if zurueck_an is set
     if aufgabe.status == AufgabeStatus::Success || aufgabe.status == AufgabeStatus::Failed {
@@ -1328,7 +1941,9 @@ async fn exec_llm(
 }
 
 fn route_ergebnis(aufgabe: &Aufgabe, pipeline: &Pipeline, config: &AgentConfig) {
-    let Some(ref zurueck) = aufgabe.zurueck_an else { return; };
+    let Some(ref zurueck) = aufgabe.zurueck_an else {
+        return;
+    };
 
     // Routing ist IMMER ChatReply — Target sieht Text als Nachricht, keine
     // Auto-LLM-Execution mehr. Kein `llm:`-Opt-In mehr (GLM-Finding Run
@@ -1353,8 +1968,15 @@ fn route_ergebnis(aufgabe: &Aufgabe, pipeline: &Pipeline, config: &AgentConfig) 
         let source_modul = config.module.iter().find(|m| m.id == aufgabe.modul);
         if let Some(source) = source_modul {
             if !source.linked_modules.contains(&target.to_string()) {
-                pipeline.log("routing", Some(&aufgabe.id), LogTyp::Warning,
-                    &format!("Routing blocked: {} not linked to {}", aufgabe.modul, target));
+                pipeline.log(
+                    "routing",
+                    Some(&aufgabe.id),
+                    LogTyp::Warning,
+                    &format!(
+                        "Routing blocked: {} not linked to {}",
+                        aufgabe.modul, target
+                    ),
+                );
                 return;
             }
         }
@@ -1362,25 +1984,55 @@ fn route_ergebnis(aufgabe: &Aufgabe, pipeline: &Pipeline, config: &AgentConfig) 
 
     let ergebnis = aufgabe.ergebnis.as_deref().unwrap_or("Kein Ergebnis");
     let payload = format!("[Ergebnis von {}]: {}", aufgabe.modul, ergebnis);
-    let mut result_task = Aufgabe::direct("__chat_reply__", vec![payload], target, &aufgabe.modul, None, None);
+    let mut result_task = Aufgabe::direct(
+        "__chat_reply__",
+        vec![payload],
+        target,
+        &aufgabe.modul,
+        None,
+        None,
+    );
     result_task.typ = crate::types::AufgabeTyp::ChatReply;
     result_task.anweisung = format!("[Ergebnis von {}]", aufgabe.modul);
     result_task.tool = None;
     let _ = pipeline.speichern(&result_task);
-    pipeline.log("routing", Some(&aufgabe.id), LogTyp::Info,
-        &format!("Ergebnis geroutet an {}{} (ChatReply)", if is_chat { "chat:" } else { "" }, target));
+    pipeline.log(
+        "routing",
+        Some(&aufgabe.id),
+        LogTyp::Info,
+        &format!(
+            "Ergebnis geroutet an {}{} (ChatReply)",
+            if is_chat { "chat:" } else { "" },
+            target
+        ),
+    );
 }
 
 async fn exec_tool(
-    tool_name: &str, params: &[String], modul_id: &str,
+    tool_name: &str,
+    params: &[String],
+    modul_id: &str,
     task_id: Option<&str>,
-    pipeline: &Arc<Pipeline>, config: &Arc<RwLock<AgentConfig>>,
-    llm: &Arc<LlmRouter>, py_modules: &Arc<RwLock<Vec<crate::loader::PyModuleMeta>>>,
+    pipeline: &Arc<Pipeline>,
+    config: &Arc<RwLock<AgentConfig>>,
+    llm: &Arc<LlmRouter>,
+    py_modules: &Arc<RwLock<Vec<crate::loader::PyModuleMeta>>>,
     py_pool: &Arc<crate::loader::PyProcessPool>,
 ) -> (bool, String) {
     let config_snapshot = config.read().await.clone();
     let py_mods = py_modules.read().await;
-    tools::exec_tool_unified(tool_name, params, modul_id, task_id, pipeline, llm, &py_mods, py_pool, &config_snapshot).await
+    tools::exec_tool_unified(
+        tool_name,
+        params,
+        modul_id,
+        task_id,
+        pipeline,
+        llm,
+        &py_mods,
+        py_pool,
+        &config_snapshot,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -1437,14 +2089,26 @@ mod tests {
 
     #[test]
     fn test_evaluate_condition_contains() {
-        assert!(evaluate_condition("contains:ERROR", "Task ERROR occurred", true));
+        assert!(evaluate_condition(
+            "contains:ERROR",
+            "Task ERROR occurred",
+            true
+        ));
         assert!(!evaluate_condition("contains:ERROR", "All good", true));
     }
 
     #[test]
     fn test_evaluate_condition_not_contains() {
-        assert!(evaluate_condition("not_contains:FAIL", "SUCCESS done", true));
-        assert!(!evaluate_condition("not_contains:FAIL", "FAIL happened", true));
+        assert!(evaluate_condition(
+            "not_contains:FAIL",
+            "SUCCESS done",
+            true
+        ));
+        assert!(!evaluate_condition(
+            "not_contains:FAIL",
+            "FAIL happened",
+            true
+        ));
     }
 
     #[test]

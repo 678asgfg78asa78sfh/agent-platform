@@ -16,6 +16,34 @@ pub struct LlmBackend {
     pub identity: ModulIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_cap: Option<LlmCostCap>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmCostCap {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_cost_cycle")]
+    pub cycle: String, // "days" | "monthly"
+    #[serde(default = "default_cost_cycle_days")]
+    pub cycle_days: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_calls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_per_1m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_per_1m: Option<f64>,
+}
+
+fn default_cost_cycle() -> String {
+    "days".into()
+}
+
+fn default_cost_cycle_days() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -32,17 +60,17 @@ pub enum LlmTyp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModulConfig {
     pub id: String,
-    pub typ: String,             // "chat", "mail", "filesystem", "websearch", "aufgaben", "rag", "cron", "notify", "shell", "webhook"
-    pub name: String,            // "chat.roland", "mail.privat", "web.kolobri"
-    pub display_name: String,    // "Roland", "Privat Mail", etc
-    pub llm_backend: String,     // id des LLM backends
+    pub typ: String, // "chat", "mail", "filesystem", "websearch", "aufgaben", "rag", "cron", "notify", "shell", "webhook"
+    pub name: String, // "chat.roland", "mail.privat", "web.kolobri"
+    pub display_name: String, // "Roland", "Privat Mail", etc
+    pub llm_backend: String, // id des LLM backends
     pub backup_llm: Option<String>,
-    pub berechtigungen: Vec<String>,  // ids anderer module auf die zugegriffen werden darf
+    pub berechtigungen: Vec<String>, // ids anderer module auf die zugegriffen werden darf
     pub timeout_s: u64,
     pub retry: u32,
     pub settings: ModulSettings,
     pub identity: ModulIdentity,
-    pub rag_pool: Option<String>,     // id des RAG pools (oder None)
+    pub rag_pool: Option<String>, // id des RAG pools (oder None)
 
     // ── v1.0 Neue Felder ─────────────────────
     #[serde(default)]
@@ -69,7 +97,9 @@ pub struct ModulConfig {
     pub token_budget_warning: Option<u64>,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 // ─── Typspezifische Modul-Settings ────────────────
 // Jeder Modultyp hat seine eigenen Config-Felder.
@@ -91,21 +121,21 @@ pub struct ModulSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mail_ordner: Option<String>,       // default: INBOX
+    pub mail_ordner: Option<String>, // default: INBOX
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_mails: Option<u32>,            // default: 10
+    pub max_mails: Option<u32>, // default: 10
 
     // ── Filesystem ───────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_paths: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_file_size: Option<u64>,        // default: 4000 bytes
+    pub max_file_size: Option<u64>, // default: 4000 bytes
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow_write: Option<bool>,         // default: true
+    pub allow_write: Option<bool>, // default: true
 
     // ── Websearch ────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub search_engine: Option<String>,     // "duckduckgo", "brave", "serper", "google", "grok"
+    pub search_engine: Option<String>, // "duckduckgo", "brave", "serper", "google", "grok"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brave_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -117,15 +147,15 @@ pub struct ModulSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grok_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_results: Option<u32>,          // default: 8
+    pub max_results: Option<u32>, // default: 8
 
     // ── Cron ─────────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<String>,          // cron expression z.B. "0 */6 * * *"
+    pub schedule: Option<String>, // cron expression z.B. "0 */6 * * *"
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_modul: Option<String>,      // welches Modul getriggert wird
+    pub target_modul: Option<String>, // welches Modul getriggert wird
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cron_anweisung: Option<String>,    // was soll gemacht werden
+    pub cron_anweisung: Option<String>, // was soll gemacht werden
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron_typ: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,31 +175,38 @@ pub struct ModulSettings {
 
     // ── Notify ───────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_type: Option<String>,       // "ntfy", "gotify", "telegram"
+    pub notify_type: Option<String>, // "ntfy", "gotify", "telegram"
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_url: Option<String>,        // Endpoint URL
+    pub notify_url: Option<String>, // Endpoint URL
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_token: Option<String>,      // Auth token
+    pub notify_token: Option<String>, // Auth token
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub notify_topic: Option<String>,      // Topic/Channel
+    pub notify_topic: Option<String>, // Topic/Channel
 
     // ── Shell ────────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_commands: Option<Vec<String>>,  // Whitelist: ["git", "docker", "systemctl"]
+    pub allowed_commands: Option<Vec<String>>, // Whitelist: ["git", "docker", "systemctl"]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_dir: Option<String>,
 
     // ── Chat (eigener Port pro Instanz) ──────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<u16>,                 // z.B. 8091, 8092, ...
+    pub port: Option<u16>, // z.B. 8091, 8092, ...
 
     // ── Webhook ──────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub listen_path: Option<String>,       // z.B. "/webhook/github"
+    pub listen_path: Option<String>, // z.B. "/webhook/github"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_ips: Option<Vec<String>>,
+
+    // ── Python-/Custom-Module ─────────────────────
+    // Python-Module deklarieren ihre Settings dynamisch im MODULE-Dict. Diese
+    // freien Felder duerfen beim Laden/Speichern nicht verloren gehen, sonst
+    // bekommt ein Tool wie deepdive.crawl trotz UI-Config nur Defaults.
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,9 +222,9 @@ pub struct ChainStep {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModulIdentity {
-    pub bot_name: String,       // "Roland", "MailBot", etc
-    pub greeting: String,       // "Hallo! Ich bin Roland..."
-    pub system_prompt: String,  // System prompt für das LLM
+    pub bot_name: String,      // "Roland", "MailBot", etc
+    pub greeting: String,      // "Hallo! Ich bin Roland..."
+    pub system_prompt: String, // System prompt für das LLM
 }
 
 impl Default for ModulIdentity {
@@ -205,7 +242,7 @@ impl Default for ModulIdentity {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagPool {
     pub id: String,
-    pub name: String,           // "shared", "mail", "projekte"
+    pub name: String, // "shared", "mail", "projekte"
     pub typ: RagTyp,
 }
 
@@ -221,35 +258,41 @@ pub enum RagTyp {
 pub struct Aufgabe {
     pub id: String,
     pub version: u32,
-    pub wann: String,            // "sofort" oder ISO datetime
-    pub typ: AufgabeTyp,         // direct, llm_call, chat_reply
-    pub tool: Option<String>,    // Tool das aufgerufen werden soll (bei direct/llm_call)
-    pub params: Vec<String>,     // Tool-Parameter
-    pub modul: String,           // Welches Modul das Tool bereitstellt
-    pub anweisung: String,       // Original-Anweisung / Kontext
-    pub antwort_template: Option<String>,  // z.B. "Es ist <RESULT>."
-    pub zurueck_an: Option<String>,        // Wohin: "chat:chat.roland"
-    pub braucht_ki: bool,        // Braucht die Ausführung ein LLM?
+    pub wann: String,                     // "sofort" oder ISO datetime
+    pub typ: AufgabeTyp,                  // direct, llm_call, chat_reply
+    pub tool: Option<String>,             // Tool das aufgerufen werden soll (bei direct/llm_call)
+    pub params: Vec<String>,              // Tool-Parameter
+    pub modul: String,                    // Welches Modul das Tool bereitstellt
+    pub anweisung: String,                // Original-Anweisung / Kontext
+    pub antwort_template: Option<String>, // z.B. "Es ist <RESULT>."
+    pub zurueck_an: Option<String>,       // Wohin: "chat:chat.roland"
+    pub braucht_ki: bool,                 // Braucht die Ausführung ein LLM?
     pub timeout_s: u64,
     pub retry: u32,
     pub retry_count: u32,
     pub status: AufgabeStatus,
     pub ergebnis: Option<String>,
-    pub erstellt_von: String,    // welches modul/chat hat die aufgabe erstellt
+    pub erstellt_von: String, // welches modul/chat hat die aufgabe erstellt
     pub erstellt: DateTime<Utc>,
     pub gestartet: Option<DateTime<Utc>>,
     pub erledigt: Option<DateTime<Utc>>,
     pub history: Vec<AufgabeVersion>,
+    /// Parent-Task fuer echte Task→Subtask-Darstellung. Wird z.B. bei Toolcalls
+    /// innerhalb einer Chat-/LLM-Aufgabe gesetzt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub cap_override: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum AufgabeTyp {
     #[serde(rename = "direct")]
-    Direct,      // Tool direkt aufrufen, kein LLM
+    Direct, // Tool direkt aufrufen, kein LLM
     #[serde(rename = "llm_call")]
-    LlmCall,     // LLM wird fuer Verarbeitung gebraucht
+    LlmCall, // LLM wird fuer Verarbeitung gebraucht
     #[serde(rename = "chat_reply")]
-    ChatReply,   // Reine Chat-Antwort, kein Tool
+    ChatReply, // Reine Chat-Antwort, kein Tool
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -271,7 +314,14 @@ pub struct AufgabeVersion {
 
 impl Aufgabe {
     /// Erstellt eine Direct-Aufgabe (Tool direkt, kein LLM)
-    pub fn direct(tool: &str, params: Vec<String>, modul: &str, erstellt_von: &str, template: Option<String>, zurueck_an: Option<String>) -> Self {
+    pub fn direct(
+        tool: &str,
+        params: Vec<String>,
+        modul: &str,
+        erstellt_von: &str,
+        template: Option<String>,
+        zurueck_an: Option<String>,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             version: 1,
@@ -285,18 +335,27 @@ impl Aufgabe {
             zurueck_an,
             braucht_ki: false,
             timeout_s: 30,
-            retry: 0, retry_count: 0,
+            retry: 0,
+            retry_count: 0,
             status: AufgabeStatus::Erstellt,
             ergebnis: None,
             erstellt_von: erstellt_von.into(),
             erstellt: Utc::now(),
-            gestartet: None, erledigt: None,
+            gestartet: None,
+            erledigt: None,
             history: vec![],
+            parent_id: None,
+            cap_override: false,
         }
     }
 
     /// Erstellt eine LLM-Aufgabe (braucht KI fuer Verarbeitung)
-    pub fn llm_call(anweisung: &str, modul: &str, erstellt_von: &str, zurueck_an: Option<String>) -> Self {
+    pub fn llm_call(
+        anweisung: &str,
+        modul: &str,
+        erstellt_von: &str,
+        zurueck_an: Option<String>,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             version: 1,
@@ -310,13 +369,17 @@ impl Aufgabe {
             zurueck_an,
             braucht_ki: true,
             timeout_s: 60,
-            retry: 0, retry_count: 0,
+            retry: 0,
+            retry_count: 0,
             status: AufgabeStatus::Erstellt,
             ergebnis: None,
             erstellt_von: erstellt_von.into(),
             erstellt: Utc::now(),
-            gestartet: None, erledigt: None,
+            gestartet: None,
+            erledigt: None,
             history: vec![],
+            parent_id: None,
+            cap_override: false,
         }
     }
 
@@ -335,13 +398,17 @@ impl Aufgabe {
             zurueck_an: None,
             braucht_ki: true,
             timeout_s: 30,
-            retry: 0, retry_count: 0,
+            retry: 0,
+            retry_count: 0,
             status: AufgabeStatus::Erstellt,
             ergebnis: None,
             erstellt_von: erstellt_von.into(),
             erstellt: Utc::now(),
-            gestartet: None, erledigt: None,
+            gestartet: None,
+            erledigt: None,
             history: vec![],
+            parent_id: None,
+            cap_override: false,
         }
     }
 
@@ -397,9 +464,8 @@ pub struct AgentConfig {
     /// Guardrail validator configuration. None means no guardrail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardrail: Option<GuardrailConfig>,
-    /// Hard daily USD budget across all LLM calls. None/0 = unlimited.
-    /// Checked before every LLM call; blocks further calls once the day's cost exceeds this.
-    /// Resets at UTC midnight.
+    /// Deprecated legacy global daily budget. New enforcement lives on each LLM backend
+    /// via `LlmBackend.cost_cap`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_budget_usd: Option<f64>,
     /// UI / wizard language. "en" (default) or "de". User sets this in /setup.
@@ -409,23 +475,40 @@ pub struct AgentConfig {
     pub locale: String,
 }
 
-fn default_locale() -> String { "en".into() }
+fn default_locale() -> String {
+    "en".into()
+}
 
-fn default_bind() -> String { "127.0.0.1".into() }
-fn default_body_limit() -> usize { 2 * 1024 * 1024 }
-fn default_rate_limit() -> u32 { 60 }
-fn default_log_retention() -> u32 { 30 }
+fn default_bind() -> String {
+    "127.0.0.1".into()
+}
+fn default_body_limit() -> usize {
+    2 * 1024 * 1024
+}
+fn default_rate_limit() -> u32 {
+    60
+}
+fn default_log_retention() -> u32 {
+    30
+}
 
 /// Einfacher HEAD/OPTIONS-basierter Reachability-Check pro Backend-Typ.
 /// Wird vom Setup-Flow benutzt um zu entscheiden ob der User auf die Setup-
 /// Page geleitet werden soll (no working backend yet) oder direkt ins
 /// Dashboard. Kein LLM-Roundtrip — nur Server-erreichbar ja/nein.
 pub async fn test_backend_reachable(client: &reqwest::Client, b: &LlmBackend) -> bool {
+    if crate::security::validate_llm_backend_url(&b.typ, &b.url).is_err() {
+        return false;
+    }
     let url = match b.typ {
         LlmTyp::Ollama => format!("{}/api/tags", b.url.trim_end_matches('/')),
         LlmTyp::OpenAICompat | LlmTyp::Grok | LlmTyp::Embedding => {
             let base = b.url.trim_end_matches('/');
-            if base.ends_with("/v1") { format!("{}/models", base) } else { format!("{}/v1/models", base) }
+            if base.ends_with("/v1") {
+                format!("{}/models", base)
+            } else {
+                format!("{}/v1/models", base)
+            }
         }
         LlmTyp::Anthropic => {
             // Anthropic hat keinen /v1/models endpoint ohne auth — wir pingen die root
@@ -464,13 +547,13 @@ impl Default for AgentConfig {
                 max_alter_tage: 30,
                 cleanup_interval_s: 60,
             }),
-            daily_budget_usd: Some(5.0),
+            daily_budget_usd: None,
             api_auth_token: None,
             bind_address: default_bind(),
             max_body_bytes: default_body_limit(),
             chat_rate_limit_per_min: default_rate_limit(),
             log_retention_days: default_log_retention(),
-            wizard: None,  // Wizard wird vom Setup-Flow aktiviert sobald ein Backend funktioniert
+            wizard: None, // Wizard wird vom Setup-Flow aktiviert sobald ein Backend funktioniert
             guardrail: Some(GuardrailConfig::default()),
             locale: "en".into(),
         }
@@ -490,9 +573,9 @@ pub struct CleanupConfig {
 pub struct WizardConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub llm: LlmBackend,                         // reuse existing LlmBackend struct
+    pub llm: LlmBackend, // reuse existing LlmBackend struct
     #[serde(default)]
-    pub allow_code_gen: bool,                    // Phase 3; default false
+    pub allow_code_gen: bool, // Phase 3; default false
     #[serde(default = "default_wizard_max_rounds")]
     pub max_rounds_per_session: u32,
     #[serde(default = "default_wizard_tool_rounds")]
@@ -505,11 +588,21 @@ pub struct WizardConfig {
     pub max_system_prompt_chars: usize,
 }
 
-fn default_wizard_max_rounds() -> u32 { 30 }
-fn default_wizard_tool_rounds() -> u32 { 5 }
-fn default_wizard_session_timeout() -> u64 { 600 }
-fn default_wizard_rate_limit() -> u32 { 10 }
-fn default_wizard_max_prompt() -> usize { 20_000 }
+fn default_wizard_max_rounds() -> u32 {
+    30
+}
+fn default_wizard_tool_rounds() -> u32 {
+    5
+}
+fn default_wizard_session_timeout() -> u64 {
+    600
+}
+fn default_wizard_rate_limit() -> u32 {
+    10
+}
+fn default_wizard_max_prompt() -> usize {
+    20_000
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DraftIdentity {
@@ -518,9 +611,9 @@ pub struct DraftIdentity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,                // "de" | "en"
+    pub language: Option<String>, // "de" | "en"
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub personality: Option<String>,             // "professional" | "friendly" | ...
+    pub personality: Option<String>, // "professional" | "friendly" | ...
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
 }
@@ -530,7 +623,7 @@ pub struct DraftAgent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub typ: Option<String>,                     // "chat" | "filesystem" | ...
+    pub typ: Option<String>, // "chat" | "filesystem" | ...
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -580,7 +673,7 @@ pub struct WizardToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WizardMessage {
-    pub role: String,                            // "user" | "assistant" | "tool"
+    pub role: String, // "user" | "assistant" | "tool"
     #[serde(default)]
     pub content: String,
     #[serde(default)]
@@ -617,7 +710,9 @@ pub struct WizardCodeGenProposal {
     pub decision: CodeGenDecision,
 }
 
-fn default_pending() -> CodeGenDecision { CodeGenDecision::Pending }
+fn default_pending() -> CodeGenDecision {
+    CodeGenDecision::Pending
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WizardSession {
@@ -633,9 +728,9 @@ pub struct WizardSession {
     pub created_at: i64,
     pub last_activity: i64,
     #[serde(default)]
-    pub user_overridden_fields: Vec<String>,     // for Wizard/Du badge
+    pub user_overridden_fields: Vec<String>, // for Wizard/Du badge
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frozen_reason: Option<String>,           // e.g. "round_cap_reached"
+    pub frozen_reason: Option<String>, // e.g. "round_cap_reached"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_gen_proposal: Option<WizardCodeGenProposal>,
 }
@@ -643,7 +738,7 @@ pub struct WizardSession {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ValidationError {
     pub field: String,
-    pub code: String,                            // "missing" | "invalid_format" | "collision" | ...
+    pub code: String, // "missing" | "invalid_format" | "collision" | ...
     pub human_message_de: String,
 }
 
@@ -684,10 +779,18 @@ pub struct GuardrailAlertConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_backend_id: Option<String>,
 }
-fn default_alert_threshold() -> u32 { 70 }
-fn default_alert_min_calls() -> u64 { 20 }
-fn default_alert_window_mins() -> u64 { 30 }
-fn default_alert_cooldown_mins() -> u64 { 60 }
+fn default_alert_threshold() -> u32 {
+    70
+}
+fn default_alert_min_calls() -> u64 {
+    20
+}
+fn default_alert_window_mins() -> u64 {
+    30
+}
+fn default_alert_cooldown_mins() -> u64 {
+    60
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardrailConfig {
@@ -708,8 +811,12 @@ pub struct GuardrailConfig {
     #[serde(default = "default_true")]
     pub fallback_on_hard_fail: bool,
 }
-fn default_guardrail_retries() -> u32 { 2 }
-fn default_guardrail_max_events_per_turn() -> u32 { 10 }
+fn default_guardrail_retries() -> u32 {
+    2
+}
+fn default_guardrail_max_events_per_turn() -> u32 {
+    10
+}
 
 impl Default for GuardrailConfig {
     fn default() -> Self {
@@ -738,7 +845,7 @@ pub struct GuardrailEvent {
     #[serde(default)]
     pub errors: Vec<ValidationError>,
     pub retry_attempt: u32,
-    pub final_outcome: String,  // "ok" | "retried" | "hard_fail"
+    pub final_outcome: String, // "ok" | "retried" | "hard_fail"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub similar_suggestion: Option<String>,
 }
@@ -815,5 +922,5 @@ pub struct BenchmarkReport {
 pub struct BenchmarkCompareReport {
     pub report_a: BenchmarkReport,
     pub report_b: BenchmarkReport,
-    pub winner_per_case: Vec<(String, String)>,  // (case_id, "A"|"B"|"tie")
+    pub winner_per_case: Vec<(String, String)>, // (case_id, "A"|"B"|"tie")
 }

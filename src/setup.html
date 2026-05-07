@@ -26,6 +26,25 @@ h1 {
 .subtitle { color: #8888aa; margin-bottom: 2em; font-size: 0.95em; line-height: 1.5; }
 .subtitle strong { color: #00ff88; }
 
+.token-panel {
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 0.9em;
+  margin-bottom: 1em;
+}
+.token-panel label { display: flex; flex-direction: column; gap: 0.35em; color: #aab; font-size: 0.82em; }
+.token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.6em; align-items: end; }
+.token-panel input {
+  background: #0c0c22;
+  border: 1px solid #2a2a4a;
+  color: #e0e0f0;
+  padding: 0.5em 0.7em;
+  border-radius: 4px;
+  font-family: inherit;
+}
+.token-hint { margin-top: 0.5em; color: #7f8da3; font-size: 0.76em; line-height: 1.4; }
+
 .card {
   background: #10102a;
   border: 1px solid #2a2a4a;
@@ -126,6 +145,19 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
     After that the AI Wizard is ready and you create agents by talking to it.
   </p>
 
+  <div class="token-panel">
+    <div class="token-row">
+      <label data-i18n="lbl-admin-token">Agent UI admin token
+        <input type="password" id="admin-token" autocomplete="off" placeholder="only needed for remote/LAN setup">
+      </label>
+      <button type="button" id="save-token" class="secondary" data-i18n="btn-use-token">Use token</button>
+    </div>
+    <div class="token-hint" data-i18n="admin-token-hint">
+      This protects the Agent Platform admin API over LAN. It is not your LLM API key.
+    </div>
+    <div class="result" id="token-result"></div>
+  </div>
+
   <!-- OpenRouter -->
   <div class="card" data-preset="openrouter">
     <header>
@@ -143,10 +175,12 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
         <input type="password" data-field="api_key" placeholder="sk-or-v1-...">
       </label>
       <label data-i18n="lbl-model">Model
-        <input type="text" data-field="model" value="deepseek/deepseek-chat-v3-0324:free">
+        <input type="text" data-field="model" value="deepseek/deepseek-chat-v3-0324:free" list="models-openrouter">
+        <datalist id="models-openrouter"></datalist>
       </label>
     </div>
     <div class="actions">
+      <button class="models secondary" data-preset="openrouter" data-i18n="btn-load-models">Load models</button>
       <button class="test" data-preset="openrouter" data-i18n="btn-test">Test</button>
       <button class="save secondary" data-preset="openrouter" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
@@ -156,11 +190,11 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
   <!-- Ollama -->
   <div class="card" data-preset="ollama">
     <header>
-      <h2>🦙 Ollama (local)</h2>
-      <span class="badge free" data-i18n="badge-ollama">FREE · runs locally</span>
+      <h2>🦙 Ollama (local/LAN)</h2>
+      <span class="badge free" data-i18n="badge-ollama">FREE · local/LAN</span>
     </header>
     <div class="desc" data-i18n="desc-ollama">
-      If <code>ollama serve</code> runs on this machine: zero setup, fully private, no cloud.
+      If <code>ollama serve</code> runs locally or on your LAN: zero cloud.
       Pull a model first: <code>ollama pull llama3.2</code>. See
       <a href="https://ollama.com" target="_blank">ollama.com</a>.
     </div>
@@ -169,10 +203,12 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
         <input type="text" data-field="url" value="http://localhost:11434">
       </label>
       <label data-i18n="lbl-model">Model
-        <input type="text" data-field="model" value="llama3.2:latest">
+        <input type="text" data-field="model" value="llama3.2:latest" list="models-ollama">
+        <datalist id="models-ollama"></datalist>
       </label>
     </div>
     <div class="actions">
+      <button class="models secondary" data-preset="ollama" data-i18n="btn-load-models">Load models</button>
       <button class="test" data-preset="ollama" data-i18n="btn-test">Test</button>
       <button class="save secondary" data-preset="ollama" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
@@ -193,10 +229,12 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
         <input type="password" data-field="api_key" placeholder="sk-...">
       </label>
       <label data-i18n="lbl-model">Model
-        <input type="text" data-field="model" value="gpt-5.1">
+        <input type="text" data-field="model" value="gpt-5.1" list="models-openai">
+        <datalist id="models-openai"></datalist>
       </label>
     </div>
     <div class="actions">
+      <button class="models secondary" data-preset="openai" data-i18n="btn-load-models">Load models</button>
       <button class="test" data-preset="openai" data-i18n="btn-test">Test</button>
       <button class="save secondary" data-preset="openai" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
@@ -217,10 +255,12 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
         <input type="password" data-field="api_key" placeholder="sk-ant-...">
       </label>
       <label data-i18n="lbl-model">Model
-        <input type="text" data-field="model" value="claude-opus-4-7">
+        <input type="text" data-field="model" value="claude-opus-4-7" list="models-anthropic">
+        <datalist id="models-anthropic"></datalist>
       </label>
     </div>
     <div class="actions">
+      <button class="models secondary" data-preset="anthropic" data-i18n="btn-load-models">Load models</button>
       <button class="test" data-preset="anthropic" data-i18n="btn-test">Test</button>
       <button class="save secondary" data-preset="anthropic" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
@@ -234,17 +274,22 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
       <span class="badge free" data-i18n="badge-llamacpp">LOCAL · OpenAI-compatible</span>
     </header>
     <div class="desc" data-i18n="desc-llamacpp">
-      If <code>./llama-server</code> runs (OpenAI-compatible on :8080). For power users running their own GGUF models.
+      Enter the network URL of your <code>llama-server</code> or any OpenAI-compatible LAN server, for example <code>http://192.168.200.18:8080</code>.
     </div>
-    <div class="fields">
+    <div class="fields wide">
       <label data-i18n="lbl-url">URL
         <input type="text" data-field="url" value="http://localhost:8080">
       </label>
       <label data-i18n="lbl-modelname">Model name
-        <input type="text" data-field="model" value="local">
+        <input type="text" data-field="model" value="local" list="models-llamacpp">
+        <datalist id="models-llamacpp"></datalist>
+      </label>
+      <label data-i18n="lbl-api-key-optional">API key (optional)
+        <input type="password" data-field="api_key" placeholder="optional if your server requires auth">
       </label>
     </div>
     <div class="actions">
+      <button class="models secondary" data-preset="llamacpp" data-i18n="btn-load-models">Load models</button>
       <button class="test" data-preset="llamacpp" data-i18n="btn-test">Test</button>
       <button class="save secondary" data-preset="llamacpp" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
@@ -265,42 +310,61 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
 const I18N = {
   en: {
     intro: 'Welcome! To build your first agent you need an <strong>LLM backend</strong>. Pick an option below, test it, save — takes about 30 seconds. After that the AI Wizard is ready and you create agents by talking to it.',
-    'lbl-api-key': 'API key', 'lbl-model': 'Model', 'lbl-url': 'URL', 'lbl-modelname': 'Model name',
-    'btn-test': 'Test', 'btn-save': 'Save &amp; continue',
-    'badge-openrouter': 'FREE · many models', 'badge-ollama': 'FREE · runs locally',
+    'lbl-api-key': 'API key', 'lbl-api-key-optional': 'API key (optional)', 'lbl-model': 'Model', 'lbl-url': 'URL', 'lbl-modelname': 'Model name',
+    'lbl-admin-token': 'Agent UI admin token',
+    'btn-test': 'Test', 'btn-save': 'Save &amp; continue', 'btn-use-token': 'Use token', 'btn-load-models': 'Load models',
+    'admin-token-hint': 'This protects the Agent Platform admin API over LAN. It is not your LLM API key.',
+    'badge-openrouter': 'FREE · many models', 'badge-ollama': 'FREE · local/LAN',
     'badge-openai': 'PAID · GPT-5.x', 'badge-anthropic': 'PAID · Claude 4.x',
     'badge-llamacpp': 'LOCAL · OpenAI-compatible',
     'desc-openrouter': 'OpenRouter is an LLM aggregator with dozens of models (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) behind <em>one</em> API. Free models available (e.g. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>), paid flagship models on demand. Get an API key at <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (email only, no card required for free tier).',
-    'desc-ollama': 'If <code>ollama serve</code> runs on this machine: zero setup, fully private, no cloud. Pull a model first: <code>ollama pull llama3.2</code>. See <a href="https://ollama.com" target="_blank">ollama.com</a>.',
+    'desc-ollama': 'If <code>ollama serve</code> runs locally or on your LAN: zero cloud. Pull a model first: <code>ollama pull llama3.2</code>. See <a href="https://ollama.com" target="_blank">ollama.com</a>.',
     'desc-openai': 'Standard OpenAI API. Get a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.',
     'desc-anthropic': 'Direct Anthropic API. Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.',
-    'desc-llamacpp': 'If <code>./llama-server</code> runs (OpenAI-compatible on :8080). For power users running their own GGUF models.',
+    'desc-llamacpp': 'Enter the network URL of your <code>llama-server</code> or any OpenAI-compatible LAN server, for example <code>http://192.168.200.18:8080</code>.',
     'footer': 'Advanced users can edit <code>agent-data/config.json</code> directly — see <a href="https://github.com/678asgfg78asa78sfh/agent-platform/tree/main/docs/templates">docs/templates/</a>. After setup you land on <code>/</code> (admin UI) and can start the AI Wizard.',
     'testing': 'Testing connection to ', 'with-model': ' with model ', 'saving': 'Saving...',
     'save-ok': '✓ Saved. Redirecting to dashboard...', 'save-err': '✗ Save failed: ',
     'test-ok': '✓ Connection OK. Model response: ', 'test-err': '✗ Error: ',
-    'net-err': '✗ Network error: ',
+    'net-err': '✗ Network error: ', 'token-saved': '✓ Admin token saved in this browser.', 'auth-missing': 'Admin token missing or wrong. Paste the Agent UI admin token above, then retry.',
+    'loading-models': 'Loading models from ', 'models-ok': '✓ Models loaded: ', 'models-empty': 'No models returned by backend.',
   },
   de: {
     intro: 'Willkommen! Um deinen ersten Agent zu bauen brauchst du ein <strong>LLM-Backend</strong>. Wähl eine Option unten, teste sie, speichere — dauert ~30 Sekunden. Danach steht der KI-Wizard bereit und du erstellst Agenten indem du mit ihm redest.',
-    'lbl-api-key': 'API-Key', 'lbl-model': 'Modell', 'lbl-url': 'URL', 'lbl-modelname': 'Modell-Name',
-    'btn-test': 'Testen', 'btn-save': 'Speichern &amp; weiter',
-    'badge-openrouter': 'FREI · viele Modelle', 'badge-ollama': 'KOSTENLOS · läuft lokal',
+    'lbl-api-key': 'API-Key', 'lbl-api-key-optional': 'API-Key (optional)', 'lbl-model': 'Modell', 'lbl-url': 'URL', 'lbl-modelname': 'Modell-Name',
+    'lbl-admin-token': 'Agent-UI Admin-Token',
+    'btn-test': 'Testen', 'btn-save': 'Speichern &amp; weiter', 'btn-use-token': 'Token nutzen', 'btn-load-models': 'Modelle laden',
+    'admin-token-hint': 'Schuetzt die Agent-Platform-Admin-API im LAN. Das ist nicht dein LLM/API-Key.',
+    'badge-openrouter': 'FREI · viele Modelle', 'badge-ollama': 'KOSTENLOS · lokal/LAN',
     'badge-openai': 'BEZAHLT · GPT-5.x', 'badge-anthropic': 'BEZAHLT · Claude 4.x',
     'badge-llamacpp': 'LOKAL · OpenAI-kompatibel',
     'desc-openrouter': 'OpenRouter ist ein LLM-Aggregator mit dutzenden Modellen (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) hinter <em>einer</em> API. Freie Modelle verfügbar (z.B. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>), kostenpflichtige Top-Modelle on-demand. API-Key holen auf <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (braucht nur Email, keine Karte für Free-Tier).',
-    'desc-ollama': 'Falls <code>ollama serve</code> auf diesem Rechner läuft: null Setup, voll privat, keine Cloud. Modell vorab ziehen: <code>ollama pull llama3.2</code>. Siehe <a href="https://ollama.com" target="_blank">ollama.com</a>.',
+    'desc-ollama': 'Falls <code>ollama serve</code> lokal oder im LAN läuft: keine Cloud. Modell vorab ziehen: <code>ollama pull llama3.2</code>. Siehe <a href="https://ollama.com" target="_blank">ollama.com</a>.',
     'desc-openai': 'Standard OpenAI API. Key holen auf <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.',
     'desc-anthropic': 'Direkt bei Anthropic. Key auf <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.',
-    'desc-llamacpp': 'Falls <code>./llama-server</code> läuft (OpenAI-kompatibel auf :8080). Für Power-User mit eigenen GGUF-Modellen.',
+    'desc-llamacpp': 'Trag hier die Netzwerk-URL deines <code>llama-server</code> oder eines anderen OpenAI-kompatiblen LAN-Servers ein, z.B. <code>http://192.168.200.18:8080</code>.',
     'footer': 'Fortgeschrittene können auch direkt <code>agent-data/config.json</code> editieren — siehe <a href="https://github.com/678asgfg78asa78sfh/agent-platform/tree/main/docs/templates">docs/templates/</a>. Nach dem Setup bist du auf <code>/</code> (Admin-UI) und kannst den KI-Wizard starten.',
     'testing': 'Teste Verbindung zu ', 'with-model': ' mit Modell ', 'saving': 'Speichere...',
     'save-ok': '✓ Gespeichert. Weiterleitung zum Dashboard...', 'save-err': '✗ Speichern fehlgeschlagen: ',
     'test-ok': '✓ Verbindung OK. Modell-Antwort: ', 'test-err': '✗ Fehler: ',
-    'net-err': '✗ Netzwerk-Fehler: ',
+    'net-err': '✗ Netzwerk-Fehler: ', 'token-saved': '✓ Admin-Token in diesem Browser gespeichert.', 'auth-missing': 'Admin-Token fehlt oder ist falsch. Oben den Agent-UI Admin-Token eintragen und erneut versuchen.',
+    'loading-models': 'Lade Modelle von ', 'models-ok': '✓ Modelle geladen: ', 'models-empty': 'Backend hat keine Modelle zurueckgegeben.',
   },
 };
 let CURRENT_LOCALE = localStorage.getItem('setup_locale') || 'en';
+const SETUP_TOKEN_PARAM = new URLSearchParams(window.location.search).get('token');
+if (SETUP_TOKEN_PARAM) {
+  localStorage.setItem('api_auth_token', SETUP_TOKEN_PARAM);
+  history.replaceState(null, '', window.location.pathname);
+}
+
+function authHeaders(extra) {
+  const headers = extra || {};
+  const tokenInput = document.getElementById('admin-token');
+  const token = (tokenInput && tokenInput.value.trim()) || localStorage.getItem('api_auth_token') || '';
+  if (token) headers.Authorization = 'Bearer ' + token;
+  return headers;
+}
 
 function applyLocale(loc) {
   CURRENT_LOCALE = loc;
@@ -309,7 +373,13 @@ function applyLocale(loc) {
   document.documentElement.lang = loc;
   document.querySelectorAll('[data-i18n]').forEach(function(el) {
     const key = el.getAttribute('data-i18n');
-    if (strings[key]) el.innerHTML = strings[key];
+    if (!strings[key]) return;
+    if (el.tagName === 'LABEL') {
+      var firstText = Array.prototype.find.call(el.childNodes, function(n) { return n.nodeType === Node.TEXT_NODE; });
+      if (firstText) firstText.nodeValue = strings[key] + ' ';
+      return;
+    }
+    el.innerHTML = strings[key];
   });
   // Toggle button active state
   document.querySelectorAll('.lang-btn').forEach(function(btn) {
@@ -325,6 +395,32 @@ document.querySelectorAll('.lang-btn').forEach(function(b) {
 });
 applyLocale(CURRENT_LOCALE);
 function t(key) { return I18N[CURRENT_LOCALE][key] || I18N.en[key] || key; }
+const savedToken = localStorage.getItem('api_auth_token') || '';
+if (savedToken && document.getElementById('admin-token')) {
+  document.getElementById('admin-token').value = savedToken;
+}
+document.getElementById('save-token').addEventListener('click', function() {
+  const token = document.getElementById('admin-token').value.trim();
+  if (token) localStorage.setItem('api_auth_token', token);
+  showTokenResult('ok', t('token-saved'));
+});
+
+function showTokenResult(kind, msg) {
+  const el = document.getElementById('token-result');
+  el.className = 'result ' + kind;
+  el.textContent = msg;
+}
+
+async function readSetupJson(res) {
+  if (res.status === 401) {
+    throw new Error(t('auth-missing'));
+  }
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error('HTTP ' + res.status + (text ? ': ' + text.substring(0, 300) : ''));
+  }
+  return text ? JSON.parse(text) : {};
+}
 
 // Preset → LlmBackend-struct Mapping
 const PRESETS = {
@@ -399,6 +495,50 @@ function showResult(preset, kind, msg) {
   el.textContent = msg;
 }
 
+async function loadModels(preset) {
+  const btn = document.querySelector('.models[data-preset="'+preset+'"]');
+  const card = document.querySelector('.card[data-preset="'+preset+'"]');
+  const modelInput = card.querySelector('input[data-field="model"]');
+  const listId = modelInput.getAttribute('list');
+  const datalist = listId ? document.getElementById(listId) : null;
+  const backend = buildBackend(preset);
+  btn.disabled = true;
+  showResult(preset, 'info', t('loading-models') + (backend.url || backend.name) + ' ...');
+  try {
+    const res = await fetch('/api/setup/models', {
+      method: 'POST',
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify(backend),
+    });
+    const data = await readSetupJson(res);
+    if (!data.ok) {
+      showResult(preset, 'err', t('test-err') + (data.error || 'unknown'));
+      return;
+    }
+    const models = Array.isArray(data.models) ? data.models.filter(Boolean) : [];
+    if (!models.length) {
+      showResult(preset, 'err', t('models-empty'));
+      return;
+    }
+    if (datalist) {
+      datalist.innerHTML = '';
+      models.forEach(function(id) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        datalist.appendChild(opt);
+      });
+    }
+    if (!modelInput.value || models.indexOf(modelInput.value) === -1) {
+      modelInput.value = models[0];
+    }
+    showResult(preset, 'ok', t('models-ok') + models.slice(0, 12).join(', ') + (models.length > 12 ? ' ...' : ''));
+  } catch (e) {
+    showResult(preset, 'err', t('net-err') + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function testBackend(preset) {
   const btn = document.querySelector('.test[data-preset="'+preset+'"]');
   const saveBtn = document.querySelector('.save[data-preset="'+preset+'"]');
@@ -408,10 +548,10 @@ async function testBackend(preset) {
   try {
     const res = await fetch('/api/setup/test-backend', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify(backend),
     });
-    const data = await res.json();
+    const data = await readSetupJson(res);
     if (data.ok) {
       showResult(preset, 'ok', t('test-ok') + '"' + (data.sample||'').trim().substring(0,200) + '"');
       saveBtn.disabled = false;
@@ -432,15 +572,18 @@ async function saveBackend(preset) {
   try {
     const res = await fetch('/api/setup/save-backend', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       // Send chosen locale alongside — server saves it so the wizard speaks
       // the user's language by default.
       body: JSON.stringify({backend: backend, locale: CURRENT_LOCALE}),
     });
-    const data = await res.json();
+    const data = await readSetupJson(res);
     if (data.ok) {
       showResult(preset, 'ok', t('save-ok'));
-      setTimeout(function(){ window.location.href = '/'; }, 800);
+      setTimeout(function(){
+        const token = localStorage.getItem('api_auth_token') || '';
+        window.location.href = token ? '/?token=' + encodeURIComponent(token) : '/';
+      }, 800);
     } else {
       showResult(preset, 'err', t('save-err') + (data.error || 'unknown'));
     }
@@ -451,6 +594,9 @@ async function saveBackend(preset) {
 
 document.querySelectorAll('button.test').forEach(function(b) {
   b.addEventListener('click', function() { testBackend(b.dataset.preset); });
+});
+document.querySelectorAll('button.models').forEach(function(b) {
+  b.addEventListener('click', function() { loadModels(b.dataset.preset); });
 });
 document.querySelectorAll('button.save').forEach(function(b) {
   b.addEventListener('click', function() { saveBackend(b.dataset.preset); });

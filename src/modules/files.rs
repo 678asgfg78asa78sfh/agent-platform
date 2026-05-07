@@ -17,7 +17,9 @@ fn clean_path(path: &str) -> String {
 /// `/safe/../etc` Bypass durch String-Matching und auch Präfix-Kollisionen
 /// wie `/safe` matched `/safe_evil`. Canonicalization löst Symlinks auf.
 fn is_path_allowed(path: &str, allowed: &[&str]) -> bool {
-    if allowed.is_empty() { return false; }
+    if allowed.is_empty() {
+        return false;
+    }
     let clean = clean_path(path);
     let target: PathBuf = Path::new(&clean).to_path_buf();
 
@@ -25,17 +27,13 @@ fn is_path_allowed(path: &str, allowed: &[&str]) -> bool {
     // parent-Verzeichnis und hängen den Dateinamen zurück an.
     let canonical = match std::fs::canonicalize(&target) {
         Ok(p) => p,
-        Err(_) => {
-            match (target.parent(), target.file_name()) {
-                (Some(parent), Some(name)) => {
-                    match std::fs::canonicalize(parent) {
-                        Ok(p) => p.join(name),
-                        Err(_) => return false,
-                    }
-                }
-                _ => return false,
-            }
-        }
+        Err(_) => match (target.parent(), target.file_name()) {
+            (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
+                Ok(p) => p.join(name),
+                Err(_) => return false,
+            },
+            _ => return false,
+        },
     };
 
     // Component-based starts_with: kein String-Präfix-Match, also kein "/safe"
@@ -50,7 +48,10 @@ fn is_path_allowed(path: &str, allowed: &[&str]) -> bool {
 pub async fn read_file(path: &str, allowed: &[&str], max_size: usize) -> ToolResult {
     let path = clean_path(path);
     if !is_path_allowed(&path, allowed) {
-        return ToolResult::fail(format!("DENIED: Pfad '{}' ist nicht in der Whitelist", path));
+        return ToolResult::fail(format!(
+            "DENIED: Pfad '{}' ist nicht in der Whitelist",
+            path
+        ));
     }
     let path_owned = path.clone();
     let read = tokio::task::spawn_blocking(move || std::fs::read_to_string(&path_owned))
@@ -58,22 +59,38 @@ pub async fn read_file(path: &str, allowed: &[&str], max_size: usize) -> ToolRes
         .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
     match read {
         Ok(content) => {
-            if content.len() <= max_size { return ToolResult::ok(content); }
+            if content.len() <= max_size {
+                return ToolResult::ok(content);
+            }
             let mut end = max_size;
-            while end > 0 && !content.is_char_boundary(end) { end -= 1; }
-            ToolResult::ok(format!("{}... [abgeschnitten, {} bytes total]", &content[..end], content.len()))
+            while end > 0 && !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            ToolResult::ok(format!(
+                "{}... [abgeschnitten, {} bytes total]",
+                &content[..end],
+                content.len()
+            ))
         }
         Err(e) => ToolResult::fail(format!("Datei lesen fehlgeschlagen: {}", e)),
     }
 }
 
-pub async fn write_file(path: &str, content: &str, allowed: &[&str], allow_write: bool) -> ToolResult {
+pub async fn write_file(
+    path: &str,
+    content: &str,
+    allowed: &[&str],
+    allow_write: bool,
+) -> ToolResult {
     let path = clean_path(path);
     if !allow_write {
         return ToolResult::fail("DENIED: Schreibzugriff ist für dieses Modul deaktiviert".into());
     }
     if !is_path_allowed(&path, allowed) {
-        return ToolResult::fail(format!("DENIED: Pfad '{}' ist nicht in der Whitelist", path));
+        return ToolResult::fail(format!(
+            "DENIED: Pfad '{}' ist nicht in der Whitelist",
+            path
+        ));
     }
     let path_owned = path.clone();
     let content_owned = content.to_string();
@@ -82,7 +99,10 @@ pub async fn write_file(path: &str, content: &str, allowed: &[&str], allow_write
         .await
         .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
     match write {
-        Ok(_) => ToolResult::ok(format!("Datei geschrieben: {} ({} bytes)", path, content_len)),
+        Ok(_) => ToolResult::ok(format!(
+            "Datei geschrieben: {} ({} bytes)",
+            path, content_len
+        )),
         Err(e) => ToolResult::fail(format!("Datei schreiben fehlgeschlagen: {}", e)),
     }
 }
@@ -94,14 +114,17 @@ mod path_tests {
     #[test]
     fn test_clean_path_no_absolute_expansion() {
         // Used to turn "./home/user" into "/home/user" — that was the bypass.
-        assert_eq!(clean_path("./home/user/.ssh/id_rsa"), "./home/user/.ssh/id_rsa");
+        assert_eq!(
+            clean_path("./home/user/.ssh/id_rsa"),
+            "./home/user/.ssh/id_rsa"
+        );
         assert_eq!(clean_path("./tmp/foo"), "./tmp/foo");
     }
 
     #[test]
     fn test_clean_path_strips_quotes_and_whitespace() {
         assert_eq!(clean_path("  \"/tmp/x\"  "), "/tmp/x");
-        assert_eq!(clean_path("'  /home/a  '"), "  /home/a  ");  // only outer quotes
+        assert_eq!(clean_path("'  /home/a  '"), "  /home/a  "); // only outer quotes
     }
 
     #[test]
@@ -159,7 +182,10 @@ mod path_tests {
 pub async fn list_dir(path: &str, allowed: &[&str]) -> ToolResult {
     let path = clean_path(path);
     if !is_path_allowed(&path, allowed) {
-        return ToolResult::fail(format!("DENIED: Pfad '{}' ist nicht in der Whitelist", path));
+        return ToolResult::fail(format!(
+            "DENIED: Pfad '{}' ist nicht in der Whitelist",
+            path
+        ));
     }
     let path_owned = path.clone();
     let result = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<String>> {

@@ -9,11 +9,11 @@
 // Start nach dem Upgrade wird `erstellt/`, `gestartet/`, `erledigt/` ein-
 // gelesen und nach SQL geschoben, danach gelöscht.
 
-use std::path::{Path, PathBuf};
-use crate::types::{Aufgabe, AufgabeStatus, LogEvent, LogTyp};
-use chrono::Utc;
 use crate::security::safe_id;
 use crate::store::Store;
+use crate::types::{Aufgabe, AufgabeStatus, LogEvent, LogTyp};
+use chrono::Utc;
+use std::path::{Path, PathBuf};
 
 pub struct Pipeline {
     pub base: PathBuf,
@@ -39,10 +39,10 @@ fn status_key(s: &AufgabeStatus) -> &'static str {
 fn status_from_key(k: &str) -> AufgabeStatus {
     match k {
         "gestartet" => AufgabeStatus::Gestartet,
-        "success"   => AufgabeStatus::Success,
-        "failed"    => AufgabeStatus::Failed,
+        "success" => AufgabeStatus::Success,
+        "failed" => AufgabeStatus::Failed,
         "cancelled" => AufgabeStatus::Cancelled,
-        _            => AufgabeStatus::Erstellt,
+        _ => AufgabeStatus::Erstellt,
     }
 }
 
@@ -71,7 +71,10 @@ impl Pipeline {
             // was fehlt.
             let migrated = p.migrate_from_json();
             if migrated > 0 {
-                tracing::info!("Pipeline: {} Aufgaben aus JSON-Ordnern nach SQLite migriert", migrated);
+                tracing::info!(
+                    "Pipeline: {} Aufgaben aus JSON-Ordnern nach SQLite migriert",
+                    migrated
+                );
             }
         }
 
@@ -85,13 +88,21 @@ impl Pipeline {
         let mut count = 0usize;
         for ordner in &["erstellt", "gestartet", "erledigt"] {
             let dir = self.base.join(ordner);
-            if !dir.exists() { continue; }
+            if !dir.exists() {
+                continue;
+            }
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if !path.extension().is_some_and(|e| e == "json") { continue; }
-                    let Ok(content) = std::fs::read_to_string(&path) else { continue; };
-                    let Ok(a) = serde_json::from_str::<Aufgabe>(&content) else { continue; };
+                    if !path.extension().is_some_and(|e| e == "json") {
+                        continue;
+                    }
+                    let Ok(content) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    let Ok(a) = serde_json::from_str::<Aufgabe>(&content) else {
+                        continue;
+                    };
                     if self.speichern_raw(&a).is_ok() {
                         count += 1;
                     }
@@ -111,6 +122,14 @@ impl Pipeline {
         self.speichern_raw(aufgabe)
     }
 
+    pub fn reschedule(&self, aufgabe: &mut Aufgabe, wann: String) -> std::io::Result<()> {
+        aufgabe.wann = wann;
+        aufgabe.status = AufgabeStatus::Erstellt;
+        aufgabe.gestartet = None;
+        aufgabe.erledigt = None;
+        self.speichern_raw(aufgabe)
+    }
+
     fn speichern_raw(&self, aufgabe: &Aufgabe) -> std::io::Result<()> {
         let json = serde_json::to_string(aufgabe)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -123,25 +142,36 @@ impl Pipeline {
             &json,
             aufgabe.erstellt.timestamp(),
             faellig_ab_ts,
-        ).map_err(|e| std::io::Error::other(format!("store: {}", e)))?;
+        )
+        .map_err(|e| std::io::Error::other(format!("store: {}", e)))?;
         Ok(())
     }
 
     /// State-Transition: Status ändern, Timestamp setzen, persist. Atomar in SQL.
     /// Vorheriges "write-new, delete-old"-Pattern entfällt komplett; es kann kein
     /// Window mehr geben in dem der Task in zwei "Ordnern" existiert.
-    pub fn verschieben(&self, aufgabe: &mut Aufgabe, neuer_status: AufgabeStatus) -> std::io::Result<()> {
+    pub fn verschieben(
+        &self,
+        aufgabe: &mut Aufgabe,
+        neuer_status: AufgabeStatus,
+    ) -> std::io::Result<()> {
         aufgabe.status = neuer_status;
         match &aufgabe.status {
             AufgabeStatus::Gestartet => aufgabe.gestartet = Some(Utc::now()),
-            AufgabeStatus::Success | AufgabeStatus::Failed | AufgabeStatus::Cancelled => aufgabe.erledigt = Some(Utc::now()),
+            AufgabeStatus::Success | AufgabeStatus::Failed | AufgabeStatus::Cancelled => {
+                aufgabe.erledigt = Some(Utc::now())
+            }
             _ => {}
         }
         let json = serde_json::to_string(aufgabe)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         crate::store::task_transition(
-            &self.store.pool, &aufgabe.id, status_key(&aufgabe.status), &json,
-        ).map_err(|e| std::io::Error::other(format!("store: {}", e)))?;
+            &self.store.pool,
+            &aufgabe.id,
+            status_key(&aufgabe.status),
+            &json,
+        )
+        .map_err(|e| std::io::Error::other(format!("store: {}", e)))?;
         Ok(())
     }
 
@@ -158,8 +188,12 @@ impl Pipeline {
         }
     }
 
-    pub fn erstellt(&self) -> Vec<Aufgabe> { self.laden("erstellt") }
-    pub fn gestartet(&self) -> Vec<Aufgabe> { self.laden("gestartet") }
+    pub fn erstellt(&self) -> Vec<Aufgabe> {
+        self.laden("erstellt")
+    }
+    pub fn gestartet(&self) -> Vec<Aufgabe> {
+        self.laden("gestartet")
+    }
     pub fn erledigt(&self) -> Vec<Aufgabe> {
         match crate::store::task_list_erledigt_recent(&self.store.pool, 100) {
             Ok(r) => Self::decode_rows(r),
@@ -190,8 +224,49 @@ impl Pipeline {
         // State-Machine-Dedup ist dank PRIMARY KEY + Check-Constraint garantiert.
     }
 
+    /// Nach einem Prozess-Restart kann keine in-memory Task-Handle mehr zu
+    /// `gestartet`-Records existieren. Diese Tasks bleiben sonst dauerhaft als
+    /// laufend sichtbar, obwohl der LLM-/Tool-Call hart unterbrochen wurde.
+    pub fn fail_started_after_restart(&self) -> usize {
+        let mut count = 0usize;
+        for mut aufgabe in self.gestartet() {
+            if aufgabe.status != AufgabeStatus::Gestartet {
+                continue;
+            }
+            aufgabe.ergebnis = Some(
+                "FAILED: Server-Neustart hat die laufende Aufgabe unterbrochen. Mit Restart erneut starten."
+                    .into(),
+            );
+            match self.verschieben(&mut aufgabe, AufgabeStatus::Failed) {
+                Ok(_) => {
+                    count += 1;
+                    self.log(
+                        "startup",
+                        Some(&aufgabe.id),
+                        LogTyp::Failed,
+                        "Gestartete Aufgabe nach Server-Neustart als Failed markiert",
+                    );
+                    self.audit(
+                        "task.restart_recovery",
+                        "system",
+                        &format!("task={}", aufgabe.id),
+                    );
+                }
+                Err(e) => self.log(
+                    "startup",
+                    Some(&aufgabe.id),
+                    LogTyp::Error,
+                    &format!("Restart-Recovery failed: {}", e),
+                ),
+            }
+        }
+        count
+    }
+
     pub fn cleanup_erledigt(&self, max_count: usize, max_alter_tage: u32) {
-        if let Ok(n) = crate::store::task_cleanup_erledigt(&self.store.pool, max_count, max_alter_tage) {
+        if let Ok(n) =
+            crate::store::task_cleanup_erledigt(&self.store.pool, max_count, max_alter_tage)
+        {
             if n > 0 {
                 tracing::info!("Cleanup: {} alte Aufgaben geloescht", n);
             }
@@ -215,7 +290,8 @@ impl Pipeline {
 
     pub fn convo_list(&self, modul_id: &str) -> Vec<serde_json::Value> {
         match crate::store::convo_list(&self.store.pool, modul_id) {
-            Ok(jsons) => jsons.into_iter()
+            Ok(jsons) => jsons
+                .into_iter()
                 .filter_map(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
                 .collect(),
             Err(_) => vec![],
@@ -224,7 +300,8 @@ impl Pipeline {
 
     pub fn convo_load(&self, modul_id: &str, convo_id: &str) -> Option<serde_json::Value> {
         let safe_cid = safe_id(convo_id)?;
-        crate::store::convo_load(&self.store.pool, modul_id, &safe_cid).ok()
+        crate::store::convo_load(&self.store.pool, modul_id, &safe_cid)
+            .ok()
             .flatten()
             .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
     }
@@ -271,7 +348,11 @@ impl Pipeline {
             Err(_) => return,
         };
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_file) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_file)
+        {
             let _ = f.write_all(line.as_bytes());
         }
         match event.typ {
@@ -284,7 +365,8 @@ impl Pipeline {
     pub fn logs_laden(&self, datum: &str) -> Vec<LogEvent> {
         let path = self.base.join("logs").join(format!("{datum}.jsonl"));
         if let Ok(content) = std::fs::read_to_string(&path) {
-            content.lines()
+            content
+                .lines()
                 .filter_map(|l| serde_json::from_str(l).ok())
                 .collect()
         } else {
@@ -295,7 +377,9 @@ impl Pipeline {
     /// Log- und Audit-File-Rotation basierend auf retention_days. Audit-SQL-
     /// Tabelle wird separat bereinigt (idempotency_cleanup gibt es dafür).
     pub fn cleanup_logs(&self, retention_days: u32) {
-        if retention_days == 0 { return; }
+        if retention_days == 0 {
+            return;
+        }
         let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
         let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
         let dir = self.base.join("logs");
@@ -343,13 +427,17 @@ mod tests {
         pipeline.speichern(&aufgabe).unwrap();
         assert_eq!(pipeline.erstellt().len(), 1);
 
-        pipeline.verschieben(&mut aufgabe, AufgabeStatus::Gestartet).unwrap();
+        pipeline
+            .verschieben(&mut aufgabe, AufgabeStatus::Gestartet)
+            .unwrap();
         assert_eq!(pipeline.erstellt().len(), 0);
         assert_eq!(pipeline.gestartet().len(), 1);
         assert!(aufgabe.gestartet.is_some());
 
         aufgabe.ergebnis = Some("Done".into());
-        pipeline.verschieben(&mut aufgabe, AufgabeStatus::Success).unwrap();
+        pipeline
+            .verschieben(&mut aufgabe, AufgabeStatus::Success)
+            .unwrap();
         assert_eq!(pipeline.gestartet().len(), 0);
         assert_eq!(pipeline.erledigt().len(), 1);
         assert!(aufgabe.erledigt.is_some());
@@ -387,6 +475,29 @@ mod tests {
 
         assert_eq!(pipeline.erstellt().len(), 0);
         assert_eq!(pipeline.gestartet().len(), 2);
+    }
+
+    #[test]
+    fn test_fail_started_after_restart_marks_running_tasks_failed() {
+        let (_dir, pipeline) = tmp_pipeline();
+        let mut aufgabe = Aufgabe::neu("chat.deepdive", "running", "sofort", "chat:test");
+        pipeline.speichern(&aufgabe).unwrap();
+        pipeline
+            .verschieben(&mut aufgabe, AufgabeStatus::Gestartet)
+            .unwrap();
+
+        let recovered = pipeline.fail_started_after_restart();
+        assert_eq!(recovered, 1);
+        assert_eq!(pipeline.gestartet().len(), 0);
+        let loaded = pipeline.laden_by_id(&aufgabe.id).unwrap().unwrap();
+        assert_eq!(loaded.status, AufgabeStatus::Failed);
+        assert!(
+            loaded
+                .ergebnis
+                .as_deref()
+                .unwrap_or("")
+                .contains("Server-Neustart")
+        );
     }
 
     #[test]

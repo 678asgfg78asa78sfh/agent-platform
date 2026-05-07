@@ -52,7 +52,9 @@ const DEFAULT_SYSTEM_PROMPT: &str = "Du bist ein hilfreicher Assistent.";
 /// to the LLM backend's identity. Previously duplicated in cycle.rs, web.rs chat, web.rs
 /// prompt_preview.
 pub fn resolve_identity(modul: &ModulConfig, config: &AgentConfig) -> ModulIdentity {
-    let backend_identity = config.llm_backends.iter()
+    let backend_identity = config
+        .llm_backends
+        .iter()
         .find(|b| b.id == modul.llm_backend)
         .map(|b| b.identity.clone());
 
@@ -64,6 +66,39 @@ pub fn resolve_identity(modul: &ModulConfig, config: &AgentConfig) -> ModulIdent
     } else {
         backend_identity.unwrap_or_else(|| modul.identity.clone())
     }
+}
+
+/// The UI model is "LLM Gem owns attached modules". Tool access still uses the
+/// older linked_modules field internally, so normalize chat modules to link all
+/// persistent sibling modules attached to the same LLM backend.
+pub fn normalize_same_llm_links(config: &mut AgentConfig) -> bool {
+    let modules = config.module.clone();
+    let mut changed = false;
+
+    for module in &mut config.module {
+        if module.typ != "chat" || module.llm_backend.is_empty() {
+            continue;
+        }
+
+        for sibling in modules
+            .iter()
+            .filter(|m| m.id != module.id && m.persistent && m.llm_backend == module.llm_backend)
+        {
+            if !module.linked_modules.iter().any(|id| id == &sibling.id) {
+                module.linked_modules.push(sibling.id.clone());
+                changed = true;
+            }
+        }
+
+        if !module.linked_modules.is_empty()
+            && !module.berechtigungen.iter().any(|p| p == "aufgaben")
+        {
+            module.berechtigungen.push("aufgaben".into());
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 /// UTF-8-safe truncation returning a string slice. Never cuts mid-character.
@@ -181,25 +216,101 @@ mod tests {
         let path = dir.path().join("concurrent.txt");
         let p = std::sync::Arc::new(path.clone());
 
-        let handles: Vec<_> = (0..20).map(|i| {
-            let p = p.clone();
-            let content: Vec<u8> = format!("content-from-writer-{:03}", i).into_bytes();
-            std::thread::spawn(move || {
-                atomic_write(&p, &content).unwrap();
+        let handles: Vec<_> = (0..20)
+            .map(|i| {
+                let p = p.clone();
+                let content: Vec<u8> = format!("content-from-writer-{:03}", i).into_bytes();
+                std::thread::spawn(move || {
+                    atomic_write(&p, &content).unwrap();
+                })
             })
-        }).collect();
-        for h in handles { h.join().unwrap(); }
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
 
         // Nach allen Threads: genau eine Datei, genau ein vollständiger Inhalt
         // (keine abgeschnittene oder leere Datei).
         let contents = std::fs::read(&path).unwrap();
-        assert!(contents.starts_with(b"content-from-writer-"),
-                "datei muss vollständigen content eines writers haben, nicht fragment: {:?}", contents);
+        assert!(
+            contents.starts_with(b"content-from-writer-"),
+            "datei muss vollständigen content eines writers haben, nicht fragment: {:?}",
+            contents
+        );
         // Keine .tmp.* Leichen im Verzeichnis
         let files: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
-        let tmp_count = files.iter().filter(|f| {
-            f.file_name().to_string_lossy().contains(".tmp.")
-        }).count();
+        let tmp_count = files
+            .iter()
+            .filter(|f| f.file_name().to_string_lossy().contains(".tmp."))
+            .count();
         assert_eq!(tmp_count, 0, "keine .tmp.* Leichen erwartet");
+    }
+
+    #[test]
+    fn normalize_same_llm_links_exposes_sibling_modules_to_chat() {
+        let mut cfg = AgentConfig::default();
+        cfg.llm_backends.push(crate::types::LlmBackend {
+            id: "local".into(),
+            name: "Local".into(),
+            typ: crate::types::LlmTyp::OpenAICompat,
+            url: "http://127.0.0.1:8080".into(),
+            api_key: None,
+            model: "local".into(),
+            timeout_s: 30,
+            identity: Default::default(),
+            max_tokens: None,
+            cost_cap: None,
+        });
+        cfg.module.push(crate::types::ModulConfig {
+            id: "chat.local".into(),
+            typ: "chat".into(),
+            name: "chat.local".into(),
+            display_name: "Chat".into(),
+            llm_backend: "local".into(),
+            backup_llm: None,
+            berechtigungen: vec![],
+            timeout_s: 30,
+            retry: 0,
+            settings: Default::default(),
+            identity: Default::default(),
+            rag_pool: None,
+            linked_modules: vec![],
+            persistent: true,
+            spawned_by: None,
+            spawn_ttl_s: None,
+            created_at: None,
+            scheduler_interval_ms: None,
+            max_concurrent_tasks: None,
+            token_budget: None,
+            token_budget_warning: None,
+        });
+        cfg.module.push(crate::types::ModulConfig {
+            id: "tavily.default".into(),
+            typ: "tavily".into(),
+            name: "tavily.default".into(),
+            display_name: "Tavily".into(),
+            llm_backend: "local".into(),
+            backup_llm: None,
+            berechtigungen: vec![],
+            timeout_s: 30,
+            retry: 0,
+            settings: Default::default(),
+            identity: Default::default(),
+            rag_pool: None,
+            linked_modules: vec![],
+            persistent: true,
+            spawned_by: None,
+            spawn_ttl_s: None,
+            created_at: None,
+            scheduler_interval_ms: None,
+            max_concurrent_tasks: None,
+            token_budget: None,
+            token_budget_warning: None,
+        });
+
+        assert!(normalize_same_llm_links(&mut cfg));
+        let chat = cfg.module.iter().find(|m| m.id == "chat.local").unwrap();
+        assert!(chat.linked_modules.iter().any(|id| id == "tavily.default"));
+        assert!(chat.berechtigungen.iter().any(|p| p == "aufgaben"));
     }
 }

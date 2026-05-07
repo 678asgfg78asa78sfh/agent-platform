@@ -1,35 +1,47 @@
-mod types;
-mod pipeline;
-mod cycle;
-mod watchdog;
-mod llm;
-mod tools;
-mod modules;
-mod web;
-mod security;
-mod wizard;
-pub mod loader;
-pub mod util;
-pub mod guardrail;
 pub mod benchmark;
+mod cycle;
+pub mod guardrail;
+mod llm;
+pub mod loader;
+mod modules;
+mod pipeline;
+mod security;
 pub mod store;
+mod tools;
+mod types;
+pub mod util;
+mod watchdog;
+mod web;
+mod wizard;
 
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_target(false).with_level(true).init();
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_level(true)
+        .init();
 
-    let base_dir = std::env::args().nth(1)
+    let base_dir = std::env::args()
+        .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("./agent-data"));
 
     tracing::info!("Agent Platform startet | Daten: {}", base_dir.display());
 
-    let pipeline_raw = pipeline::Pipeline::new(&base_dir).expect("Pipeline-Ordner erstellen fehlgeschlagen");
+    let pipeline_raw =
+        pipeline::Pipeline::new(&base_dir).expect("Pipeline-Ordner erstellen fehlgeschlagen");
     pipeline_raw.deduplizieren();
+    let recovered_started = pipeline_raw.fail_started_after_restart();
+    if recovered_started > 0 {
+        tracing::warn!(
+            "{} vor dem Neustart gestartete Aufgabe(n) als Failed markiert",
+            recovered_started
+        );
+    }
     let pipeline = Arc::new(pipeline_raw);
 
     // Config laden — graceful bei korrupter/fehlender Config, mit Backup-Fallback.
@@ -43,7 +55,7 @@ async fn main() {
         let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         serde_json::from_str::<types::AgentConfig>(&raw).map_err(|e| e.to_string())
     };
-    let config: types::AgentConfig = if config_path.exists() {
+    let mut config: types::AgentConfig = if config_path.exists() {
         match load_cfg(&config_path) {
             Ok(c) => c,
             Err(e) => {
@@ -57,7 +69,10 @@ async fn main() {
                     if bak.exists() {
                         match load_cfg(&bak) {
                             Ok(c) => {
-                                tracing::warn!("Config aus Backup slot {} wiederhergestellt — current war korrupt", slot);
+                                tracing::warn!(
+                                    "Config aus Backup slot {} wiederhergestellt — current war korrupt",
+                                    slot
+                                );
                                 recovered = Some(c);
                                 break;
                             }
@@ -68,7 +83,9 @@ async fn main() {
                     }
                 }
                 recovered.unwrap_or_else(|| {
-                    tracing::error!("Kein lesbares Backup gefunden — verwende Defaults (ALLE Module weg!)");
+                    tracing::error!(
+                        "Kein lesbares Backup gefunden — verwende Defaults (ALLE Module weg!)"
+                    );
                     types::AgentConfig::default()
                 })
             }
@@ -81,18 +98,27 @@ async fn main() {
         }
         default
     };
+    if util::normalize_same_llm_links(&mut config) {
+        if let Ok(json) = serde_json::to_string_pretty(&config) {
+            let _ = util::atomic_write(&config_path, json.as_bytes());
+        }
+    }
     let admin_port = config.web_port;
     let bind_address = config.bind_address.clone();
 
     // Chat-Module mit eigenen Ports sammeln
-    let chat_ports: Vec<(String, u16)> = config.module.iter()
+    let chat_ports: Vec<(String, u16)> = config
+        .module
+        .iter()
         .filter(|m| m.typ == "chat" && m.settings.port.is_some())
         .map(|m| (m.id.clone(), m.settings.port.unwrap()))
         .collect();
 
     // Startup warning: exposed without auth
     if bind_address == "0.0.0.0" && config.api_auth_token.as_deref().unwrap_or("").is_empty() {
-        tracing::warn!("SECURITY: bind_address=0.0.0.0 OHNE api_auth_token — nicht-lokale Zugriffe werden verweigert");
+        tracing::warn!(
+            "SECURITY: bind_address=0.0.0.0 OHNE api_auth_token — nicht-lokale Zugriffe werden verweigert"
+        );
     }
 
     let config = Arc::new(RwLock::new(config));
@@ -155,7 +181,14 @@ async fn main() {
     // Token/cost tracker — shared between HTTP chat path AND scheduler-driven LLM calls
     // so `daily_budget_usd` is enforced consistently regardless of entry point.
     let tokens: web::TokenTracker = Arc::new(RwLock::new(web::TokenStats::default()));
-    let orchestrator = cycle::Orchestrator::new(pipeline.clone(), config.clone(), llm.clone(), py_modules.clone(), py_pool.clone(), tokens.clone());
+    let orchestrator = cycle::Orchestrator::new(
+        pipeline.clone(),
+        config.clone(),
+        llm.clone(),
+        py_modules.clone(),
+        py_pool.clone(),
+        tokens.clone(),
+    );
     let watchdog = watchdog::Watchdog::new(
         orchestrator.heartbeats.clone(),
         120,
@@ -169,7 +202,12 @@ async fn main() {
     };
     let wizard_rate = {
         let cfg = config.read().await;
-        security::RateLimiter::new(cfg.wizard.as_ref().map(|w| w.rate_limit_per_min).unwrap_or(10))
+        security::RateLimiter::new(
+            cfg.wizard
+                .as_ref()
+                .map(|w| w.rate_limit_per_min)
+                .unwrap_or(10),
+        )
     };
 
     // Periodic rate-limit bucket cleanup (stale IPs removed every 5 min)
@@ -212,8 +250,12 @@ async fn main() {
                 loop {
                     tick.tick().await;
                     let gcfg = cfg_ref.read().await.guardrail.clone().unwrap_or_default();
-                    if !gcfg.alert.enabled { continue; }
-                    let breaches = guardrail::check_alert_threshold(&gcfg, &data_root_clone, &cooldown_map).await;
+                    if !gcfg.alert.enabled {
+                        continue;
+                    }
+                    let breaches =
+                        guardrail::check_alert_threshold(&gcfg, &data_root_clone, &cooldown_map)
+                            .await;
                     for (backend, model, pct, n) in breaches {
                         let msg = format!(
                             "Guardrail Alert: {}/{} valid-rate bei {:.1}% (letzten {} min, {} Calls)",
@@ -223,7 +265,14 @@ async fn main() {
                             Some(m) => m,
                             None => {
                                 tracing::warn!("Guardrail alert — no notify_backend_id: {}", msg);
-                                let _ = guardrail::log_alert_event(&data_root_clone, &backend, &model, pct, n).await;
+                                let _ = guardrail::log_alert_event(
+                                    &data_root_clone,
+                                    &backend,
+                                    &model,
+                                    pct,
+                                    n,
+                                )
+                                .await;
                                 continue;
                             }
                         };
@@ -231,13 +280,21 @@ async fn main() {
                         let py_mods = state_clone.py_modules.read().await.clone();
                         let cfg_full = cfg_ref.read().await.clone();
                         let (ok, detail) = crate::tools::exec_tool_unified(
-                            "notify.send", &params, notify_modul,
-                            None,  // Guardrail-Alert: keine task_id → keine Idempotency (by design)
-                            &state_clone.pipeline, &state_clone.llm,
-                            &py_mods, &state_clone.py_pool, &cfg_full,
-                        ).await;
+                            "notify.send",
+                            &params,
+                            notify_modul,
+                            None, // Guardrail-Alert: keine task_id → keine Idempotency (by design)
+                            &state_clone.pipeline,
+                            &state_clone.llm,
+                            &py_mods,
+                            &state_clone.py_pool,
+                            &cfg_full,
+                        )
+                        .await;
                         tracing::info!("Guardrail alert → notify ok={} {}", ok, detail);
-                        let _ = guardrail::log_alert_event(&data_root_clone, &backend, &model, pct, n).await;
+                        let _ =
+                            guardrail::log_alert_event(&data_root_clone, &backend, &model, pct, n)
+                                .await;
                     }
                 }
             });
@@ -266,10 +323,10 @@ async fn main() {
     }
 
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", bind_address, admin_port))
-        .await.expect("Admin-Port belegt");
+        .await
+        .expect("Admin-Port belegt");
 
-    let app = web::router(web_state)
-        .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let app = web::router(web_state).into_make_service_with_connect_info::<std::net::SocketAddr>();
 
     tokio::select! {
         _ = axum::serve(listener, app) => {},

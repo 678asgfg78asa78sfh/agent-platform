@@ -1,5 +1,5 @@
 """Module Builder — Ermoeglicht der KI neue Python-Module zu erstellen, testen und deployen."""
-import json, sys, os, subprocess
+import json, sys, os, subprocess, re
 
 # Modul-Verzeichnis ermitteln
 MODULES_DIR = os.path.join(os.path.dirname(__file__), "..")
@@ -14,7 +14,8 @@ MODULE = {
         {"name": "module_builder.docs", "description": "Zeigt die komplette Dokumentation wie ein Python-Modul aufgebaut sein muss (Interface, Format, Beispiele)", "params": []},
         {"name": "module_builder.list", "description": "Listet alle vorhandenen Module mit ihren Tools", "params": []},
         {"name": "module_builder.inspect", "description": "Zeigt den Quellcode eines bestehenden Moduls als Referenz", "params": ["modul_name"]},
-        {"name": "module_builder.scaffold", "description": "Erstellt ein Modul-Geruest mit Name, Beschreibung und Tool-Liste. Du schreibst den Code danach mit editor.create", "params": ["name", "description", "tools_komma_getrennt"]},
+        {"name": "module_builder.scaffold", "description": "Erstellt ein Modul-Geruest mit Name, Beschreibung und Tool-Liste. Danach finalen Code mit module_builder.write oder editor.overwrite schreiben.", "params": ["name", "description", "tools_komma_getrennt"]},
+        {"name": "module_builder.write", "description": "Schreibt modules/name/module.py komplett neu oder erstellt es. Testet danach automatisch und stellt bei Fehlern den alten Code wieder her.", "params": ["name", "code"]},
         {"name": "module_builder.activate", "description": "Testet und aktiviert ein Modul das bereits als modules/name/module.py existiert", "params": ["name"]},
         {"name": "module_builder.test", "description": "Testet ein Modul: ruft describe auf und prueft ob handle_tool funktioniert", "params": ["modul_name"]},
         {"name": "module_builder.delete", "description": "Loescht ein Modul (nur selbst erstellte, keine System-Module)", "params": ["modul_name"]},
@@ -54,6 +55,88 @@ if __name__ == "__main__":
 '''
 
 SYSTEM_MODULES = ["sysinfo", "healthcheck", "agent_meta", "mailstore", "imap", "smtp", "pop3", "editor", "module_builder"]
+MODULE_NAME_RE = re.compile(r"^[a-z0-9_]+$")
+TOOL_ACTION_RE = re.compile(r"^[a-z0-9_]+$")
+TOOL_REF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+
+
+def _canonical_name(name):
+    return (name or "").strip().lower()
+
+
+def _validate_module_name(name):
+    if not name:
+        return "Modulname angeben"
+    if not MODULE_NAME_RE.match(name):
+        return f"Ungueltiger Modulname: {name} (nur lowercase a-z, Zahlen, Unterstrich)"
+    return None
+
+
+def _existing_module_entry(name):
+    """Case-insensitive lookup. Prefer the canonical lowercase directory."""
+    canonical = _canonical_name(name)
+    if not os.path.isdir(MODULES_DIR):
+        return None
+    exact = os.path.join(MODULES_DIR, canonical, "module.py")
+    if os.path.isfile(exact):
+        return canonical
+    for entry in sorted(os.listdir(MODULES_DIR)):
+        if entry.lower() == canonical and os.path.isfile(os.path.join(MODULES_DIR, entry, "module.py")):
+            return entry
+    return None
+
+
+def _looks_like_tool_ref(value):
+    return bool(TOOL_REF_RE.match((value or "").strip()))
+
+
+def _split_scaffold_params(params):
+    """Recover name/description/tools when an LLM split a comma-heavy description."""
+    if not params:
+        return "", ""
+    if len(params) == 1:
+        return params[0], ""
+    if len(params) == 2:
+        return params[0], params[1]
+
+    rest = [p.strip() for p in params if p and p.strip()]
+    tool_parts = []
+    while rest and _looks_like_tool_ref(rest[-1]):
+        tool_parts.insert(0, rest.pop())
+
+    if not tool_parts:
+        return ", ".join(params[:-1]).strip(), params[-1].strip()
+    return ", ".join(rest).strip(), ", ".join(tool_parts)
+
+
+def _normalise_tool_action(raw):
+    action = (raw or "").strip()
+    if not action:
+        return None
+    # LLMs often pass dependency refs like tavily.search. The new module tool
+    # action is the last segment; dependencies are configured on the agent.
+    if "." in action:
+        action = action.split(".")[-1]
+    action = action.lower()
+    if not TOOL_ACTION_RE.match(action):
+        return None
+    return action
+
+
+def _strip_code_wrapper(raw):
+    code = (raw or "").strip()
+    for sep in (":", "="):
+        if sep in code:
+            key, value = code.split(sep, 1)
+            if key.strip().lower() in {"code", "inhalt", "content"}:
+                code = value.strip()
+                break
+    for quote in ('"""', "'''"):
+        if code.startswith(quote) and code.endswith(quote) and len(code) >= 6:
+            return code[3:-3].lstrip("\n")
+    if (code.startswith('"') and code.endswith('"')) or (code.startswith("'") and code.endswith("'")):
+        return code[1:-1]
+    return code
 
 
 def handle_tool(tool_name, params, config):
@@ -66,9 +149,12 @@ def handle_tool(tool_name, params, config):
             return _inspect(params[0] if params else "")
         elif tool_name == "module_builder.scaffold":
             name = params[0] if params else ""
-            desc = params[1] if len(params) > 1 else ""
-            tools_str = params[2] if len(params) > 2 else ""
+            desc, tools_str = _split_scaffold_params(params[1:])
             return _scaffold(name, desc, tools_str)
+        elif tool_name == "module_builder.write":
+            name = params[0] if params else ""
+            code = params[1] if len(params) > 1 else ""
+            return _write_module(name, code)
         elif tool_name == "module_builder.activate":
             return _activate(params[0] if params else "")
         elif tool_name == "module_builder.test":
@@ -118,6 +204,9 @@ def _docs():
         "REGELN:",
         "- Modulname = Ordnername = MODULE['name']",
         "- Tool-Namen: modulname.aktion (z.B. wetter.aktuell)",
+        "- handle_tool bekommt params IMMER als Liste, nicht als Dict",
+        "- Python-Module bekommen NICHT automatisch Python-Funktionen fuer andere Tools wie tavily.search oder rag.speichern",
+        "- Wenn ein Modul andere Plattform-Tools braucht, muss dafuer ein expliziter Tool-Bus/API-Zugriff implementiert werden",
         "- Nur stdlib verwenden oder pruefen ob Pakete installiert sind",
         "- handle_tool muss IMMER dict mit 'success' und 'data' zurueckgeben",
         "- Keine globalen Side-Effects beim Import",
@@ -162,9 +251,14 @@ def _list():
 
 
 def _inspect(name):
-    if not name:
-        return {"success": False, "data": "Modulname angeben"}
-    mod_path = os.path.join(MODULES_DIR, name, "module.py")
+    name = _canonical_name(name)
+    err = _validate_module_name(name)
+    if err:
+        return {"success": False, "data": err}
+    entry = _existing_module_entry(name)
+    if not entry:
+        return {"success": False, "data": f"Modul '{name}' nicht gefunden"}
+    mod_path = os.path.join(MODULES_DIR, entry, "module.py")
     if not os.path.isfile(mod_path):
         return {"success": False, "data": f"Modul '{name}' nicht gefunden"}
     try:
@@ -179,24 +273,37 @@ def _inspect(name):
 
 def _scaffold(name, description, tools_str):
     """Erstellt ein Modul-Geruest. Die KI schreibt den eigentlichen Code danach mit editor.create."""
-    if not name:
-        return {"success": False, "data": "Modulname angeben"}
-    if not name.replace('_', '').isalnum():
-        return {"success": False, "data": f"Ungueltiger Modulname: {name}"}
+    requested_name = name
+    name = _canonical_name(name)
+    err = _validate_module_name(name)
+    if err:
+        return {"success": False, "data": err}
 
     mod_dir = os.path.join(MODULES_DIR, name)
     mod_path = os.path.join(mod_dir, "module.py")
 
-    if os.path.exists(mod_path):
-        return {"success": False, "data": f"Modul '{name}' existiert bereits"}
+    existing = _existing_module_entry(name)
+    if existing:
+        return {"success": False, "data": f"Modul '{name}' existiert bereits in modules/{existing}/module.py.\n"
+            f"Hinweis: Modulnamen sind case-insensitive und werden lowercase gespeichert.\n"
+            f"NAECHSTE SCHRITTE:\n"
+            f"1. Nutze editor.view(modules/{existing}/module.py) oder module_builder.inspect({name}) um den bestehenden Code zu sehen\n"
+            f"2. Nutze editor.replace() um ihn weiterzubearbeiten\n"
+            f"3. Nutze module_builder.test({name}) und danach module_builder.activate({name})"}
 
     # Tools parsen
     tools = []
+    invalid_tools = []
     if tools_str.strip():
         for t in tools_str.split(','):
-            t = t.strip()
-            if t:
-                tools.append({"name": f"{name}.{t}", "description": f"TODO: Beschreibung fuer {t}", "params": []})
+            action = _normalise_tool_action(t)
+            if action:
+                tools.append({"name": f"{name}.{action}", "description": f"TODO: Beschreibung fuer {action}", "params": []})
+            elif t.strip():
+                invalid_tools.append(t.strip())
+    if invalid_tools:
+        return {"success": False, "data": "Ungueltige Toolnamen: " + ", ".join(invalid_tools) +
+            ". tools_komma_getrennt erwartet Actions wie search, ingest, synthesize; keine Beschreibungstexte."}
 
     # Template generieren
     tools_json = json.dumps(tools, indent=8)
@@ -247,20 +354,69 @@ if __name__ == "__main__":
         os.rmdir(mod_dir)
         return {"success": False, "data": f"Scaffold fehlgeschlagen:\n{test_result['data']}"}
 
-    return {"success": True, "data": f"Modul '{name}' Geruest erstellt in modules/{name}/module.py\n"
+    normalised_note = ""
+    if requested_name and requested_name != name:
+        normalised_note = f"Name wurde zu lowercase normalisiert: {requested_name} -> {name}\n"
+    return {"success": True, "data": normalised_note + f"Modul '{name}' Geruest erstellt in modules/{name}/module.py\n"
         f"Tools: {', '.join(t['name'] for t in tools)}\n\n"
         f"NAECHSTE SCHRITTE:\n"
-        f"1. Nutze editor.view(modules/{name}/module.py) um den Code zu sehen\n"
-        f"2. Nutze editor.replace() um die TODO-Stellen mit echtem Code zu fuellen\n"
+        f"1. Nutze module_builder.write({name}, KOMPLETTER_CODE) fuer den finalen module.py Inhalt\n"
+        f"2. Alternativ: editor.overwrite(modules/{name}/module.py, KOMPLETTER_CODE)\n"
         f"3. Nutze module_builder.activate({name}) um zu testen und zu aktivieren\n"
         f"4. Agent muss neugestartet werden damit das Modul geladen wird"}
 
 
+def _write_module(name, code):
+    """Schreibt module.py komplett und testet. Bei Testfehlern wird restored."""
+    name = _canonical_name(name)
+    err = _validate_module_name(name)
+    if err:
+        return {"success": False, "data": err}
+    code = _strip_code_wrapper(code)
+    if not code.strip():
+        return {"success": False, "data": "Code angeben (kompletter module.py Inhalt)"}
+
+    mod_dir = os.path.join(MODULES_DIR, name)
+    mod_path = os.path.join(mod_dir, "module.py")
+    os.makedirs(mod_dir, exist_ok=True)
+
+    old_code = None
+    if os.path.exists(mod_path):
+        with open(mod_path, "r", encoding="utf-8") as f:
+            old_code = f.read()
+
+    with open(mod_path, "w", encoding="utf-8") as f:
+        f.write(code)
+
+    test_result = _test(name)
+    if not test_result["success"]:
+        if old_code is not None:
+            with open(mod_path, "w", encoding="utf-8") as f:
+                f.write(old_code)
+            restored = "Alter Code wurde wiederhergestellt."
+        else:
+            try:
+                os.remove(mod_path)
+                os.rmdir(mod_dir)
+            except OSError:
+                pass
+            restored = "Kaputte neue Datei wurde entfernt."
+        return {"success": False, "data": f"Modul-Code geschrieben, aber Test fehlgeschlagen. {restored}\n{test_result['data']}"}
+
+    action = "ueberschrieben" if old_code is not None else "erstellt"
+    return {"success": True, "data": f"Modul '{name}' {action} und getestet.\n{test_result['data']}\n\nAgent-Neustart noetig damit es geladen wird."}
+
+
 def _activate(name):
     """Testet ein bestehendes Modul und markiert es als aktiv."""
-    if not name:
-        return {"success": False, "data": "Modulname angeben"}
-    mod_path = os.path.join(MODULES_DIR, name, "module.py")
+    name = _canonical_name(name)
+    err = _validate_module_name(name)
+    if err:
+        return {"success": False, "data": err}
+    entry = _existing_module_entry(name)
+    if not entry:
+        return {"success": False, "data": f"Modul '{name}' nicht gefunden. Erstelle es zuerst mit module_builder.scaffold()"}
+    mod_path = os.path.join(MODULES_DIR, entry, "module.py")
     if not os.path.isfile(mod_path):
         return {"success": False, "data": f"Modul '{name}' nicht gefunden. Erstelle es zuerst mit module_builder.scaffold()"}
 
@@ -272,19 +428,17 @@ def _activate(name):
 
 
 def _create(name, code):
-    if not name:
-        return {"success": False, "data": "Modulname angeben"}
+    name = _canonical_name(name)
+    err = _validate_module_name(name)
+    if err:
+        return {"success": False, "data": err}
     if not code:
         return {"success": False, "data": "Code angeben (kompletter module.py Inhalt)"}
-
-    # Name validieren
-    if not name.replace('_', '').isalnum():
-        return {"success": False, "data": f"Ungueltiger Modulname: {name} (nur Buchstaben, Zahlen, Unterstriche)"}
 
     mod_dir = os.path.join(MODULES_DIR, name)
     mod_path = os.path.join(mod_dir, "module.py")
 
-    if os.path.exists(mod_path):
+    if _existing_module_entry(name):
         return {"success": False, "data": f"Modul '{name}' existiert bereits. Nutze module_builder.delete zuerst."}
 
     # Schreiben
@@ -304,9 +458,14 @@ def _create(name, code):
 
 
 def _test(name):
-    if not name:
-        return {"success": False, "data": "Modulname angeben"}
-    mod_path = os.path.join(MODULES_DIR, name, "module.py")
+    name = _canonical_name(name)
+    err = _validate_module_name(name)
+    if err:
+        return {"success": False, "data": err}
+    entry = _existing_module_entry(name)
+    if not entry:
+        return {"success": False, "data": f"Modul '{name}' nicht gefunden"}
+    mod_path = os.path.join(MODULES_DIR, entry, "module.py")
     if not os.path.isfile(mod_path):
         return {"success": False, "data": f"Modul '{name}' nicht gefunden"}
 
@@ -324,10 +483,21 @@ def _test(name):
             meta = json.loads(result.stdout.strip().split('\n')[0])
             if "name" not in meta:
                 errors.append("MODULE hat kein 'name' Feld")
+            elif meta["name"] != name:
+                errors.append(f"MODULE['name'] muss '{name}' sein, ist aber '{meta['name']}'")
             if "tools" not in meta:
                 errors.append("MODULE hat kein 'tools' Feld")
             else:
                 tool_count = len(meta["tools"])
+                for tool in meta["tools"]:
+                    tool_name = tool.get("name", "")
+                    prefix = f"{name}."
+                    if not tool_name.startswith(prefix):
+                        errors.append(f"Tool '{tool_name}' muss mit '{prefix}' beginnen")
+                        continue
+                    action = tool_name[len(prefix):]
+                    if not TOOL_ACTION_RE.match(action):
+                        errors.append(f"Tool '{tool_name}' hat ungueltige Action '{action}'")
     except json.JSONDecodeError as e:
         errors.append(f"JSON Parse Fehler bei describe: {e}")
     except subprocess.TimeoutExpired:
@@ -357,12 +527,17 @@ def _test(name):
 
 
 def _delete(name):
-    if not name:
-        return {"success": False, "data": "Modulname angeben"}
+    name = _canonical_name(name)
+    err = _validate_module_name(name)
+    if err:
+        return {"success": False, "data": err}
     if name in SYSTEM_MODULES:
         return {"success": False, "data": f"'{name}' ist ein System-Modul und kann nicht geloescht werden"}
 
-    mod_dir = os.path.join(MODULES_DIR, name)
+    entry = _existing_module_entry(name)
+    if not entry:
+        return {"success": False, "data": f"Modul '{name}' nicht gefunden"}
+    mod_dir = os.path.join(MODULES_DIR, entry)
     if not os.path.isdir(mod_dir):
         return {"success": False, "data": f"Modul '{name}' nicht gefunden"}
 
