@@ -8,6 +8,28 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const MAX_TOOL_ROUNDS: usize = 30;
+const MAX_TASK_TOOL_RESULT_CHARS: usize = 4000;
+const MAX_TASK_OLD_TOOL_RESULT_CHARS: usize = 500;
+
+fn task_tool_result_for_llm(ok: bool, data: &str) -> String {
+    let body = if data.chars().count() > MAX_TASK_TOOL_RESULT_CHARS {
+        format!(
+            "{}...[gekuerzt; vollstaendiges Ergebnis im Aufgaben-Board. Nutze gezieltere Tool-Aufrufe, z.B. kleinere Datei-/Zeilenbereiche, statt denselben grossen Output erneut zu laden.]",
+            util::safe_truncate(data, MAX_TASK_TOOL_RESULT_CHARS)
+        )
+    } else {
+        data.to_string()
+    };
+
+    if ok {
+        format!("SUCCESS: {}", body)
+    } else {
+        format!(
+            "FAILED: {}\nNEXT: Entscheide, ob du mit korrigierten Parametern erneut versuchst, ein anderes Tool nutzt oder dem User den Blocker konkret erklaerst.",
+            body
+        )
+    }
+}
 
 /// Simple cron check: does the current time match a cron expression?
 /// Supports: */N, specific numbers, ranges (1-5), and * (any)
@@ -1839,7 +1861,7 @@ async fn exec_llm(
                     messages.push(serde_json::json!({"role": "assistant", "content": serde_json::Value::Null,
                         "tool_calls": [{"id": &call_id, "type": "function", "function": {"name": &tool_name, "arguments": "{}"}}]}));
                     messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call_id,
-                        "content": format!("{}: {}", status, tool_result.1)}));
+                        "content": task_tool_result_for_llm(tool_result.0, &tool_result.1)}));
 
                     // History trimmen: alte Tool-Results kuerzen
                     let keep_full = 6;
@@ -1849,10 +1871,13 @@ async fn exec_llm(
                                 if let Some(content) =
                                     messages[i].get("content").and_then(|v| v.as_str())
                                 {
-                                    if content.len() > 100 {
+                                    if content.chars().count() > MAX_TASK_OLD_TOOL_RESULT_CHARS {
                                         let short = format!(
                                             "{}...[gekuerzt]",
-                                            util::safe_truncate(content, 100)
+                                            util::safe_truncate(
+                                                content,
+                                                MAX_TASK_OLD_TOOL_RESULT_CHARS
+                                            )
                                         );
                                         messages[i]["content"] = serde_json::json!(short);
                                     }
@@ -2120,5 +2145,21 @@ mod tests {
     #[test]
     fn test_evaluate_condition_unknown_defaults_true() {
         assert!(evaluate_condition("unknown_condition", "", true));
+    }
+
+    #[test]
+    fn task_tool_result_for_llm_truncates_large_outputs() {
+        let large = "x".repeat(MAX_TASK_TOOL_RESULT_CHARS + 1000);
+        let result = task_tool_result_for_llm(true, &large);
+        assert!(result.starts_with("SUCCESS: "));
+        assert!(result.contains("gekuerzt"));
+        assert!(result.len() < large.len());
+    }
+
+    #[test]
+    fn task_tool_result_for_llm_keeps_failure_actionable() {
+        let result = task_tool_result_for_llm(false, "Datei existiert nicht");
+        assert!(result.starts_with("FAILED: "));
+        assert!(result.contains("NEXT:"));
     }
 }
