@@ -6,6 +6,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::{Mutex, RwLock};
 
+const OPENAI_COMPAT_EMPTY_BODY_RETRIES: usize = 3;
+
 pub fn openai_compat_endpoint(base_url: &str, path: &str) -> String {
     let base = base_url.trim_end_matches('/');
     let path = path.trim_start_matches('/');
@@ -466,33 +468,54 @@ impl LlmRouter {
                 if !safe_tools.is_empty() {
                     body["tools"] = serde_json::json!(safe_tools);
                 }
-                let resp = client
-                    .post(openai_compat_endpoint(&backend.url, "chat/completions"))
-                    .header("Authorization", format!("Bearer {key}"))
-                    .json(&body)
-                    .send()
-                    .await
-                    .map_err(|e| format!("API: {e}"))?;
-                let status = resp.status();
-                let body_text = resp.text().await.unwrap_or_default();
-                if !status.is_success() {
-                    return Err(format!(
-                        "API HTTP {}: {}",
-                        status,
-                        body_text.chars().take(500).collect::<String>()
-                    ));
+                let endpoint = openai_compat_endpoint(&backend.url, "chat/completions");
+                for attempt in 1..=OPENAI_COMPAT_EMPTY_BODY_RETRIES {
+                    let resp = client
+                        .post(&endpoint)
+                        .header("Authorization", format!("Bearer {key}"))
+                        .json(&body)
+                        .send()
+                        .await
+                        .map_err(|e| format!("API: {e}"))?;
+                    let status = resp.status();
+                    let body_text = resp.text().await.unwrap_or_default();
+                    if !status.is_success() {
+                        return Err(format!(
+                            "API HTTP {}: {}",
+                            status,
+                            body_text.chars().take(500).collect::<String>()
+                        ));
+                    }
+                    if body_text.trim().is_empty() {
+                        if attempt < OPENAI_COMPAT_EMPTY_BODY_RETRIES {
+                            tracing::warn!(
+                                "LLM backend '{}' returned HTTP {} with empty body (attempt {}/{})",
+                                backend.id,
+                                status,
+                                attempt,
+                                OPENAI_COMPAT_EMPTY_BODY_RETRIES
+                            );
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                250 * attempt as u64,
+                            ))
+                            .await;
+                            continue;
+                        }
+                        return Err(format!(
+                            "API HTTP {}: empty response body after {} attempts",
+                            status, OPENAI_COMPAT_EMPTY_BODY_RETRIES
+                        ));
+                    }
+                    let data: serde_json::Value =
+                        serde_json::from_str(&body_text).map_err(|e| format!("API parse: {e}"))?;
+                    let data = restore_provider_tool_names(data, &alias_to_canonical);
+                    let content = data["choices"][0]["message"]["content"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    return Ok((content, data));
                 }
-                if body_text.trim().is_empty() {
-                    return Err(format!("API HTTP {}: empty response body", status));
-                }
-                let data: serde_json::Value =
-                    serde_json::from_str(&body_text).map_err(|e| format!("API parse: {e}"))?;
-                let data = restore_provider_tool_names(data, &alias_to_canonical);
-                let content = data["choices"][0]["message"]["content"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string();
-                Ok((content, data))
+                Err("API: unreachable empty-body retry state".into())
             }
             LlmTyp::Anthropic => {
                 let key = backend
