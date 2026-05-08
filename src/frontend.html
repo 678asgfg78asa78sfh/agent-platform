@@ -1225,6 +1225,12 @@ body::after {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       <div class="form-row"><label>Timeout (seconds)</label><input type="number" id="llm-timeout" value="120" /></div>
       <div class="form-row"><label>Max output tokens</label><input type="number" id="llm-max-tokens" placeholder="leer = default" /></div>
+      <div class="form-row"><label>Tool rounds</label><input type="number" id="llm-max-tool-rounds" value="0" min="0" placeholder="0 = unlimited" /></div>
+      <div class="form-row"><label>API calls / window</label><input type="number" id="llm-rate-calls" min="0" placeholder="leer/0 = off" /></div>
+      <div class="form-row"><label>Rate window (seconds)</label><input type="number" id="llm-rate-window" value="60" min="1" /></div>
+      <div style="display:flex;align-items:end;padding-bottom:2px;">
+        <label style="display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--text-dim);"><input type="checkbox" id="llm-rate-enabled"> Enable API rate limit</label>
+      </div>
     </div>
     <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--orange);margin:12px 0 6px;">Cost / Call Cap</div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
@@ -3837,6 +3843,13 @@ function readNullableInt(id) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function readNullableIntAllowZero(id) {
+  var raw = (ge(id).value || '').trim();
+  if (raw === '') return null;
+  var n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 function collectLlmCostCap() {
   var cap = {
     enabled: ge('llm-cap-enabled').checked,
@@ -3851,6 +3864,27 @@ function collectLlmCostCap() {
   return cap;
 }
 
+function setLlmRuntimeLimitsForm(b) {
+  b = b || {};
+  ge('llm-max-tool-rounds').value = b.max_tool_rounds == null ? 0 : String(b.max_tool_rounds);
+  var rate = b.call_rate_limit || {};
+  ge('llm-rate-enabled').checked = !!rate.enabled;
+  ge('llm-rate-calls').value = rate.max_calls == null || rate.max_calls === 0 ? '' : String(rate.max_calls);
+  ge('llm-rate-window').value = rate.window_s || 60;
+}
+
+function collectLlmCallRateLimit() {
+  var maxCalls = readNullableInt('llm-rate-calls');
+  var enabled = ge('llm-rate-enabled').checked || maxCalls != null;
+  var windowS = parseInt(ge('llm-rate-window').value, 10) || 60;
+  if (!enabled && maxCalls == null) return null;
+  return {
+    enabled: enabled,
+    max_calls: maxCalls || 0,
+    window_s: Math.max(1, windowS)
+  };
+}
+
 function editLlm(idx) {
   editingLlmIdx = idx;
   var b = appConfig.llm_backends[idx];
@@ -3861,6 +3895,7 @@ function editLlm(idx) {
   ge('llm-apikey').value = b.api_key || ''; ge('llm-timeout').value = b.timeout_s;
   ge('llm-max-tokens').value = b.max_tokens || '';
   setLlmCostCapForm(b.cost_cap || null);
+  setLlmRuntimeLimitsForm(b);
   ge('llm-bot-name').value = (b.identity && b.identity.bot_name) || '';
   ge('llm-system-prompt').value = (b.identity && b.identity.system_prompt) || '';
   ge('llm-delete').style.display = 'inline-block';
@@ -3883,6 +3918,7 @@ function openNewLlmGem() {
   ge('llm-timeout').value = 120;
   ge('llm-max-tokens').value = '';
   setLlmCostCapForm(null);
+  setLlmRuntimeLimitsForm({max_tool_rounds: 0, call_rate_limit: null});
   ge('llm-bot-name').value = '';
   ge('llm-system-prompt').value = 'Du bist ein hilfreicher Assistent.';
   ge('llm-delete').style.display = 'none';
@@ -3900,6 +3936,7 @@ ge('llm-fetch-models').addEventListener('click', function() {
   if (!url) { toast('URL eingeben', 'error'); return; }
 
   var backendId = ge('llm-id').value.trim();
+  var modelMaxToolRounds = readNullableIntAllowZero('llm-max-tool-rounds');
   apiFetch('POST', '/api/setup/models', {
     id: backendId || 'draft',
     name: ge('llm-name').value.trim() || providerLabel(provider),
@@ -3909,6 +3946,8 @@ ge('llm-fetch-models').addEventListener('click', function() {
     model: ge('llm-model').value.trim() || 'local',
     timeout_s: parseInt(ge('llm-timeout').value) || 120,
     max_tokens: parseInt(ge('llm-max-tokens').value) || null,
+    max_tool_rounds: modelMaxToolRounds,
+    call_rate_limit: collectLlmCallRateLimit(),
     identity: { bot_name: 'Agent', greeting: '', system_prompt: 'Du bist ein hilfreicher Assistent.' }
   }).then(function(data) {
     if (data.error) { toast('Modelle laden fehlgeschlagen: ' + data.error, 'error'); return; }
@@ -4037,13 +4076,16 @@ ge('llm-submit').addEventListener('click', function() {
   if (!id && editingLlmIdx === -1) id = uniqueLlmId(name + '-' + (model || typ));
   if (!id && editingLlmIdx >= 0) id = appConfig.llm_backends[editingLlmIdx].id;
   var maxTokens = parseInt(ge('llm-max-tokens').value, 10) || null;
+  var maxToolRounds = readNullableIntAllowZero('llm-max-tool-rounds');
   var entry = {
     id: id, name: name,
     typ: typ, url: ge('llm-url').value.trim(),
 	    model: model, api_key: ge('llm-apikey').value.trim() || null,
 	    timeout_s: parseInt(ge('llm-timeout').value) || 120,
 	    max_tokens: maxTokens,
+	    max_tool_rounds: maxToolRounds,
 	    cost_cap: collectLlmCostCap(),
+	    call_rate_limit: collectLlmCallRateLimit(),
 	    identity: {
       bot_name: ge('llm-bot-name').value.trim() || 'Agent',
       greeting: '',
@@ -4070,6 +4112,7 @@ ge('llm-test').addEventListener('click', function() {
   var url = ge('llm-url').value.trim();
   if (!url || !model) { toast('URL und Model eingeben', 'error'); return; }
   toast('Teste LLM Gem ...', 'info');
+  var testMaxToolRounds = readNullableIntAllowZero('llm-max-tool-rounds');
   apiFetch('POST', '/api/setup/test-backend', {
     id: ge('llm-id').value.trim() || 'draft',
     name: ge('llm-name').value.trim() || providerLabel(provider),
@@ -4079,6 +4122,8 @@ ge('llm-test').addEventListener('click', function() {
     model: model,
     timeout_s: parseInt(ge('llm-timeout').value) || 120,
     max_tokens: parseInt(ge('llm-max-tokens').value) || 24,
+    max_tool_rounds: testMaxToolRounds,
+    call_rate_limit: collectLlmCallRateLimit(),
     identity: { bot_name: 'Agent', greeting: '', system_prompt: 'Du bist ein hilfreicher Assistent.' }
   }).then(function(data) {
     if (data.ok) toast('LLM Test OK', 'success');

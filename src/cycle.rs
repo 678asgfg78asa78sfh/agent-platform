@@ -11,7 +11,6 @@ use std::sync::{
 };
 use tokio::sync::RwLock;
 
-const MAX_TOOL_ROUNDS: usize = 30;
 const MAX_TASK_TOOL_RESULT_CHARS: usize = 4000;
 const MAX_TASK_OLD_TOOL_RESULT_CHARS: usize = 500;
 const MIN_TASK_IDLE_TIMEOUT_S: u64 = 30;
@@ -1515,29 +1514,36 @@ async fn exec_llm(
     let mut used_fallback = false;
 
     loop {
-        if tool_round >= MAX_TOOL_ROUNDS {
-            aufgabe.ergebnis = Some(format!(
-                "FAILED: Maximum tool rounds ({}) erreicht",
-                MAX_TOOL_ROUNDS
-            ));
-            pipeline.log(
-                &modul.name,
-                Some(&aufgabe.id),
-                LogTyp::Failed,
-                &format!(
-                    "Max tool rounds ({}) erreicht — Task abgebrochen",
-                    MAX_TOOL_ROUNDS
-                ),
-            );
-            if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
+        if let Some(max_tool_rounds) = cfg_snap
+            .llm_backends
+            .iter()
+            .find(|b| b.id == backend_id)
+            .and_then(|b| b.tool_round_limit())
+        {
+            if tool_round >= max_tool_rounds {
+                aufgabe.ergebnis = Some(format!(
+                    "FAILED: LLM tool rounds limit ({}) erreicht",
+                    max_tool_rounds
+                ));
                 pipeline.log(
-                    "cycle",
+                    &modul.name,
                     Some(&aufgabe.id),
-                    LogTyp::Error,
-                    &format!("Verschieben failed: {e}"),
+                    LogTyp::Failed,
+                    &format!(
+                        "LLM tool rounds limit ({}) erreicht — Task abgebrochen",
+                        max_tool_rounds
+                    ),
                 );
+                if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
+                    pipeline.log(
+                        "cycle",
+                        Some(&aufgabe.id),
+                        LogTyp::Error,
+                        &format!("Verschieben failed: {e}"),
+                    );
+                }
+                return;
             }
-            return;
         }
 
         // Token budget check (per-modul, zählt Tokens dieses Tasks)
@@ -1599,6 +1605,21 @@ async fn exec_llm(
                 }
                 return;
             }
+        }
+
+        while let Some(wait) = llm.reserve_rate_slot_or_wait(&backend_id).await {
+            mark_activity(&activity);
+            let wait_s = wait.as_secs().max(1);
+            pipeline.log(
+                &modul.name,
+                Some(&aufgabe.id),
+                LogTyp::Info,
+                &format!(
+                    "LLM call rate-limit aktiv: backend '{}' pausiert {}s",
+                    backend_id, wait_s
+                ),
+            );
+            tokio::time::sleep(wait).await;
         }
 
         let result = with_activity_heartbeat(

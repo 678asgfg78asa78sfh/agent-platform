@@ -797,6 +797,8 @@ mod tests {
             identity: ModulIdentity::default(),
             max_tokens: None,
             cost_cap: None,
+            max_tool_rounds: None,
+            call_rate_limit: None,
         });
         cfg.module.push(ModulConfig {
             id: "chat.bob".into(),

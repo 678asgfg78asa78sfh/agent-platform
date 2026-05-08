@@ -18,6 +18,25 @@ pub struct LlmBackend {
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_cap: Option<LlmCostCap>,
+    /// Maximal erlaubte Tool-/Action-Runden pro Chat/Task.
+    /// None oder 0 bedeutet: kein Gesamtlimit fuer dieses LLM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tool_rounds: Option<u32>,
+    /// Optionaler globaler Runtime-Rate-Limiter fuer LLM API-Calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_rate_limit: Option<LlmCallRateLimit>,
+}
+
+impl LlmBackend {
+    pub fn tool_round_limit(&self) -> Option<usize> {
+        self.max_tool_rounds.filter(|v| *v > 0).map(|v| v as usize)
+    }
+
+    pub fn call_rate_limit_effective(&self) -> Option<(u32, std::time::Duration)> {
+        self.call_rate_limit
+            .as_ref()
+            .and_then(LlmCallRateLimit::effective)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -36,6 +55,34 @@ pub struct LlmCostCap {
     pub input_per_1m: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_per_1m: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmCallRateLimit {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Max API calls in the window. 0 disables the limiter.
+    #[serde(default)]
+    pub max_calls: u32,
+    /// Window length in seconds. 0 disables the limiter.
+    #[serde(default = "default_call_rate_window_s")]
+    pub window_s: u64,
+}
+
+impl LlmCallRateLimit {
+    pub fn effective(&self) -> Option<(u32, std::time::Duration)> {
+        if !self.enabled || self.max_calls == 0 || self.window_s == 0 {
+            return None;
+        }
+        Some((
+            self.max_calls,
+            std::time::Duration::from_secs(self.window_s),
+        ))
+    }
+}
+
+fn default_call_rate_window_s() -> u64 {
+    60
 }
 
 fn default_cost_cycle() -> String {

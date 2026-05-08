@@ -24,7 +24,7 @@ from uuid import uuid4
 MODULE = {
     "name": "deepdive",
     "description": "Crawler fuer mehrstufige Recherche: Web suchen, Quellen abrufen, Datum/Text/Links extrahieren und RAG-Notizen speichern.",
-    "version": "1.6",
+    "version": "1.7",
     "settings": {
         "max_sources": {"type": "number", "label": "Seed-Quellen pro Crawl", "default": 8},
         "max_search_queries": {"type": "number", "label": "Suchvarianten", "default": 6},
@@ -324,7 +324,39 @@ def _crawl(query, config):
                 {"phase": "seed", "query": search_query, "error": str(exc)},
             )
 
-    selected = _select_sources(candidates, max_sources)
+    # ── RSS-Integration: RSS-Quellen als zusätzliche Kandidaten ──
+    rss_candidates_added = 0
+    try:
+        from modules.rss_verwaltung.module import _fuer_deepdive
+        rss_source_list = _fuer_deepdive(json.dumps({
+            "query": query,
+            "refresh": True,
+            "stale_after_minutes": 30,
+            "limit_sources": 8,
+            "limit_items": 12,
+            "max_items_per_source": 30,
+        }))
+        # Nur echte Item-URLs extrahieren – nicht den ganzen RSS-Block in den LLM-Kontext kippen.
+        if rss_source_list:
+            rss_urls = _extract_rss_item_urls(rss_source_list)
+            for rss_url in rss_urls[:8]:
+                if rss_url not in candidate_urls and _is_allowed_http_url(rss_url, allow_private):
+                    candidate_urls.add(rss_url)
+                    candidates.append({
+                        "url": rss_url,
+                        "search_query": query,
+                        "depth": 0,
+                        "parent_url": "",
+                        "discovery_method": "rss",
+                        "discovery_reason": f"RSS-Item passend zu: {query}",
+                    })
+                    rss_candidates_added += 1
+    except Exception:
+        pass  # RSS-Modul nicht verfügbar oder Fehler – kein Beinbruch
+    if rss_candidates_added:
+        _trace(trace, "rss.inject", {"added": rss_candidates_added})
+        _tool_trace(tool_trace, "rss_verwaltung.fuer_deepdive", "OK", {"added_candidates": rss_candidates_added})
+    selected = _select_sources(candidates, max_sources, query)
     _trace(
         trace,
         "sources.select",
@@ -502,7 +534,7 @@ def _crawl(query, config):
                             {
                                 "title": link["text"],
                                 "url": link["url"],
-                                "snippet": f"Follow-up aus Quelle {url}: {link['text']}",
+                                "snippet": f"Follow-up-Linktext: {link['text']}",
                                 "search_query": result.get("search_query") or "",
                                 "depth": depth + 1,
                                 "parent_url": url,
@@ -591,7 +623,7 @@ def _crawl(query, config):
                             dres["discovery_method"] = "derived_search"
                             dres["discovery_reason"] = f"Nachsuche aus Quelle: {page['title'] or url}"
                             derived_candidates.append(dres)
-                        selected_derived = _select_sources(derived_candidates, 2)
+                        selected_derived = _select_sources(derived_candidates, 2, derived_query)
                         _trace(
                             trace,
                             "derived_search.done",
@@ -811,14 +843,24 @@ def _search_duckduckgo(query, max_results, timeout_s):
     return out
 
 
-def _select_sources(candidates, max_sources):
+def _select_sources(candidates, max_sources, query=""):
     selected = []
     host_counts = {}
     preferred = []
+    terms = _query_terms(query)
+    broad_query = _is_broad_query(query)
     for result in candidates:
         host = urllib.parse.urlparse(result["url"]).netloc.lower().removeprefix("www.")
         score = 0
         text = f"{result.get('title','')} {result.get('snippet','')} {result.get('url','')}".lower()
+        term_hits = sum(1 for term in terms if term in text)
+        if terms and term_hits == 0 and not broad_query and result.get("discovery_method") != "rss":
+            continue
+        score += term_hits * 8
+        if terms and term_hits >= min(2, len(terms)):
+            score += 4
+        if result.get("discovery_method") == "rss":
+            score += 6
         if any(word in text for word in ("aktuell", "news", "nachrichten", "heute", "live")):
             score += 5
         if any(domain in host for domain in ("tagesschau", "bundestag", "bundesregierung", "faz", "zdf", "spiegel", "zeit", "dw.com", "reuters", "apnews", "britannica", "wikipedia")):
@@ -877,6 +919,8 @@ def _link_score(query, link, parent_host, parent_page_role="source"):
     reasons = []
     if score:
         reasons.append("Query-Bezug")
+    if terms and not term_hits and not _is_broad_query(query):
+        return 0, ""
     current_words = (
         "aktuell", "news", "nachrichten", "heute", "live", "ticker", "entwicklung",
         "analyse", "kommentar", "hintergrund", "fakten", "timeline", "chronologie",
@@ -962,7 +1006,10 @@ def _derive_search_queries(query, page):
 def _relevance_score(query, result, page):
     text = f"{result.get('title','')} {result.get('snippet','')} {page.get('title','')} {page.get('text','')[:4000]}".lower()
     terms = _query_terms(query)
-    score = sum(3 for term in terms if term in text)
+    term_hits = sum(1 for term in terms if term in text)
+    if terms and term_hits == 0 and not _is_broad_query(query):
+        return 0
+    score = term_hits * 3
     if any(word in text for word in ("aktuell", "news", "nachrichten", "heute", "live", "entwicklung")):
         score += 8
     if page.get("dates"):
@@ -1137,7 +1184,8 @@ def _skip_link(url, label):
     low = f"{url} {label}".lower()
     bad_parts = (
         "#", "mailto:", "javascript:", "/login", "/signin", "/abo", "/newsletter",
-        "/datenschutz", "/privacy", "/impressum", "/kontakt", "/shop", "/account",
+        "/signup", "/register", "session_redirect=", "/datenschutz", "/privacy",
+        "/impressum", "/kontakt", "/shop", "/account",
         ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".pdf", ".zip", ".mp4",
         "facebook.com", "instagram.com", "linkedin.com/share", "whatsapp", "mailto",
     )
@@ -1183,6 +1231,18 @@ def _host(url):
 
 def _query_terms(query):
     return _important_words(query, 10)
+
+
+def _is_broad_query(query):
+    terms = _query_terms(query)
+    if not terms:
+        return True
+    broad_terms = {
+        "deutschland", "politik", "wirtschaft", "welt", "international",
+        "europa", "usa", "news", "nachrichten", "ereignisse", "lage",
+        "ticker", "liveblog", "ueberblick", "überblick",
+    }
+    return len(terms) <= 2 and any(term in broad_terms for term in terms)
 
 
 def _important_words(text, limit):
@@ -1612,6 +1672,25 @@ def _clean_url(url):
     if parsed.scheme not in {"http", "https"}:
         return ""
     return urllib.parse.urlunparse(parsed._replace(fragment=""))
+
+
+def _extract_rss_item_urls(packet):
+    urls = []
+    seen = set()
+    for line in (packet or "").splitlines():
+        value = ""
+        stripped = line.strip()
+        if stripped.startswith("item_url:"):
+            value = stripped.split("item_url:", 1)[1].strip()
+        elif stripped.startswith("url:"):
+            value = stripped.split("url:", 1)[1].strip()
+        if not value:
+            continue
+        value = _clean_url(value)
+        if value and value not in seen:
+            seen.add(value)
+            urls.append(value)
+    return urls
 
 
 def _unwrap_duckduckgo_url(raw_url):

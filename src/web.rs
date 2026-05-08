@@ -14,7 +14,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 
-const MAX_CHAT_TOOL_ROUNDS: usize = 30;
 const MAX_CHAT_TOOL_RESULT_CHARS: usize = 7000;
 const MAX_CHAT_TASK_RESULT_CHARS: usize = 20000;
 const MAX_MALFORMED_TOOL_RETRIES: u32 = 3;
@@ -72,6 +71,19 @@ fn model_for_backend(cfg: &AgentConfig, backend_id: &str) -> String {
         .unwrap_or_default()
 }
 
+fn tool_round_limit_for_backend(cfg: &AgentConfig, backend_id: &str) -> Option<usize> {
+    cfg.llm_backends
+        .iter()
+        .find(|b| b.id == backend_id)
+        .and_then(|b| b.tool_round_limit())
+}
+
+fn can_run_more_tool_rounds(cfg: &AgentConfig, backend_id: &str, rounds: usize) -> bool {
+    tool_round_limit_for_backend(cfg, backend_id)
+        .map(|limit| rounds < limit)
+        .unwrap_or(true)
+}
+
 fn estimate_message_tokens(messages: &[serde_json::Value]) -> u64 {
     let chars: usize = messages
         .iter()
@@ -100,6 +112,91 @@ fn chat_tool_result_for_llm(ok: bool, data: &str) -> String {
             "FAILED: {}\nNEXT: Decide whether to retry with corrected parameters, use another available tool, or tell the user exactly why the step cannot be completed. Do not present this failed step as successful.",
             body
         )
+    }
+}
+
+fn persist_chat_assistant_result(
+    pipeline: &Pipeline,
+    modul_id: &str,
+    convo_id: Option<&str>,
+    seed_messages: &serde_json::Value,
+    content: &str,
+) {
+    let Some(convo_id) = convo_id else {
+        return;
+    };
+    if modul_id.trim().is_empty() || content.trim().is_empty() {
+        return;
+    }
+
+    let seed = seed_messages.as_array().cloned().unwrap_or_default();
+    let mut convo = pipeline
+        .convo_load(modul_id, convo_id)
+        .unwrap_or_else(|| serde_json::json!({"id": convo_id, "messages": []}));
+
+    if !convo.is_object() {
+        convo = serde_json::json!({"id": convo_id, "messages": []});
+    }
+    convo["id"] = serde_json::json!(convo_id);
+
+    let mut messages = convo
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if messages.len() < seed.len() {
+        messages = seed;
+    }
+
+    let final_content = content.to_string();
+    let mut already_present = false;
+    if let Some(last) = messages.last_mut() {
+        let role = last.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let existing = last.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if role == "assistant" && existing == final_content {
+            already_present = true;
+        } else if role == "assistant"
+            && (existing.starts_with("Error:")
+                || existing.starts_with("(Antwort war leer")
+                || existing.contains("network error"))
+        {
+            *last = serde_json::json!({"role": "assistant", "content": final_content});
+            already_present = true;
+        }
+    }
+    if !already_present {
+        messages.push(serde_json::json!({"role": "assistant", "content": final_content}));
+    }
+
+    let title = convo
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            messages.iter().find_map(|m| {
+                if m.get("role").and_then(|v| v.as_str()) == Some("user") {
+                    m.get("content")
+                        .and_then(|v| v.as_str())
+                        .map(|s| util::safe_truncate(s, 40).to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| "Neue Conversation".to_string());
+
+    convo["title"] = serde_json::json!(title);
+    convo["messages"] = serde_json::json!(messages);
+    convo["updated"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+
+    if let Err(e) = pipeline.convo_save(modul_id, &convo) {
+        tracing::warn!(
+            "Chat-Conversation persist failed for {} / {}: {}",
+            modul_id,
+            convo_id,
+            e
+        );
     }
 }
 
@@ -1537,6 +1634,8 @@ async fn chat(
 
     // Spawn the tool-loop in a background task
     let state = s.clone();
+    let convo_id_for_persist = convo_id.clone();
+    let seed_messages_for_persist = user_messages.clone();
     tokio::spawn(async move {
         let t_start = std::time::Instant::now();
         let mut tool_rounds = 0;
@@ -1553,8 +1652,12 @@ async fn chat(
         let mut deepdive_gate_retries: u32 = 0;
 
         loop {
-            if tool_rounds >= MAX_CHAT_TOOL_ROUNDS {
-                break;
+            if let Some(max_tool_rounds) =
+                tool_round_limit_for_backend(&config_snapshot, &backend_id)
+            {
+                if tool_rounds >= max_tool_rounds {
+                    break;
+                }
             }
 
             let model_str = model_for_backend(&config_snapshot, &backend_id);
@@ -1575,8 +1678,30 @@ async fn chat(
                     a.ergebnis = Some(msg.clone());
                     let _ = state.pipeline.reschedule(&mut a, hit.reset_iso());
                 }
+                persist_chat_assistant_result(
+                    &state.pipeline,
+                    modul_id_str,
+                    convo_id_for_persist.as_deref(),
+                    &seed_messages_for_persist,
+                    &msg,
+                );
                 tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":msg},"done":true}).to_string()).await.ok();
                 return;
+            }
+
+            while let Some(wait) = state.llm.reserve_rate_slot_or_wait(&backend_id).await {
+                let wait_s = wait.as_secs().max(1);
+                let msg = format!(
+                    "LLM rate-limit aktiv: backend '{}' wartet {}s",
+                    backend_id, wait_s
+                );
+                state
+                    .pipeline
+                    .log(modul_id_str, Some(&main_id), LogTyp::Info, &msg);
+                tx.send(serde_json::json!({"type":"status","message":msg}).to_string())
+                    .await
+                    .ok();
+                tokio::time::sleep(wait).await;
             }
 
             let result = state
@@ -2033,7 +2158,13 @@ async fn chat(
                         if let Some(feedback) =
                             deepdive_gate_feedback(&deepdive_progress, &last_user_msg, &final_text)
                         {
-                            if deepdive_gate_retries < 4 && tool_rounds < MAX_CHAT_TOOL_ROUNDS {
+                            if deepdive_gate_retries < 4
+                                && can_run_more_tool_rounds(
+                                    &config_snapshot,
+                                    &backend_id,
+                                    tool_rounds,
+                                )
+                            {
                                 deepdive_gate_retries += 1;
                                 tool_rounds += 1;
                                 state.pipeline.log(
@@ -2115,6 +2246,14 @@ async fn chat(
                         ),
                     );
 
+                    persist_chat_assistant_result(
+                        &state.pipeline,
+                        modul_id_str,
+                        convo_id_for_persist.as_deref(),
+                        &seed_messages_for_persist,
+                        &final_text,
+                    );
+
                     // Stream final text in chunks
                     for chunk in final_text.chars().collect::<Vec<_>>().chunks(20) {
                         let text: String = chunk.iter().collect();
@@ -2138,10 +2277,18 @@ async fn chat(
                         LogTyp::Failed,
                         &format!("LLM Fehler: {}", e),
                     );
+                    let err_text = format!("Error: LLM Fehler: {}", e);
                     if let Ok(Some(mut a)) = state.pipeline.laden_by_id(&main_id) {
                         a.ergebnis = Some(format!("FAILED: {}", e));
                         let _ = state.pipeline.verschieben(&mut a, AufgabeStatus::Failed);
                     }
+                    persist_chat_assistant_result(
+                        &state.pipeline,
+                        modul_id_str,
+                        convo_id_for_persist.as_deref(),
+                        &seed_messages_for_persist,
+                        &err_text,
+                    );
                     tx.send(serde_json::json!({"error": format!("LLM Fehler: {}", e)}).to_string())
                         .await
                         .ok();
@@ -2155,9 +2302,9 @@ async fn chat(
             modul_id_str,
             Some(&main_id),
             LogTyp::Warning,
-            "Max tool rounds erreicht; erzwinge finale Synthese ohne weitere Tools",
+            "LLM tool rounds limit erreicht; erzwinge finale Synthese ohne weitere Tools",
         );
-        tx.send(serde_json::json!({"type":"status","message":"Tool-Limit erreicht; erstelle finale Synthese aus vorhandenen Ergebnissen"}).to_string()).await.ok();
+        tx.send(serde_json::json!({"type":"status","message":"Tool-Limit dieses LLM erreicht; erstelle finale Synthese aus vorhandenen Ergebnissen"}).to_string()).await.ok();
 
         let model_str = model_for_backend(&config_snapshot, &backend_id);
         let final_messages = final_synthesis_messages(
@@ -2166,6 +2313,17 @@ async fn chat(
             needs_deepdive,
             MAX_FINAL_SYNTHESIS_EVIDENCE_CHARS,
         );
+        while let Some(wait) = state.llm.reserve_rate_slot_or_wait(&backend_id).await {
+            let wait_s = wait.as_secs().max(1);
+            let msg = format!("LLM rate-limit aktiv: finale Synthese wartet {}s", wait_s);
+            state
+                .pipeline
+                .log(modul_id_str, Some(&main_id), LogTyp::Info, &msg);
+            tx.send(serde_json::json!({"type":"status","message":msg}).to_string())
+                .await
+                .ok();
+            tokio::time::sleep(wait).await;
+        }
         let final_result = state
             .llm
             .chat_with_tools(&backend_id, backup_id.as_deref(), &final_messages, &[])
@@ -2264,6 +2422,14 @@ async fn chat(
                 total_dur.as_millis(),
                 unresolved_failures.len()
             ),
+        );
+
+        persist_chat_assistant_result(
+            &state.pipeline,
+            modul_id_str,
+            convo_id_for_persist.as_deref(),
+            &seed_messages_for_persist,
+            &final_text,
         );
 
         for chunk in final_text.chars().collect::<Vec<_>>().chunks(20) {
@@ -4029,6 +4195,8 @@ pub async fn wizard_test_connection(
         identity: Default::default(),
         max_tokens: None,
         cost_cap: None,
+        max_tool_rounds: None,
+        call_rate_limit: None,
     };
 
     // Try a minimal ping: single user message "ping"

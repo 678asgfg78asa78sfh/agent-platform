@@ -136,6 +136,50 @@ html, body { height: 100%; background: var(--bg-deep); color: var(--text); font-
 }
 .send-btn:hover { box-shadow: 0 0 14px var(--cyan-glow); color: #fff; transform: translateY(-1px); }
 
+@media (max-width: 640px) {
+  html, body { height: 100vh; height: 100dvh; width: 100%; overflow: hidden; }
+  #chat-app { height: 100vh; height: 100dvh; min-height: 0; }
+  .chat-topbar {
+    height: auto; min-height: 48px; padding: 6px 8px; gap: 6px;
+    flex-wrap: wrap; align-content: center;
+  }
+  .chat-topbar .agent-avatar { width: 26px; height: 26px; min-width: 26px; margin-right: 2px; font-size: 12px; }
+  .chat-topbar .agent-name {
+    flex: 1 1 auto; min-width: 0; max-width: calc(100vw - 190px);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;
+  }
+  .chat-topbar .agent-sub { display: none; }
+  .chat-topbar .token-count { order: 4; margin-left: 0; font-size: 9px; min-width: 38px; }
+  .chat-topbar .status-dot { margin-left: 0; flex-shrink: 0; }
+  .chat-topbar .clear-btn { margin-left: 0; min-width: 32px; min-height: 32px; padding: 4px 7px; }
+  #convo-select {
+    order: 10; flex: 1 1 calc(100% - 42px); width: auto; max-width: none !important;
+    min-width: 0; height: 32px; font-size: 11px; margin-top: 2px;
+  }
+  #convo-new { order: 10; }
+  .panel { max-height: 38dvh; }
+  .notification-top { align-items: flex-start; }
+  .notification-title { white-space: normal; overflow-wrap: anywhere; }
+  .messages {
+    min-height: 0; padding: 10px 8px; gap: 8px;
+    overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  }
+  .msg { max-width: 100%; gap: 6px; }
+  .msg .avatar { width: 24px; height: 24px; min-width: 24px; font-size: 11px; }
+  .msg > div:last-child { min-width: 0; max-width: calc(100vw - 40px); }
+  .bubble { max-width: 100%; padding: 8px 10px; font-size: 12px; overflow-wrap: anywhere; word-break: break-word; }
+  .bubble pre { max-width: 100%; white-space: pre-wrap; word-break: break-word; overflow-x: auto; }
+  .chat-status-bar { padding: 4px 8px; font-size: 10px; }
+  .stats-bar { display: none; }
+  .input-area { padding: 8px; padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+  .input-row { gap: 6px; align-items: flex-end; }
+  .input-row textarea {
+    min-height: 42px; max-height: 34dvh; padding: 9px 10px;
+    font-size: 16px; line-height: 1.35; border-radius: 8px;
+  }
+  .send-btn { height: 42px; padding: 8px 12px; flex-shrink: 0; font-size: 11px; }
+}
+
 body::after {
   content: ''; position: fixed; inset: 0; z-index: 9999; pointer-events: none;
   background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
@@ -186,7 +230,7 @@ body::after {
   </div>
   <div class="input-area">
     <div class="input-row">
-      <textarea id="input" placeholder="Nachricht eingeben... (Enter = senden)" rows="1"></textarea>
+      <textarea id="input" placeholder="Nachricht eingeben..." rows="1"></textarea>
       <button class="send-btn" id="send-btn">Senden</button>
     </div>
   </div>
@@ -229,6 +273,18 @@ function apiFetch(path, opts) {
 /* ═══ Conversations ═══ */
 function genId() { return Date.now().toString(36) + Math.random().toString(36).substr(2, 5); }
 
+function isTransientNetworkErrorMessage(m) {
+  if (!m || m.role !== 'assistant') return false;
+  var content = String(m.content || '').trim().toLowerCase();
+  return content === 'error: network error'
+    || content === 'error: failed to fetch'
+    || content.indexOf('verbindung abgebrochen:') === 0;
+}
+
+function normalizeChatMessages(messages) {
+  return (messages || []).filter(function(m) { return !isTransientNetworkErrorMessage(m); });
+}
+
 function loadConvoList() {
   if (!modulId) return;
   apiFetch('/api/convos/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
@@ -251,7 +307,7 @@ function loadConvo(id) {
   apiFetch('/api/convos/' + modulId + '/' + id).then(function(r) { return r.json(); }).then(function(c) {
     if (c.error) return;
     currentConvoId = c.id;
-    chatHistory = c.messages || [];
+    chatHistory = normalizeChatMessages(c.messages);
     ge('messages').innerHTML = '';
     var name = modulConfig ? ((modulConfig.identity && modulConfig.identity.bot_name) || modulConfig.display_name) : 'Agent';
     chatHistory.forEach(function(m) { appendMsg(m.role, m.content, name); });
@@ -262,6 +318,7 @@ function loadConvo(id) {
 
 function saveConvo() {
   if (!currentConvoId || !modulId || chatHistory.length === 0) return;
+  chatHistory = normalizeChatMessages(chatHistory);
   var title = '';
   for (var i = 0; i < chatHistory.length; i++) {
     if (chatHistory[i].role === 'user') { title = chatHistory[i].content.substring(0, 40); break; }
@@ -609,9 +666,10 @@ function send() {
   }).catch(function(e) {
     if (cursor && cursor.parentNode) cursor.parentNode.removeChild(cursor);
     var errMsg = e.message || 'Unbekannter Fehler';
-    streamText.innerHTML = '<span style="color:var(--red)">Error: ' + esc(errMsg) + '</span>';
-    chatHistory.push({ role: 'assistant', content: 'Error: ' + errMsg });
-    saveConvo();
+    streamText.innerHTML = '<span style="color:var(--red)">Verbindung abgebrochen: ' + esc(errMsg) + '</span>';
+    if (currentConvoId) {
+      setTimeout(function() { loadConvo(currentConvoId); }, 1500);
+    }
   }).finally(function() {
     streaming = false;
     ge('send-btn').disabled = false; ge('send-btn').textContent = 'Senden';

@@ -192,6 +192,13 @@ fn restore_provider_tool_names(
 pub struct LlmRouter {
     config: Arc<RwLock<AgentConfig>>,
     clients: Mutex<HashMap<u64, reqwest::Client>>, // timeout_s -> client
+    call_rate: Mutex<HashMap<String, LlmCallRateState>>,
+}
+
+#[derive(Debug, Clone)]
+struct LlmCallRateState {
+    window_started: std::time::Instant,
+    calls: u32,
 }
 
 impl LlmRouter {
@@ -199,6 +206,7 @@ impl LlmRouter {
         Self {
             config,
             clients: Mutex::new(HashMap::new()),
+            call_rate: Mutex::new(HashMap::new()),
         }
     }
 
@@ -220,6 +228,32 @@ impl LlmRouter {
     async fn backend(&self, id: &str) -> Option<LlmBackend> {
         let cfg = self.config.read().await;
         cfg.llm_backends.iter().find(|b| b.id == id).cloned()
+    }
+
+    /// Reserves one API-call slot for a backend. If the configured per-LLM rate
+    /// window is full, returns the remaining wait time without reserving.
+    pub async fn reserve_rate_slot_or_wait(&self, backend_id: &str) -> Option<std::time::Duration> {
+        let backend = self.backend(backend_id).await?;
+        let (max_calls, window) = backend.call_rate_limit_effective()?;
+        let now = std::time::Instant::now();
+        let mut states = self.call_rate.lock().await;
+        let state = states
+            .entry(backend_id.to_string())
+            .or_insert(LlmCallRateState {
+                window_started: now,
+                calls: 0,
+            });
+        if now.duration_since(state.window_started) >= window {
+            state.window_started = now;
+            state.calls = 0;
+        }
+        if state.calls < max_calls {
+            state.calls = state.calls.saturating_add(1);
+            None
+        } else {
+            let elapsed = now.duration_since(state.window_started);
+            Some(window.saturating_sub(elapsed))
+        }
     }
 
     /// Chat with tools (OpenAI Function Calling format)
@@ -856,6 +890,8 @@ mod tests {
             identity: ModulIdentity::default(),
             max_tokens: None,
             cost_cap: None,
+            max_tool_rounds: None,
+            call_rate_limit: None,
         };
         let r = router.chat_with_tools_adhoc(&backend, &[], &[]).await;
         assert!(

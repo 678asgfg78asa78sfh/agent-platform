@@ -11,6 +11,8 @@ import sqlite3
 import threading
 import re
 import time as _time
+import html
+import email.utils
 from datetime import datetime, timezone, timedelta
 from xml.etree import ElementTree as ET
 from urllib.parse import urlparse, urlunparse
@@ -32,12 +34,17 @@ AKTUALITAET = ["live", "taeglich", "mehrmals_woche", "woechentlich", "unregelmae
 SPRACHEN = ["de", "en", "fr", "es", "it", "nl", "pl", "andere"]
 
 SERIOESITAET_RANK = {"sehr_hoch": 5, "hoch": 4, "mittel": 3, "niedrig": 2, "unbekannt": 1}
+QUERY_STOPWORDS = {
+    "aktuell", "aktuelle", "aktuelles", "news", "nachricht", "nachrichten",
+    "info", "infos", "information", "informationen", "suche", "such", "finde",
+    "alles", "alle", "was", "ueber", "über", "zum", "zur", "der", "die", "das",
+}
 
 # ── MODULE-Metadaten ───────────────────────────────────────────────────────
 MODULE = {
     "name": "rss_verwaltung",
     "description": "RSS-Registry & Index: Quellenverwaltung, Feed-Fetching, Item-Index, Suche fuer DeepDive",
-    "version": "3.0",
+    "version": "3.1",
     "settings": {
         "max_items_per_fetch": {"type": "number", "label": "Max Items pro Feed beim Fetch", "default": 50},
         "default_search_limit": {"type": "number", "label": "Standard-Suchlimit", "default": 20},
@@ -237,8 +244,8 @@ def _parse_atom_entry(entry, ns):
 
     guid = _t("id")
     url = _link()
-    title = _t("title")
-    summary = _t("summary") or _t("content") or ""
+    title = _clean_text(_t("title"), 1000)
+    summary = _clean_text(_t("summary") or _t("content") or "", 2000)
     published = _t("published") or _t("updated") or ""
     return {"guid": guid, "url": url, "title": title, "summary": summary[:2000], "published": published}
 
@@ -248,18 +255,42 @@ def _parse_rss_item(item):
         e = item.find(tag)
         return (e.text or "").strip() if e is not None and e.text else ""
 
+    def _date():
+        direct = _t("pubDate") or _t("date")
+        if direct:
+            return direct
+        for child in list(item):
+            if child.tag.lower().endswith("date") and child.text:
+                return child.text.strip()
+        return ""
+
     guid = _t("guid") or _t("link")
     url = _t("link")
-    title = _t("title")
-    summary = _t("description") or ""
-    published = _t("pubDate") or _t("dc:date") or ""
+    title = _clean_text(_t("title"), 1000)
+    summary = _clean_text(_t("description") or "", 2000)
+    published = _date()
     return {"guid": guid, "url": url, "title": title, "summary": summary[:2000], "published": published}
+
+
+def _clean_text(value: str, limit: int = 2000) -> str:
+    value = html.unescape(value or "")
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value[:limit]
 
 
 def _parse_date(s: str) -> str:
     """Versuch, diverse Datumsformate in UTC-ISO zu wandeln."""
     if not s:
         return ""
+    try:
+        dt = email.utils.parsedate_to_datetime(s.strip())
+        if dt:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        pass
     formats = [
         "%a, %d %b %Y %H:%M:%S %z",   # RFC 2822
         "%a, %d %b %Y %H:%M:%S %Z",
@@ -291,8 +322,14 @@ def _score_item(row, query_tokens: list) -> float:
     title = (row["title"] or "").lower()
     summary = (row["summary"] or "").lower()
     tags = (row["tags_json"] or "[]").lower()
-    reliability = row.get("reliability", "unbekannt")
-    published = row.get("published_at_utc") or ""
+    try:
+        reliability = row["reliability"] or "unbekannt"
+    except (KeyError, IndexError):
+        reliability = "unbekannt"
+    try:
+        published = row["published_at_utc"] or ""
+    except (KeyError, IndexError):
+        published = ""
 
     for tok in query_tokens:
         t = tok.lower()
@@ -323,6 +360,69 @@ def _score_item(row, query_tokens: list) -> float:
             pass
 
     return score
+
+
+def _query_tokens(query: str) -> list:
+    tokens = []
+    for tok in re.split(r"[^A-Za-zÄÖÜäöüß0-9_.-]+", query or ""):
+        tok = tok.strip().lower()
+        if len(tok) < 3 or tok in QUERY_STOPWORDS:
+            continue
+        tokens.append(tok)
+    return tokens[:8]
+
+
+def _token_match_count(row, query_tokens: list) -> int:
+    text = " ".join([
+        str(row["title"] or ""),
+        str(row["summary"] or ""),
+        str(row["tags_json"] or ""),
+        str(row["source_name"] if "source_name" in row.keys() else ""),
+    ]).lower()
+    return sum(1 for tok in query_tokens if tok in text)
+
+
+def _required_match_count(query_tokens: list) -> int:
+    if not query_tokens:
+        return 0
+    if len(query_tokens) == 1:
+        return 1
+    if len(query_tokens) == 2:
+        return 2
+    return min(3, max(2, (len(query_tokens) + 1) // 2))
+
+
+def _effective_item_time(row) -> str:
+    try:
+        return row["published_at_utc"] or row["fetched_at_utc"] or ""
+    except Exception:
+        return ""
+
+
+def _age_label(iso_value: str) -> str:
+    if not iso_value:
+        return "age:unknown"
+    try:
+        dt = datetime.strptime(iso_value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+        if hours < 1:
+            return f"{int(hours * 60)}m ago"
+        if hours < 48:
+            return f"{hours:.0f}h ago"
+        return f"{hours / 24:.0f}d ago"
+    except Exception:
+        return "age:unknown"
+
+
+def _bool_param(d: dict, key: str, default: bool) -> bool:
+    if key not in d:
+        return default
+    value = d.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "ja", "on"}
 
 
 # ── Tool-Implementierungen ──────────────────────────────────────────────────
@@ -528,8 +628,8 @@ def _fetch(daten_json: str) -> str:
                 if not guid:
                     continue
                 url = (item.get("url") or "").strip()
-                title = (item.get("title") or "").strip()
-                summary = (item.get("summary") or "").strip()
+                title = _clean_text((item.get("title") or "").strip(), 1000)
+                summary = _clean_text((item.get("summary") or "").strip(), 3000)
                 pub = _parse_date(item.get("published") or "")
                 chash = _content_hash(title, summary, url)
                 # Dedup via guid
@@ -598,7 +698,7 @@ def _suche(query_json: str) -> str:
     q = (d.get("query") or "").strip()
     if not q:
         return "FEHLER: query ist erforderlich."
-    tokens = [t for t in re.split(r"\s+", q) if t]
+    tokens = _query_tokens(q)
     limit = int(d.get("limit", 20))
     since_h = d.get("since_hours") or d.get("since")
     kat = d.get("kategorie") or d.get("category")
@@ -611,7 +711,7 @@ def _suche(query_json: str) -> str:
     params = []
     if since_h is not None:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=int(since_h))).strftime("%Y-%m-%dT%H:%M:%SZ")
-        wheres.append("i.published_at_utc >= ?")
+        wheres.append("COALESCE(NULLIF(i.published_at_utc,''), i.fetched_at_utc) >= ?")
         params.append(cutoff)
     if kat:
         wheres.append("s.category = ?")
@@ -634,10 +734,14 @@ def _suche(query_json: str) -> str:
         SELECT i.*, s.name as source_name, s.url as source_url, s.category, s.reliability, s.language
         FROM items i JOIN sources s ON i.source_id = s.id
         WHERE """ + " AND ".join(wheres) + """
-        ORDER BY i.published_at_utc DESC
+        ORDER BY COALESCE(NULLIF(i.published_at_utc,''), i.fetched_at_utc) DESC
         LIMIT 500
     """
     rows = conn.execute(sql, params).fetchall()
+    required_matches = _required_match_count(tokens)
+    if required_matches:
+        strict_rows = [r for r in rows if _token_match_count(r, tokens) >= required_matches]
+        rows = strict_rows
 
     if not rows:
         return f"RSS_SEARCH\nquery: {q}\nresults: 0\n(Keine Treffer)"
@@ -650,19 +754,16 @@ def _suche(query_json: str) -> str:
     lines = [f"RSS_SEARCH", f"query: {q}", f"results: {len(top)}"]
     for r, score in top:
         pub = r["published_at_utc"] or "?"
-        age = ""
-        if pub != "?":
-            try:
-                dt = datetime.strptime(pub, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-                age = f"{h:.0f}h ago"
-            except Exception:
-                age = "?"
+        fetched = r["fetched_at_utc"] or "?"
+        age = _age_label(_effective_item_time(r))
         summary = (r["summary"] or "")[:200]
         lines.append(
-            f"[{r['id']}] {r['source_name']} | {r['category']} | reliab:{r['reliability']} | {age}\n"
+            f"[{r['id']}] {r['source_name']} | {r['category']} | reliab:{r['reliability']} | {age} | score:{score:.1f}\n"
             f"    title: {r['title']}\n"
-            f"    url: {r['url']}\n"
+            f"    item_url: {r['url']}\n"
+            f"    source_feed_url: {r['source_url']}\n"
+            f"    published_at_utc: {pub}\n"
+            f"    fetched_at_utc: {fetched}\n"
             f"    snippet: {summary}"
         )
     return "\n".join(lines)
@@ -676,11 +777,14 @@ def _fuer_deepdive(anfrage_json: str) -> str:
     q = (d.get("query") or "").strip()
     kat = d.get("kategorie") or d.get("category")
     since_h = d.get("since_hours") or d.get("since")
-    limit_src = int(d.get("limit_sources", 5))
-    limit_items = int(d.get("limit_items", 10))
+    limit_src = max(1, min(int(d.get("limit_sources", 8)), 20))
+    limit_items = max(1, min(int(d.get("limit_items", 20)), 80))
+    refresh = _bool_param(d, "refresh", True)
+    force_refresh = _bool_param(d, "force_refresh", False)
+    stale_after_minutes = max(5, min(int(d.get("stale_after_minutes", 30)), 1440))
+    max_items_per_source = max(5, min(int(d.get("max_items_per_source", 30)), 80))
 
     conn = _get_db()
-    # Passende Quellen
     wheres = ["active=1"]
     params = []
     if kat:
@@ -692,48 +796,75 @@ def _fuer_deepdive(anfrage_json: str) -> str:
         params + [limit_src]
     ).fetchall()
 
-    # Prüfen ob Index frisch ist
     item_count = conn.execute("SELECT COUNT(*) as cnt FROM items").fetchone()["cnt"]
     last_fetch = conn.execute("SELECT MAX(last_fetch_at_utc) as lf FROM sources WHERE active=1").fetchone()["lf"]
     index_stale = (item_count == 0) or (last_fetch is None)
     if last_fetch:
         try:
             lf_dt = datetime.strptime(last_fetch, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - lf_dt).total_seconds() > 86400:
+            if (datetime.now(timezone.utc) - lf_dt).total_seconds() > stale_after_minutes * 60:
                 index_stale = True
         except Exception:
             pass
 
+    refresh_log = []
+    if sources and refresh and (force_refresh or index_stale):
+        for s in sources:
+            try:
+                res = _fetch(json.dumps({
+                    "source_id": s["id"],
+                    "limit_sources": 1,
+                    "max_items_per_source": max_items_per_source,
+                }))
+                tail = res.splitlines()[-1] if res else "fetch done"
+                refresh_log.append(f"[{s['id']}] {s['name']}: {tail}")
+            except Exception as exc:
+                refresh_log.append(f"[{s['id']}] {s['name']}: FEHLER {str(exc)[:160]}")
+        sources = conn.execute(
+            "SELECT * FROM sources WHERE " + " AND ".join(wheres) + " ORDER BY "
+            "CASE reliability WHEN 'sehr_hoch' THEN 0 WHEN 'hoch' THEN 1 WHEN 'mittel' THEN 2 ELSE 3 END LIMIT ?",
+            params + [limit_src]
+        ).fetchall()
+        item_count = conn.execute("SELECT COUNT(*) as cnt FROM items").fetchone()["cnt"]
+        last_fetch = conn.execute("SELECT MAX(last_fetch_at_utc) as lf FROM sources WHERE active=1").fetchone()["lf"]
+        index_stale = False
+
     out = []
-    out.append("RSS_DEEPDIVE")
+    out.append("RSS_DEEPDIVE_PACKET")
+    out.append(f"generated_at_utc: {_now_utc()}")
     out.append(f"query: {q or '(keine)'}")
     out.append(f"category: {kat or '(alle)'}")
+    out.append(f"since_hours: {since_h if since_h is not None else '(none)'}")
+    out.append(f"index_items_total: {item_count}")
+    out.append(f"index_last_fetch_at_utc: {last_fetch or 'nie'}")
     out.append(f"index_stale: {str(index_stale).lower()}")
-    if index_stale:
-        out.append("HINWEIS: Index ist leer oder veraltet. Empfehle rss_verwaltung.fetch auszufuehren.")
+    out.append(f"refresh_performed: {str(bool(refresh_log)).lower()}")
+    if refresh_log:
+        out.append("refresh_log:")
+        out.extend("  " + line for line in refresh_log[:limit_src])
 
     if sources:
-        out.append(f"\nPassende Quellen ({len(sources)}):")
+        out.append(f"\n<quellen count=\"{len(sources)}\">")
         for s in sources:
-            out.append(f"  [{s['id']}] {s['name']} | {s['category']} | reliab:{s['reliability']} | align:{s['alignment']} | {s['url']}")
+            out.append(
+                f"<quelle id=\"{s['id']}\" feed_url=\"{s['url']}\" category=\"{s['category']}\" "
+                f"language=\"{s['language']}\" reliability=\"{s['reliability']}\" alignment=\"{s['alignment']}\" "
+                f"reach=\"{s['reach']}\" last_fetch_at_utc=\"{s['last_fetch_at_utc'] or ''}\" "
+                f"last_error=\"{(s['last_error'] or '')[:120]}\">{s['name']}</quelle>"
+            )
+        out.append("</quellen>")
 
-    # Items suchen wenn query oder kategorie
     if q or kat:
-        tokens = [t for t in re.split(r"\s+", q) if t] if q else []
+        tokens = _query_tokens(q) if q else []
         i_wheres = ["s.active=1"]
         i_params = []
         if since_h is not None:
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=int(since_h))).strftime("%Y-%m-%dT%H:%M:%SZ")
-            i_wheres.append("i.published_at_utc >= ?")
+            i_wheres.append("COALESCE(NULLIF(i.published_at_utc,''), i.fetched_at_utc) >= ?")
             i_params.append(cutoff)
         if kat:
             i_wheres.append("s.category = ?")
             i_params.append(kat)
-        # Source IDs einschränken
-        if sources:
-            sids = [s["id"] for s in sources]
-            i_wheres.append("i.source_id IN (%s)" % ",".join("?" * len(sids)))
-            i_params.extend(sids)
         like_clauses = []
         for tok in tokens[:5]:
             like_clauses.append("(i.title LIKE ? OR i.summary LIKE ?)")
@@ -742,33 +873,42 @@ def _fuer_deepdive(anfrage_json: str) -> str:
             i_wheres.append("(" + " OR ".join(like_clauses) + ")")
 
         sql = """
-            SELECT i.*, s.name as source_name, s.url as source_url, s.category, s.reliability
+            SELECT i.*, s.name as source_name, s.url as source_url, s.category, s.reliability, s.language, s.alignment, s.reach
             FROM items i JOIN sources s ON i.source_id = s.id
             WHERE """ + " AND ".join(i_wheres) + """
-            ORDER BY i.published_at_utc DESC LIMIT 200
+            ORDER BY COALESCE(NULLIF(i.published_at_utc,''), i.fetched_at_utc) DESC LIMIT 500
         """
         rows = conn.execute(sql, i_params).fetchall()
+        required_matches = _required_match_count(tokens)
+        if required_matches:
+            strict_rows = [r for r in rows if _token_match_count(r, tokens) >= required_matches]
+            rows = strict_rows
         if rows:
             scored = [(r, _score_item(r, tokens)) for r in rows]
             scored.sort(key=lambda x: x[1], reverse=True)
             top = scored[:limit_items]
-            out.append(f"\nTop Items ({len(top)}):")
+            out.append(f"\n<items count=\"{len(top)}\">")
             for r, score in top:
                 pub = r["published_at_utc"] or "?"
-                age = ""
-                if pub != "?":
-                    try:
-                        dt = datetime.strptime(pub, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                        age = f"{(datetime.now(timezone.utc)-dt).total_seconds()/3600:.0f}h ago"
-                    except Exception:
-                        age = "?"
+                fetched = r["fetched_at_utc"] or "?"
+                age = _age_label(_effective_item_time(r))
+                summary = (r["summary"] or "")[:450]
                 out.append(
-                    f"[{r['id']}] {r['source_name']} | {r['category']} | reliab:{r['reliability']} | {age}\n"
-                    f"    title: {r['title']}\n"
-                    f"    url: {r['url']}"
+                    f"<item id=\"{r['id']}\" source_id=\"{r['source_id']}\" source=\"{r['source_name']}\" "
+                    f"category=\"{r['category']}\" reliability=\"{r['reliability']}\" age=\"{age}\" score=\"{score:.1f}\">\n"
+                    f"title: {r['title']}\n"
+                    f"item_url: {r['url']}\n"
+                    f"source_feed_url: {r['source_url']}\n"
+                    f"published_at_utc: {pub}\n"
+                    f"fetched_at_utc: {fetched}\n"
+                    f"summary: {summary}\n"
+                    f"</item>"
                 )
+            out.append("</items>")
+            out.append("NEXT: Fuer belastbare DeepDive-Synthese die relevanten item_url-Werte mit browser.fetch/deepdive.crawl oeffnen und danach Beobachtungen ins RAG schreiben.")
         else:
-            out.append("\nTop Items: Keine passenden Items gefunden.")
+            out.append("\n<items count=\"0\">Keine passenden Items gefunden.</items>")
+            out.append("NEXT: rss_verwaltung.fetch mit passenden Quellen ausfuehren oder Websuche als Fallback nutzen.")
 
     return "\n".join(out)
 
@@ -783,14 +923,17 @@ def _item(item_id: str) -> str:
     if not row:
         return f"Kein Item mit ID [{item_id}]."
     pub = row["published_at_utc"] or "?"
+    fetched = row["fetched_at_utc"] or "?"
     return (
         f"ITEM [{row['id']}]\n"
         f"source: {row['source_name']} [{row['source_id']}]\n"
         f"category: {row['category']} | reliability: {row['reliability']} | alignment: {row['alignment']}\n"
         f"title: {row['title']}\n"
-        f"url: {row['url']}\n"
-        f"published: {pub}\n"
-        f"fetched: {row['fetched_at_utc']}\n"
+        f"item_url: {row['url']}\n"
+        f"source_feed_url: {row['source_url']}\n"
+        f"published_at_utc: {pub}\n"
+        f"fetched_at_utc: {fetched}\n"
+        f"age: {_age_label(_effective_item_time(row))}\n"
         f"summary: {(row['summary'] or '')[:500]}"
     )
 
