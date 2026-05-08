@@ -4,6 +4,7 @@ use crate::tools;
 use crate::types::*;
 use crate::util;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},
@@ -42,6 +43,28 @@ async fn wait_for_idle_timeout(activity: ActivityMarker, timeout_secs: u64) {
         let elapsed = now.saturating_sub(last).max(0) as u64;
         let sleep_s = timeout_secs.saturating_sub(elapsed).clamp(1, 5);
         tokio::time::sleep(std::time::Duration::from_secs(sleep_s)).await;
+    }
+}
+
+async fn with_activity_heartbeat<F>(activity: &Option<ActivityMarker>, future: F) -> F::Output
+where
+    F: Future,
+{
+    mark_activity(activity);
+    let Some(marker) = activity.clone() else {
+        return future.await;
+    };
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => {
+                marker.store(now_ts(), Ordering::Relaxed);
+                return result;
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                marker.store(now_ts(), Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -1578,14 +1601,16 @@ async fn exec_llm(
             }
         }
 
-        let result = llm
-            .chat_with_tools(
+        let result = with_activity_heartbeat(
+            &activity,
+            llm.chat_with_tools(
                 &backend_id,
                 modul.backup_llm.as_deref(),
                 &messages,
                 &openai_tools,
-            )
-            .await;
+            ),
+        )
+        .await;
 
         match result {
             Ok((response, mut raw_data)) => {
@@ -1873,16 +1898,19 @@ async fn exec_llm(
                     let tool_subtask_id = tool_subtask.id.clone();
                     let _ = pipeline.speichern(&tool_subtask);
 
-                    let tool_result = exec_tool(
-                        &tool_name,
-                        &params,
-                        &aufgabe.modul,
-                        Some(&tool_task_id),
-                        pipeline,
-                        config,
-                        llm,
-                        py_modules,
-                        py_pool,
+                    let tool_result = with_activity_heartbeat(
+                        &activity,
+                        exec_tool(
+                            &tool_name,
+                            &params,
+                            &aufgabe.modul,
+                            Some(&tool_task_id),
+                            pipeline,
+                            config,
+                            llm,
+                            py_modules,
+                            py_pool,
+                        ),
                     )
                     .await;
                     let status = if tool_result.0 { "SUCCESS" } else { "FAILED" };
@@ -2235,5 +2263,18 @@ mod tests {
     fn idle_timeout_has_minimum_floor() {
         assert!(!idle_timed_out(100, 120, 1));
         assert!(idle_timed_out(100, 130, 1));
+    }
+
+    #[tokio::test]
+    async fn activity_heartbeat_marks_long_running_future() {
+        let activity = Some(Arc::new(AtomicI64::new(100)));
+        let marker = activity.as_ref().unwrap().clone();
+        let result = with_activity_heartbeat(&activity, async {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            42
+        })
+        .await;
+        assert_eq!(result, 42);
+        assert!(marker.load(Ordering::Relaxed) > 100);
     }
 }
