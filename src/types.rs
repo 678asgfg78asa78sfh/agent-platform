@@ -252,6 +252,24 @@ pub enum RagTyp {
     Private,
 }
 
+// ─── Notifications ─────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationItem {
+    pub id: String,
+    pub modul_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convo_id: Option<String>,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub read: bool,
+    pub created_ts: i64,
+}
+
 // ─── Aufgabe ───────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

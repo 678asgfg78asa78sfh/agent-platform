@@ -2072,17 +2072,18 @@ fn route_ergebnis(aufgabe: &Aufgabe, pipeline: &Pipeline, config: &AgentConfig) 
     //
     // Prefix-Syntax: "chat:target" → chat routing (für UI), ohne prefix →
     // module-zu-module ChatReply mit linking check.
-    let (is_chat, target) = if let Some(t) = zurueck.strip_prefix("chat:") {
-        (true, t)
-    } else {
-        (false, zurueck.as_str())
-    };
+    let (is_chat, target, convo_id) =
+        if let Some((target, convo_id)) = util::parse_chat_route(zurueck) {
+            (true, target, convo_id)
+        } else {
+            (false, zurueck.to_string(), None)
+        };
 
     // Linking-Check nur für non-chat: Target muss verlinkt oder Selbst sein
     if !is_chat && aufgabe.modul != target {
         let source_modul = config.module.iter().find(|m| m.id == aufgabe.modul);
         if let Some(source) = source_modul {
-            if !source.linked_modules.contains(&target.to_string()) {
+            if !source.linked_modules.contains(&target) {
                 pipeline.log(
                     "routing",
                     Some(&aufgabe.id),
@@ -2099,10 +2100,49 @@ fn route_ergebnis(aufgabe: &Aufgabe, pipeline: &Pipeline, config: &AgentConfig) 
 
     let ergebnis = aufgabe.ergebnis.as_deref().unwrap_or("Kein Ergebnis");
     let payload = format!("[Ergebnis von {}]: {}", aufgabe.modul, ergebnis);
+    if is_chat {
+        if let Some(cid) = convo_id.as_deref() {
+            match append_message_to_convo(pipeline, &target, cid, "assistant", &payload) {
+                Ok(_) => {
+                    let source = format!("task:{}", aufgabe.id);
+                    let _ = pipeline.notification_add(
+                        &target,
+                        Some(cid),
+                        "system",
+                        Some("Aufgabe fertig"),
+                        &format!(
+                            "Task {} hat ein Ergebnis in den Chat geschrieben.",
+                            util::safe_truncate(&aufgabe.id, 8)
+                        ),
+                        Some(&source),
+                    );
+                    pipeline.log(
+                        "routing",
+                        Some(&aufgabe.id),
+                        LogTyp::Info,
+                        &format!("Ergebnis in Conversation {}:{} geschrieben", target, cid),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    pipeline.log(
+                        "routing",
+                        Some(&aufgabe.id),
+                        LogTyp::Warning,
+                        &format!(
+                            "Conversation-Routing nach {}:{} fehlgeschlagen: {}",
+                            target, cid, e
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     let mut result_task = Aufgabe::direct(
         "__chat_reply__",
         vec![payload],
-        target,
+        &target,
         &aufgabe.modul,
         None,
         None,
@@ -2121,6 +2161,43 @@ fn route_ergebnis(aufgabe: &Aufgabe, pipeline: &Pipeline, config: &AgentConfig) 
             target
         ),
     );
+}
+
+fn append_message_to_convo(
+    pipeline: &Pipeline,
+    modul_id: &str,
+    convo_id: &str,
+    role: &str,
+    content: &str,
+) -> std::io::Result<()> {
+    let mut convo = pipeline.convo_load(modul_id, convo_id).unwrap_or_else(|| {
+        serde_json::json!({
+            "id": convo_id,
+            "title": "Task Ergebnis",
+            "messages": [],
+            "updated": chrono::Utc::now().to_rfc3339(),
+        })
+    });
+
+    if !convo.get("messages").is_some_and(|v| v.is_array()) {
+        convo["messages"] = serde_json::json!([]);
+    }
+    if let Some(messages) = convo["messages"].as_array_mut() {
+        messages.push(serde_json::json!({
+            "role": role,
+            "content": content,
+        }));
+    }
+    if convo
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
+        convo["title"] = serde_json::json!("Task Ergebnis");
+    }
+    convo["updated"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+    pipeline.convo_save(modul_id, &convo)
 }
 
 async fn exec_tool(

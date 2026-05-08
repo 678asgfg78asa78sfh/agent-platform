@@ -68,6 +68,23 @@ pub fn resolve_identity(modul: &ModulConfig, config: &AgentConfig) -> ModulIdent
     }
 }
 
+/// Parse a chat return route.
+///
+/// Supported:
+/// - `chat:chat.llamacpp`
+/// - `chat:chat.llamacpp:mhl58rc1abc12`
+pub fn parse_chat_route(route: &str) -> Option<(String, Option<String>)> {
+    let rest = route.strip_prefix("chat:")?;
+    let mut parts = rest.splitn(2, ':');
+    let modul_id = crate::security::safe_id(parts.next()?.trim())?;
+    let convo_id = parts
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(crate::security::safe_id);
+    Some((modul_id, convo_id))
+}
+
 /// The UI model is "LLM Gem owns attached modules". Tool access still uses the
 /// older linked_modules field internally, so normalize chat modules to link all
 /// persistent sibling modules attached to the same LLM backend.
@@ -312,5 +329,18 @@ mod tests {
         let chat = cfg.module.iter().find(|m| m.id == "chat.local").unwrap();
         assert!(chat.linked_modules.iter().any(|id| id == "tavily.default"));
         assert!(chat.berechtigungen.iter().any(|p| p == "aufgaben"));
+    }
+
+    #[test]
+    fn parse_chat_route_supports_optional_conversation_id() {
+        assert_eq!(
+            parse_chat_route("chat:chat.local"),
+            Some(("chat.local".into(), None))
+        );
+        assert_eq!(
+            parse_chat_route("chat:chat.local:abc123"),
+            Some(("chat.local".into(), Some("abc123".into())))
+        );
+        assert!(parse_chat_route("chat:../bad:abc123").is_none());
     }
 }

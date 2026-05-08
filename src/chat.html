@@ -49,6 +49,34 @@ html, body { height: 100%; background: var(--bg-deep); color: var(--text); font-
   color: var(--text-dim); padding: 3px 8px; border-radius: var(--radius); cursor: pointer; margin-left: 8px;
 }
 .chat-topbar .clear-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+.notification-btn { position: relative; min-width: 32px; }
+.notification-count {
+  position: absolute; top: -7px; right: -7px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 9px; background: var(--red); color: #fff; border: 1px solid var(--bg-base);
+  display: none; align-items: center; justify-content: center; font-size: 9px; line-height: 14px;
+}
+.notification-count.visible { display: flex; }
+.panel {
+  display: none; border-bottom: 1px solid var(--border); background: var(--bg-surface);
+  max-height: 280px; overflow-y: auto; font-size: 11px;
+}
+.panel-head {
+  display: flex; justify-content: space-between; align-items: center; padding: 6px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.panel-title { font-size: 9px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--cyan); }
+.notification-list { padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
+.notification-empty { color: var(--text-dim); padding: 8px; font-style: italic; }
+.notification-item {
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 8px;
+  background: rgba(255,255,255,0.02);
+}
+.notification-item.unread { border-color: rgba(0,238,255,0.35); background: rgba(0,238,255,0.05); }
+.notification-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.notification-title { color: var(--text-bright); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notification-time { color: var(--text-dim); font-size: 9px; white-space: nowrap; }
+.notification-body { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.notification-actions { display: flex; align-items: center; gap: 6px; }
 
 .messages { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
 .msg { display: flex; gap: 8px; max-width: 80%; animation: msgIn 0.3s ease; }
@@ -126,12 +154,20 @@ body::after {
     <select id="convo-select" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:10px;padding:2px 6px;border-radius:4px;max-width:180px;cursor:pointer;"></select>
     <button class="clear-btn" id="convo-new" title="Neue Conversation" style="font-size:12px;">+</button>
     <div class="status-dot" id="status-dot"></div>
+    <button class="clear-btn notification-btn" id="notification-btn" title="Notifications" style="font-size:14px;">&#x1F514;<span class="notification-count" id="notification-count">0</span></button>
     <button class="clear-btn" id="files-btn" title="Datei-Explorer" style="font-size:15px;">&#x1F4C1;</button>
     <button class="clear-btn" id="clear-btn" title="Conversation loeschen">&#x1F5D1;</button>
   </div>
-  <div id="file-panel" style="display:none; border-bottom:1px solid var(--border); background:var(--bg-surface); max-height:250px; overflow-y:auto; font-size:11px;">
-    <div style="display:flex; justify-content:space-between; align-items:center; padding:6px 12px; border-bottom:1px solid rgba(255,255,255,0.03);">
-      <span style="font-size:9px; text-transform:uppercase; letter-spacing:1.5px; color:var(--cyan);">Home-Verzeichnis</span>
+  <div id="notification-panel" class="panel">
+    <div class="panel-head">
+      <span class="panel-title">Notifications</span>
+      <button class="clear-btn" id="notifications-refresh" style="font-size:10px; padding:2px 6px;">&#x21BB;</button>
+    </div>
+    <div id="notification-list" class="notification-list"></div>
+  </div>
+  <div id="file-panel" class="panel" style="max-height:250px;">
+    <div class="panel-head">
+      <span class="panel-title">Home-Verzeichnis</span>
       <div style="display:flex;gap:4px;">
         <button class="clear-btn" id="files-delete-all" style="font-size:10px; padding:2px 6px; color:var(--red);" title="Alle Dateien loeschen">&#x1F5D1; Alle</button>
         <button class="clear-btn" id="files-refresh" style="font-size:10px; padding:2px 6px;">&#x21BB;</button>
@@ -165,6 +201,8 @@ var modulConfig = null;
 var chatHistory = [];
 var streaming = false;
 var currentConvoId = '';
+var notificationPoll = null;
+var lastConvoRefreshNotificationId = '';
 
 var TOKEN_PARAM = new URLSearchParams(window.location.search).get('token');
 if (TOKEN_PARAM) {
@@ -218,6 +256,7 @@ function loadConvo(id) {
     var name = modulConfig ? ((modulConfig.identity && modulConfig.identity.bot_name) || modulConfig.display_name) : 'Agent';
     chatHistory.forEach(function(m) { appendMsg(m.role, m.content, name); });
     estimateTokens();
+    loadNotifications(false);
   });
 }
 
@@ -250,10 +289,132 @@ function newConvo() {
   }
   // NICHT sofort speichern — erst wenn die erste User-Nachricht kommt
   loadConvoList();
+  loadNotifications(false);
 }
 
 ge('convo-select').addEventListener('change', function() { loadConvo(this.value); });
 ge('convo-new').addEventListener('click', newConvo);
+
+/* ═══ Notifications ═══ */
+function notificationsPath() {
+  var path = '/api/notifications/' + modulId + '?include_read=true&limit=50';
+  if (currentConvoId) path += '&convo_id=' + encodeURIComponent(currentConvoId);
+  return path;
+}
+
+function formatNotificationTime(ts) {
+  if (!ts) return '';
+  try {
+    return new Date(ts * 1000).toLocaleString('de-DE', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+  } catch(e) {
+    return String(ts);
+  }
+}
+
+function updateNotificationBadge(unread) {
+  var badge = ge('notification-count');
+  unread = unread || 0;
+  badge.textContent = unread > 99 ? '99+' : String(unread);
+  if (unread > 0) badge.classList.add('visible');
+  else badge.classList.remove('visible');
+}
+
+function loadNotifications(markRead) {
+  if (!modulId) return;
+  apiFetch(notificationsPath()).then(function(r) { return r.json(); }).then(function(data) {
+    var items = data.notifications || [];
+    renderNotifications(items);
+    updateNotificationBadge(data.unread || 0);
+    maybeRefreshConvoFromNotifications(items);
+    if (markRead) {
+      var unreadIds = items.filter(function(n) { return !n.read; }).map(function(n) { return n.id; });
+      if (unreadIds.length) {
+        Promise.all(unreadIds.map(function(id) { return markNotificationRead(id); }))
+          .then(function() { loadNotifications(false); })
+          .catch(function() {});
+      }
+    }
+  }).catch(function() {});
+}
+
+function maybeRefreshConvoFromNotifications(items) {
+  if (streaming || !currentConvoId) return;
+  for (var i = 0; i < items.length; i++) {
+    var n = items[i];
+    if (n.read || n.convo_id !== currentConvoId) continue;
+    if ((n.source || '').indexOf('task:') !== 0 && n.title !== 'Aufgabe fertig') continue;
+    if (n.id === lastConvoRefreshNotificationId) return;
+    lastConvoRefreshNotificationId = n.id;
+    loadConvo(currentConvoId);
+    return;
+  }
+}
+
+function renderNotifications(items) {
+  var list = ge('notification-list');
+  list.innerHTML = '';
+  if (!items.length) {
+    list.innerHTML = '<div class="notification-empty">Keine Notifications</div>';
+    return;
+  }
+  items.forEach(function(n) {
+    var item = document.createElement('div');
+    item.className = 'notification-item' + (n.read ? '' : ' unread');
+
+    var top = document.createElement('div');
+    top.className = 'notification-top';
+    var title = document.createElement('div');
+    title.className = 'notification-title';
+    title.textContent = n.title || n.kind || 'Notification';
+    var actions = document.createElement('div');
+    actions.className = 'notification-actions';
+    var time = document.createElement('span');
+    time.className = 'notification-time';
+    time.textContent = formatNotificationTime(n.created_ts);
+    var del = document.createElement('button');
+    del.className = 'clear-btn';
+    del.style.cssText = 'font-size:10px;padding:1px 6px;color:var(--red);margin-left:0;';
+    del.title = 'Notification loeschen';
+    del.textContent = '×';
+    del.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      deleteNotification(n.id);
+    });
+    actions.appendChild(time);
+    actions.appendChild(del);
+    top.appendChild(title);
+    top.appendChild(actions);
+
+    var body = document.createElement('div');
+    body.className = 'notification-body';
+    body.textContent = n.body || '';
+    item.appendChild(top);
+    item.appendChild(body);
+    list.appendChild(item);
+  });
+}
+
+function markNotificationRead(id) {
+  return apiFetch('/api/notifications/' + modulId + '/' + encodeURIComponent(id), {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({read: true})
+  });
+}
+
+function deleteNotification(id) {
+  apiFetch('/api/notifications/' + modulId + '/' + encodeURIComponent(id), {method: 'DELETE'})
+    .then(function() { loadNotifications(false); });
+}
+
+ge('notification-btn').addEventListener('click', function() {
+  var panel = ge('notification-panel');
+  var open = panel.style.display === 'block';
+  ge('file-panel').style.display = 'none';
+  panel.style.display = open ? 'none' : 'block';
+  if (!open) loadNotifications(true);
+});
+ge('notifications-refresh').addEventListener('click', function() { loadNotifications(false); });
 
 /* ═══ INIT — Modul-ID aus URL (/chat/id) oder aus injiziertem Meta-Tag ═══ */
 (function() {
@@ -291,6 +452,9 @@ function loadModul() {
     ge('agent-avatar').textContent = name.charAt(0).toUpperCase();
     ge('agent-sub').textContent = mod.id + ' (' + mod.typ + ')';
     ge('status-dot').className = 'status-dot';
+    if (notificationPoll) clearInterval(notificationPoll);
+    loadNotifications(false);
+    notificationPoll = setInterval(function() { loadNotifications(false); }, 10000);
     // Conversations laden
     apiFetch('/api/convos/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
       var convos = data.conversations || [];
@@ -393,7 +557,7 @@ function send() {
   apiFetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ modul: modulId, messages: chatHistory })
+    body: JSON.stringify({ modul: modulId, convo_id: currentConvoId, messages: chatHistory })
   }).then(function(res) {
     if (!res.ok) return res.json().catch(function() { return { error: 'HTTP ' + res.status }; }).then(function(e) { throw new Error(e.error || 'HTTP ' + res.status); });
     var reader = res.body.getReader();
@@ -452,6 +616,7 @@ function send() {
     streaming = false;
     ge('send-btn').disabled = false; ge('send-btn').textContent = 'Senden';
     setStatus(null);
+    loadNotifications(false);
   });
 }
 
@@ -467,7 +632,8 @@ ge('input').addEventListener('input', function() { this.style.height = 'auto'; t
 /* ═══ File Explorer ═══ */
 ge('files-btn').addEventListener('click', function() {
   var panel = ge('file-panel');
-  if (panel.style.display === 'none') {
+  ge('notification-panel').style.display = 'none';
+  if (panel.style.display === 'none' || !panel.style.display) {
     panel.style.display = 'block';
     loadFileTree();
   } else {

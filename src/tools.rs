@@ -40,6 +40,21 @@ pub fn tools_for_module(modul: &ModulConfig) -> Vec<ToolDef> {
 
     match modul.typ.as_str() {
         "chat" => {
+            tools.push(ToolDef {
+                name: "notification.send".into(),
+                description: "Sendet eine interne Plattform-Notification an die Chat-Glocke, statt Statusprosa in den Chat zu schreiben".into(),
+                params: vec!["title".into(), "message".into()],
+            });
+            tools.push(ToolDef {
+                name: "notification.read".into(),
+                description: "Liest die letzten internen Notifications dieses Agents".into(),
+                params: vec!["limit".into()],
+            });
+            tools.push(ToolDef {
+                name: "notification.delete".into(),
+                description: "Loescht eine interne Notification anhand ihrer ID".into(),
+                params: vec!["notification_id".into()],
+            });
             if perms.iter().any(|p| p == "aufgaben") {
                 tools.push(ToolDef {
                     name: "aufgaben.erstellen".into(),
@@ -496,7 +511,8 @@ pub fn tools_prompt(modul: &ModulConfig) -> String {
                 "Beispiele:\n\
                  - 'merk dir X' → <tool>rag.speichern(X)</tool>\n\
                  - 'was weisst du über Y' → <tool>rag.suchen(Y)</tool>\n\
-                 - 'erstelle eine Aufgabe' → <tool>aufgaben.erstellen(modul, anweisung, sofort)</tool>\n\n");
+                 - 'erstelle eine Aufgabe' → <tool>aufgaben.erstellen(modul, anweisung, sofort)</tool>\n\
+                 - 'schick mir nur eine Statusmeldung' → <tool>notification.send(Status, Text der Meldung)</tool>\n\n");
         }
         "filesystem" => {
             prompt.push_str(
@@ -771,6 +787,9 @@ pub async fn execute_tool(
             | "http.get"
             | "shell.exec"
             | "notify.send"
+            | "notification.send"
+            | "notification.read"
+            | "notification.delete"
             | "agent.spawn"
     );
     if is_known_rust_tool && !has_permission(modul, tool_name) {
@@ -793,6 +812,66 @@ pub async fn execute_tool(
             let pool = modul.rag_pool.as_deref().unwrap_or("shared");
             // Embedding handled by caller (cycle.rs/web.rs) when embedding_backend is configured
             modules::rag::speichern(&pipeline.base, pool, text, None, None).await
+        }
+
+        // Interne Chat/Agent Notifications
+        "notification.send" => {
+            let title = params.first().map(|s| s.trim()).unwrap_or("");
+            let message = params.get(1).map(|s| s.trim()).unwrap_or("");
+            let (title, body) = if message.is_empty() {
+                (None, title)
+            } else {
+                (Some(title), message)
+            };
+            if body.is_empty() {
+                return ToolResult::fail("notification.send braucht eine Nachricht".into());
+            }
+            let source = format!("agent:{}", modul.id);
+            match pipeline.notification_add(
+                &modul.id,
+                None,
+                "agent",
+                title.filter(|s| !s.is_empty()),
+                body,
+                Some(&source),
+            ) {
+                Ok(id) => ToolResult::ok(format!("Notification gesendet: {}", id)),
+                Err(e) => ToolResult::fail(format!("Notification fehlgeschlagen: {}", e)),
+            }
+        }
+        "notification.read" => {
+            let limit = params
+                .first()
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .unwrap_or(20)
+                .clamp(1, 100);
+            let items = pipeline.notification_list(&modul.id, None, true, limit);
+            if items.is_empty() {
+                return ToolResult::ok("Keine Notifications vorhanden.".into());
+            }
+            let mut out = format!("{} Notification(s):", items.len());
+            for item in items {
+                let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(item.created_ts, 0)
+                    .map(|dt| dt.to_rfc3339())
+                    .unwrap_or_else(|| item.created_ts.to_string());
+                let title = item.title.unwrap_or_else(|| item.kind.clone());
+                let state = if item.read { "read" } else { "unread" };
+                out.push_str(&format!(
+                    "\n- id={} [{}] {} | {} | {}",
+                    item.id, state, ts, title, item.body
+                ));
+            }
+            ToolResult::ok(out)
+        }
+        "notification.delete" => {
+            let notification_id = params.first().map(|s| s.trim()).unwrap_or("");
+            if notification_id.is_empty() {
+                return ToolResult::fail("notification.delete braucht notification_id".into());
+            }
+            match pipeline.notification_delete(&modul.id, notification_id) {
+                Ok(_) => ToolResult::ok(format!("Notification geloescht: {}", notification_id)),
+                Err(e) => ToolResult::fail(format!("Notification loeschen fehlgeschlagen: {}", e)),
+            }
         }
 
         // Aufgaben
@@ -1213,6 +1292,7 @@ fn tool_has_side_effect(tool_name: &str) -> bool {
         "web.search",
         "http.get",
         "rag.suchen",
+        "notification.read",
         "imap.search",
         "imap.read",
         "imap.list", // mail reads
@@ -1758,6 +1838,12 @@ fn has_permission(modul: &ModulConfig, tool_name: &str) -> bool {
         "notify.send" => {
             (typ_grants && modul.typ == "notify") || perms.iter().any(|p| p == "notify")
         }
+        "notification.send" | "notification.read" | "notification.delete" => {
+            (typ_grants && modul.typ == "chat")
+                || perms
+                    .iter()
+                    .any(|p| p == "notifications" || p == "notification.*")
+        }
         "agent.spawn" => {
             // Nur persistent modules mit expliziter agent.spawn-Berechtigung dürfen spawnen.
             modul.persistent && perms.iter().any(|p| p == "agent.spawn" || p == "agent.*")
@@ -2017,6 +2103,21 @@ mod tests {
             .collect();
         assert!(names.contains(&"rag.suchen".to_string()));
         assert!(names.contains(&"rag.speichern".to_string()));
+    }
+
+    #[test]
+    fn test_persistent_chat_gets_internal_notification_tools() {
+        let modul = make_modul("chat", vec![]);
+        assert!(has_permission(&modul, "notification.send"));
+        assert!(has_permission(&modul, "notification.read"));
+        assert!(has_permission(&modul, "notification.delete"));
+        let names: Vec<String> = tools_for_module(&modul)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(&"notification.send".to_string()));
+        assert!(names.contains(&"notification.read".to_string()));
+        assert!(names.contains(&"notification.delete".to_string()));
     }
 
     #[test]

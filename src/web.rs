@@ -134,6 +134,9 @@ fn tool_arguments_json_for_history(
     let fallback_keys: &[&str] = match tool_name {
         "rag.suchen" | "duckduckgo.search" | "web.search" | "tavily.search" => &["query"],
         "rag.speichern" | "notify.send" => &["text"],
+        "notification.send" => &["title", "message"],
+        "notification.read" => &["limit"],
+        "notification.delete" => &["notification_id"],
         "browser.fetch" | "http.get" => &["url"],
         "files.read" | "files.list" => &["path"],
         "files.write" => &["path", "content"],
@@ -767,6 +770,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/convos/{modul_id}", axum::routing::get(list_convos))
         .route(
+            "/api/notifications/{modul_id}",
+            axum::routing::get(list_notifications).post(create_notification),
+        )
+        .route(
+            "/api/notifications/{modul_id}/{notification_id}",
+            axum::routing::patch(mark_notification_read).delete(delete_notification),
+        )
+        .route(
             "/api/convos/{modul_id}/{convo_id}",
             axum::routing::get(load_convo),
         )
@@ -930,6 +941,14 @@ pub fn chat_router(state: Arc<AppState>, modul_id: String) -> Router {
             axum::routing::delete(clear_home),
         )
         .route("/api/convos/{modul_id}", axum::routing::get(list_convos))
+        .route(
+            "/api/notifications/{modul_id}",
+            axum::routing::get(list_notifications).post(create_notification),
+        )
+        .route(
+            "/api/notifications/{modul_id}/{notification_id}",
+            axum::routing::patch(mark_notification_read).delete(delete_notification),
+        )
         .route(
             "/api/convos/{modul_id}/{convo_id}",
             axum::routing::get(load_convo),
@@ -1330,6 +1349,21 @@ async fn restart_aufgabe(
                         LogTyp::Warning,
                         "Aufgabe manuell neu gestartet",
                     );
+                    if let Some(route) = a.zurueck_an.as_deref() {
+                        if let Some((chat_modul, convo_id)) = util::parse_chat_route(route) {
+                            let _ = s.pipeline.notification_add(
+                                &chat_modul,
+                                convo_id.as_deref(),
+                                "system",
+                                Some("Aufgabe neu gestartet"),
+                                &format!(
+                                    "Task {} wurde neu gestartet. Das Ergebnis wird wieder in diesem Chat landen.",
+                                    id
+                                ),
+                                Some("task.restart"),
+                            );
+                        }
+                    }
                     s.pipeline
                         .audit("task.restart", "admin", &format!("task={}", id));
                     Json(serde_json::json!({"ok": true}))
@@ -1372,6 +1406,7 @@ async fn chat(
 
     let user_messages = body["messages"].clone();
     let modul_id_raw = body["modul"].as_str().unwrap_or("").to_string();
+    let convo_id = body["convo_id"].as_str().and_then(safe_id);
     let modul_id = if modul_id_raw.is_empty() {
         String::new()
     } else {
@@ -1485,7 +1520,9 @@ async fn chat(
         &last_user_msg,
         &modul_id,
         &format!("chat:{}", modul_id),
-        None, // NO routing for chat tasks -- result goes via HTTP stream
+        convo_id
+            .as_ref()
+            .map(|cid| format!("chat:{}:{}", modul_id, cid)),
     );
     if let Some(m) = modul_for_tools.as_ref() {
         main_aufgabe = main_aufgabe.with_timeout_s(m.timeout_s);
@@ -3107,6 +3144,124 @@ async fn delete_convo(
         return Json(serde_json::json!({"ok": false, "error": "Ungültige convo-ID"}));
     };
     match s.pipeline.convo_delete(&modul_id, &convo_id) {
+        Ok(_) => Json(serde_json::json!({"ok": true})),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct NotificationQuery {
+    convo_id: Option<String>,
+    include_read: Option<bool>,
+    limit: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct NotificationCreateBody {
+    convo_id: Option<String>,
+    kind: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
+    message: Option<String>,
+    source: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct NotificationReadBody {
+    read: Option<bool>,
+}
+
+async fn list_notifications(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Path(modul_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<NotificationQuery>,
+) -> Json<serde_json::Value> {
+    let Some(modul_id) = safe_id(&modul_id) else {
+        return Json(serde_json::json!({"notifications": [], "error": "Ungültige modul-ID"}));
+    };
+    let convo_id = query.convo_id.as_deref().and_then(safe_id);
+    let include_read = query.include_read.unwrap_or(true);
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let items = s
+        .pipeline
+        .notification_list(&modul_id, convo_id.as_deref(), include_read, limit);
+    let unread = items.iter().filter(|n| !n.read).count();
+    Json(serde_json::json!({"notifications": items, "unread": unread}))
+}
+
+async fn create_notification(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Path(modul_id): axum::extract::Path<String>,
+    Json(body): Json<NotificationCreateBody>,
+) -> Json<serde_json::Value> {
+    let Some(modul_id) = safe_id(&modul_id) else {
+        return Json(serde_json::json!({"ok": false, "error": "Ungültige modul-ID"}));
+    };
+    let convo_id = body.convo_id.as_deref().and_then(safe_id);
+    let message = body
+        .body
+        .as_deref()
+        .or(body.message.as_deref())
+        .unwrap_or("")
+        .trim();
+    if message.is_empty() {
+        return Json(serde_json::json!({"ok": false, "error": "Notification ohne Text"}));
+    }
+    let kind = body.kind.as_deref().unwrap_or("system").trim();
+    let title = body
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let source = body
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match s.pipeline.notification_add(
+        &modul_id,
+        convo_id.as_deref(),
+        if kind.is_empty() { "system" } else { kind },
+        title,
+        message,
+        source,
+    ) {
+        Ok(id) => Json(serde_json::json!({"ok": true, "id": id})),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+async fn mark_notification_read(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Path((modul_id, notification_id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<NotificationReadBody>,
+) -> Json<serde_json::Value> {
+    let Some(modul_id) = safe_id(&modul_id) else {
+        return Json(serde_json::json!({"ok": false, "error": "Ungültige modul-ID"}));
+    };
+    let Some(notification_id) = safe_id(&notification_id) else {
+        return Json(serde_json::json!({"ok": false, "error": "Ungültige notification-ID"}));
+    };
+    match s
+        .pipeline
+        .notification_mark_read(&modul_id, &notification_id, body.read.unwrap_or(true))
+    {
+        Ok(_) => Json(serde_json::json!({"ok": true})),
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+async fn delete_notification(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Path((modul_id, notification_id)): axum::extract::Path<(String, String)>,
+) -> Json<serde_json::Value> {
+    let Some(modul_id) = safe_id(&modul_id) else {
+        return Json(serde_json::json!({"ok": false, "error": "Ungültige modul-ID"}));
+    };
+    let Some(notification_id) = safe_id(&notification_id) else {
+        return Json(serde_json::json!({"ok": false, "error": "Ungültige notification-ID"}));
+    };
+    match s.pipeline.notification_delete(&modul_id, &notification_id) {
         Ok(_) => Json(serde_json::json!({"ok": true})),
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
     }

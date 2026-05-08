@@ -325,6 +325,96 @@ impl Pipeline {
             .map_err(|e| std::io::Error::other(e))
     }
 
+    // ═══════════════════ Notifications (SQLite) ═══════════════════
+
+    pub fn notification_add(
+        &self,
+        modul_id: &str,
+        convo_id: Option<&str>,
+        kind: &str,
+        title: Option<&str>,
+        body: &str,
+        source: Option<&str>,
+    ) -> std::io::Result<String> {
+        let safe_mid = safe_id(modul_id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "ungültige modul-ID")
+        })?;
+        let safe_cid = match convo_id {
+            Some(cid) if !cid.trim().is_empty() => Some(safe_id(cid).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "ungültige convo-ID")
+            })?),
+            _ => None,
+        };
+        crate::store::notification_create(
+            &self.store.pool,
+            &safe_mid,
+            safe_cid.as_deref(),
+            kind,
+            title,
+            body,
+            source,
+        )
+        .map_err(|e| std::io::Error::other(e))
+    }
+
+    pub fn notification_list(
+        &self,
+        modul_id: &str,
+        convo_id: Option<&str>,
+        include_read: bool,
+        limit: usize,
+    ) -> Vec<crate::types::NotificationItem> {
+        let Some(safe_mid) = safe_id(modul_id) else {
+            return vec![];
+        };
+        let safe_cid = convo_id.and_then(safe_id);
+        crate::store::notification_list(
+            &self.store.pool,
+            &safe_mid,
+            safe_cid.as_deref(),
+            include_read,
+            limit,
+        )
+        .unwrap_or_default()
+    }
+
+    pub fn notification_mark_read(
+        &self,
+        modul_id: &str,
+        notification_id: &str,
+        read: bool,
+    ) -> std::io::Result<()> {
+        let safe_mid = safe_id(modul_id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "ungültige modul-ID")
+        })?;
+        let safe_id = safe_id(notification_id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "ungültige notification-ID",
+            )
+        })?;
+        crate::store::notification_mark_read(&self.store.pool, &safe_mid, &safe_id, read)
+            .map_err(|e| std::io::Error::other(e))
+    }
+
+    pub fn notification_delete(
+        &self,
+        modul_id: &str,
+        notification_id: &str,
+    ) -> std::io::Result<()> {
+        let safe_mid = safe_id(modul_id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "ungültige modul-ID")
+        })?;
+        let safe_id = safe_id(notification_id).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "ungültige notification-ID",
+            )
+        })?;
+        crate::store::notification_delete(&self.store.pool, &safe_mid, &safe_id)
+            .map_err(|e| std::io::Error::other(e))
+    }
+
     // ═══════════════════ Audit-Log (jetzt in SQL, append-only via Trigger) ═══════════════════
 
     pub fn audit(&self, action: &str, actor: &str, detail: &str) {

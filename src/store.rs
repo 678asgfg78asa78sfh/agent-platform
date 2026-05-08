@@ -192,6 +192,21 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 CREATE INDEX IF NOT EXISTS idx_convos_updated ON conversations(modul_id, updated_ts DESC);
 
+-- ══════════ Internal Chat/Agent Notifications ══════════
+CREATE TABLE IF NOT EXISTS notifications (
+    id              TEXT PRIMARY KEY,
+    modul_id        TEXT NOT NULL,
+    convo_id        TEXT,
+    kind            TEXT NOT NULL,
+    title           TEXT,
+    body            TEXT NOT NULL,
+    source          TEXT,
+    read            INTEGER NOT NULL DEFAULT 0,
+    created_ts      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_module_created ON notifications(modul_id, created_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_module_read ON notifications(modul_id, read, created_ts DESC);
+
 -- ══════════ Schema-Version (Migration-Marker) ══════════
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
@@ -1108,6 +1123,119 @@ pub fn convo_delete(pool: &SqlitePool, modul_id: &str, convo_id: &str) -> StoreR
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Notifications
+// ═══════════════════════════════════════════════════════════════════════════
+
+fn notification_from_row(row: &rusqlite::Row) -> rusqlite::Result<crate::types::NotificationItem> {
+    Ok(crate::types::NotificationItem {
+        id: row.get("id")?,
+        modul_id: row.get("modul_id")?,
+        convo_id: row.get("convo_id")?,
+        kind: row.get("kind")?,
+        title: row.get("title")?,
+        body: row.get("body")?,
+        source: row.get("source")?,
+        read: row.get::<_, i64>("read")? != 0,
+        created_ts: row.get("created_ts")?,
+    })
+}
+
+pub fn notification_create(
+    pool: &SqlitePool,
+    modul_id: &str,
+    convo_id: Option<&str>,
+    kind: &str,
+    title: Option<&str>,
+    body: &str,
+    source: Option<&str>,
+) -> StoreResult<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let conn = pool.get().map_err(e("pool"))?;
+    conn.execute(
+        "INSERT INTO notifications (id, modul_id, convo_id, kind, title, body, source, read, created_ts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8)",
+        params![id, modul_id, convo_id, kind, title, body, source, now],
+    )
+    .map_err(e("notification_create"))?;
+    Ok(id)
+}
+
+pub fn notification_list(
+    pool: &SqlitePool,
+    modul_id: &str,
+    convo_id: Option<&str>,
+    include_read: bool,
+    limit: usize,
+) -> StoreResult<Vec<crate::types::NotificationItem>> {
+    let limit = limit.clamp(1, 200) as i64;
+    let conn = pool.get().map_err(e("pool"))?;
+    let read_filter = if include_read { "" } else { " AND read=0" };
+    if let Some(convo_id) = convo_id {
+        let sql = format!(
+            "SELECT id, modul_id, convo_id, kind, title, body, source, read, created_ts
+             FROM notifications
+             WHERE modul_id=?1 AND (convo_id IS NULL OR convo_id=?2){}
+             ORDER BY created_ts DESC
+             LIMIT ?3",
+            read_filter
+        );
+        let mut stmt = conn.prepare_cached(&sql).map_err(e("prepare"))?;
+        let rows = stmt
+            .query_map(params![modul_id, convo_id, limit], notification_from_row)
+            .map_err(e("query"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(e("collect"))?;
+        Ok(rows)
+    } else {
+        let sql = format!(
+            "SELECT id, modul_id, convo_id, kind, title, body, source, read, created_ts
+             FROM notifications
+             WHERE modul_id=?1{}
+             ORDER BY created_ts DESC
+             LIMIT ?2",
+            read_filter
+        );
+        let mut stmt = conn.prepare_cached(&sql).map_err(e("prepare"))?;
+        let rows = stmt
+            .query_map(params![modul_id, limit], notification_from_row)
+            .map_err(e("query"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(e("collect"))?;
+        Ok(rows)
+    }
+}
+
+pub fn notification_mark_read(
+    pool: &SqlitePool,
+    modul_id: &str,
+    notification_id: &str,
+    read: bool,
+) -> StoreResult<()> {
+    let conn = pool.get().map_err(e("pool"))?;
+    conn.execute(
+        "UPDATE notifications SET read=?1 WHERE modul_id=?2 AND id=?3",
+        params![if read { 1 } else { 0 }, modul_id, notification_id],
+    )
+    .map_err(e("notification_mark_read"))?;
+    Ok(())
+}
+
+pub fn notification_delete(
+    pool: &SqlitePool,
+    modul_id: &str,
+    notification_id: &str,
+) -> StoreResult<()> {
+    let conn = pool.get().map_err(e("pool"))?;
+    conn.execute(
+        "DELETE FROM notifications WHERE modul_id=?1 AND id=?2",
+        params![modul_id, notification_id],
+    )
+    .map_err(e("notification_delete"))?;
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Store handle (Arc-wrapper für Axum/Orchestrator)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1241,6 +1369,38 @@ mod tests {
         let got = idempotency_get(&pool, &key).unwrap().unwrap();
         assert!(got.0);
         assert_eq!(got.1, "output");
+    }
+
+    #[test]
+    fn notification_roundtrip_marks_and_deletes() {
+        let pool = in_memory_pool();
+        let id = notification_create(
+            &pool,
+            "chat.test",
+            Some("abc123"),
+            "system",
+            Some("Titel"),
+            "Body",
+            Some("test"),
+        )
+        .unwrap();
+
+        let unread = notification_list(&pool, "chat.test", Some("abc123"), false, 10).unwrap();
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].id, id);
+        assert!(!unread[0].read);
+
+        notification_mark_read(&pool, "chat.test", &id, true).unwrap();
+        let unread = notification_list(&pool, "chat.test", Some("abc123"), false, 10).unwrap();
+        assert!(unread.is_empty());
+
+        let all = notification_list(&pool, "chat.test", Some("abc123"), true, 10).unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].read);
+
+        notification_delete(&pool, "chat.test", &id).unwrap();
+        let all = notification_list(&pool, "chat.test", Some("abc123"), true, 10).unwrap();
+        assert!(all.is_empty());
     }
 
     #[test]
