@@ -803,7 +803,8 @@ pub async fn execute_tool(
 
             if anweisung.is_empty() && !target_modul.is_empty() {
                 // Only one param given — treat it as anweisung for own module
-                let aufgabe = Aufgabe::neu(&modul.id, target_modul, wann, &modul.name);
+                let aufgabe = Aufgabe::neu(&modul.id, target_modul, wann, &modul.name)
+                    .with_timeout_s(modul.timeout_s);
                 match pipeline.speichern(&aufgabe) {
                     Ok(_) => ToolResult::ok(format!(
                         "Aufgabe erstellt: {} fuer Modul '{}'",
@@ -828,7 +829,14 @@ pub async fn execute_tool(
                         ));
                     }
                 }
-                let aufgabe = Aufgabe::neu(target, anweisung, wann, &modul.name);
+                let target_timeout = config
+                    .module
+                    .iter()
+                    .find(|m| m.id == target || m.name == target)
+                    .map(|m| m.timeout_s)
+                    .unwrap_or(modul.timeout_s);
+                let aufgabe = Aufgabe::neu(target, anweisung, wann, &modul.name)
+                    .with_timeout_s(target_timeout);
                 match pipeline.speichern(&aufgabe) {
                     Ok(_) => ToolResult::ok(format!(
                         "Aufgabe erstellt: {} fuer Modul '{}'",
@@ -1095,7 +1103,8 @@ pub async fn execute_tool(
                 &temp_id,
                 &modul.id,
                 Some(modul.id.clone()), // route result back to creator
-            );
+            )
+            .with_timeout_s(basis.timeout_s);
             let aufgabe_id = aufgabe.id.clone();
 
             // We can't modify config here (we only have &AgentConfig), so we store

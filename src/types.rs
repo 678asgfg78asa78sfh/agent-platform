@@ -313,6 +313,11 @@ pub struct AufgabeVersion {
 }
 
 impl Aufgabe {
+    pub fn with_timeout_s(mut self, timeout_s: u64) -> Self {
+        self.timeout_s = timeout_s.max(30);
+        self
+    }
+
     /// Erstellt eine Direct-Aufgabe (Tool direkt, kein LLM)
     pub fn direct(
         tool: &str,

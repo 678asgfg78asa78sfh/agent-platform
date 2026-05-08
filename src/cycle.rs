@@ -4,12 +4,46 @@ use crate::tools;
 use crate::types::*;
 use crate::util;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicI64, Ordering},
+};
 use tokio::sync::RwLock;
 
 const MAX_TOOL_ROUNDS: usize = 30;
 const MAX_TASK_TOOL_RESULT_CHARS: usize = 4000;
 const MAX_TASK_OLD_TOOL_RESULT_CHARS: usize = 500;
+const MIN_TASK_IDLE_TIMEOUT_S: u64 = 30;
+
+type ActivityMarker = Arc<AtomicI64>;
+
+fn now_ts() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn mark_activity(activity: &Option<ActivityMarker>) {
+    if let Some(marker) = activity {
+        marker.store(now_ts(), Ordering::Relaxed);
+    }
+}
+
+fn idle_timed_out(last_activity_ts: i64, now_ts: i64, timeout_secs: u64) -> bool {
+    now_ts.saturating_sub(last_activity_ts) >= timeout_secs.max(MIN_TASK_IDLE_TIMEOUT_S) as i64
+}
+
+async fn wait_for_idle_timeout(activity: ActivityMarker, timeout_secs: u64) {
+    let timeout_secs = timeout_secs.max(MIN_TASK_IDLE_TIMEOUT_S);
+    loop {
+        let now = now_ts();
+        let last = activity.load(Ordering::Relaxed);
+        if idle_timed_out(last, now, timeout_secs) {
+            return;
+        }
+        let elapsed = now.saturating_sub(last).max(0) as u64;
+        let sleep_s = timeout_secs.saturating_sub(elapsed).clamp(1, 5);
+        tokio::time::sleep(std::time::Duration::from_secs(sleep_s)).await;
+    }
+}
 
 fn task_tool_result_for_llm(ok: bool, data: &str) -> String {
     let body = if data.chars().count() > MAX_TASK_TOOL_RESULT_CHARS {
@@ -515,7 +549,14 @@ impl Orchestrator {
                         .cron_anweisung
                         .as_deref()
                         .unwrap_or("Cron task");
-                    let aufgabe = Aufgabe::llm_call(anweisung, target, &modul.id, None);
+                    let target_timeout = cfg
+                        .module
+                        .iter()
+                        .find(|m| m.id == target || m.name == target)
+                        .map(|m| m.timeout_s)
+                        .unwrap_or(modul.timeout_s);
+                    let aufgabe = Aufgabe::llm_call(anweisung, target, &modul.id, None)
+                        .with_timeout_s(target_timeout);
                     if self.pipeline.speichern(&aufgabe).is_ok() {
                         self.pipeline.log(
                             "cron",
@@ -988,10 +1029,11 @@ impl ModulScheduler {
         let aufgabe_modul_outer = aufgabe.modul.clone();
 
         let join = tokio::spawn(async move {
-            let timeout_duration = std::time::Duration::from_secs(aufgabe.timeout_s.max(30));
+            let idle_timeout_s = aufgabe.timeout_s.max(MIN_TASK_IDLE_TIMEOUT_S);
             let aufgabe_id = aufgabe.id.clone();
             let aufgabe_modul = aufgabe.modul.clone();
             let aufgabe_timeout = aufgabe.timeout_s;
+            let aufgabe_typ = aufgabe.typ.clone();
 
             // RAII-Cleanup-Guard. Räumt busy + handles IMMER auf — egal ob
             // exec_llm normal returned, timeout fired, oder ein Panic hochkommt
@@ -1005,9 +1047,11 @@ impl ModulScheduler {
                 aufgabe_id.clone(),
             );
 
-            let timed_out = tokio::time::timeout(timeout_duration, async {
-                match aufgabe.typ {
-                    AufgabeTyp::Direct => {
+            let timed_out = match aufgabe_typ {
+                AufgabeTyp::Direct => {
+                    let timeout_duration = std::time::Duration::from_secs(idle_timeout_s);
+                    tokio::time::timeout(
+                        timeout_duration,
                         exec_direct(
                             &mut aufgabe,
                             &pipeline,
@@ -1015,11 +1059,15 @@ impl ModulScheduler {
                             &llm,
                             &py_modules,
                             &py_pool,
-                        )
-                        .await
-                    }
-                    AufgabeTyp::LlmCall => {
-                        exec_llm(
+                        ),
+                    )
+                    .await
+                    .is_err()
+                }
+                AufgabeTyp::LlmCall => {
+                    let activity = Arc::new(AtomicI64::new(now_ts()));
+                    tokio::select! {
+                        _ = exec_llm(
                             &mut aufgabe,
                             &pipeline,
                             &config,
@@ -1027,33 +1075,40 @@ impl ModulScheduler {
                             &py_modules,
                             &py_pool,
                             &tokens,
-                        )
-                        .await
-                    }
-                    AufgabeTyp::ChatReply => {
-                        aufgabe.ergebnis = Some(aufgabe.anweisung.clone());
-                        if let Err(e) = pipeline.verschieben(&mut aufgabe, AufgabeStatus::Success) {
-                            pipeline.log(
-                                "cycle",
-                                Some(&aufgabe.id),
-                                LogTyp::Error,
-                                &format!("Verschieben failed: {e}"),
-                            );
-                        }
+                            Some(activity.clone()),
+                        ) => false,
+                        _ = wait_for_idle_timeout(activity, idle_timeout_s) => true,
                     }
                 }
-            })
-            .await;
+                AufgabeTyp::ChatReply => {
+                    aufgabe.ergebnis = Some(aufgabe.anweisung.clone());
+                    if let Err(e) = pipeline.verschieben(&mut aufgabe, AufgabeStatus::Success) {
+                        pipeline.log(
+                            "cycle",
+                            Some(&aufgabe.id),
+                            LogTyp::Error,
+                            &format!("Verschieben failed: {e}"),
+                        );
+                    }
+                    false
+                }
+            };
 
-            if timed_out.is_err() {
+            if timed_out {
                 pipeline.log(
                     "cycle",
                     Some(&aufgabe_id),
                     LogTyp::Error,
-                    &format!("Task timeout nach {}s — abgebrochen", aufgabe_timeout),
+                    &format!(
+                        "Task idle-timeout nach {}s ohne Fortschritt — abgebrochen",
+                        aufgabe_timeout.max(MIN_TASK_IDLE_TIMEOUT_S)
+                    ),
                 );
                 if let Ok(Some(mut failed)) = pipeline.laden_by_id(&aufgabe_id) {
-                    failed.ergebnis = Some(format!("FAILED: Timeout nach {}s", aufgabe_timeout));
+                    failed.ergebnis = Some(format!(
+                        "FAILED: Idle-Timeout nach {}s ohne Fortschritt",
+                        aufgabe_timeout.max(MIN_TASK_IDLE_TIMEOUT_S)
+                    ));
                     if let Err(e) = pipeline.verschieben(&mut failed, AufgabeStatus::Failed) {
                         pipeline.log(
                             "cycle",
@@ -1370,7 +1425,9 @@ async fn exec_llm(
     py_modules: &Arc<RwLock<Vec<crate::loader::PyModuleMeta>>>,
     py_pool: &Arc<crate::loader::PyProcessPool>,
     tokens: &crate::web::TokenTracker,
+    activity: Option<ActivityMarker>,
 ) {
+    mark_activity(&activity);
     let cfg = config.read().await;
     let modul = cfg
         .module
@@ -1532,6 +1589,7 @@ async fn exec_llm(
 
         match result {
             Ok((response, mut raw_data)) => {
+                mark_activity(&activity);
                 // Token tracking lokal (Modul-Budget) + global (USD-Cap über web::track_tokens).
                 let input_tokens = raw_data
                     .pointer("/usage/prompt_tokens")
@@ -1747,6 +1805,7 @@ async fn exec_llm(
                                 }
                                 return;
                             } else {
+                                mark_activity(&activity);
                                 let feedback = crate::guardrail::synth_feedback_user_message(
                                     &errors,
                                     max_retries_for_backend,
@@ -1785,6 +1844,7 @@ async fn exec_llm(
                 .or_else(|| tools::parse_tool_call(&response));
 
                 if let Some((tool_name, params)) = tool_call {
+                    mark_activity(&activity);
                     tool_round += 1;
                     pipeline.log(
                         &modul.name,
@@ -1852,6 +1912,7 @@ async fn exec_llm(
                             util::safe_truncate(&tool_result.1, 100)
                         ),
                     );
+                    mark_activity(&activity);
 
                     let call_id = raw_data
                         .pointer("/choices/0/message/tool_calls/0/id")
@@ -1887,6 +1948,7 @@ async fn exec_llm(
                     }
                     continue;
                 } else {
+                    mark_activity(&activity);
                     final_answer = response;
                     break;
                 }
@@ -2161,5 +2223,17 @@ mod tests {
         let result = task_tool_result_for_llm(false, "Datei existiert nicht");
         assert!(result.starts_with("FAILED: "));
         assert!(result.contains("NEXT:"));
+    }
+
+    #[test]
+    fn idle_timeout_uses_last_activity_not_task_start() {
+        assert!(idle_timed_out(100, 160, 60));
+        assert!(!idle_timed_out(140, 160, 60));
+    }
+
+    #[test]
+    fn idle_timeout_has_minimum_floor() {
+        assert!(!idle_timed_out(100, 120, 1));
+        assert!(idle_timed_out(100, 130, 1));
     }
 }

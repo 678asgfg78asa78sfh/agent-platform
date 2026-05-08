@@ -1309,6 +1309,18 @@ async fn restart_aufgabe(
             }
 
             a.retry_count = 0;
+            if a.typ == AufgabeTyp::LlmCall {
+                let cfg = s.config.read().await;
+                if let Some(configured_timeout) = cfg
+                    .module
+                    .iter()
+                    .find(|m| m.id == a.modul || m.name == a.modul)
+                    .map(|m| m.timeout_s)
+                {
+                    a.timeout_s = a.timeout_s.max(configured_timeout).max(30);
+                }
+                drop(cfg);
+            }
             a.ergebnis = None;
             match s.pipeline.reschedule(&mut a, "sofort".into()) {
                 Ok(_) => {
@@ -1475,6 +1487,9 @@ async fn chat(
         &format!("chat:{}", modul_id),
         None, // NO routing for chat tasks -- result goes via HTTP stream
     );
+    if let Some(m) = modul_for_tools.as_ref() {
+        main_aufgabe = main_aufgabe.with_timeout_s(m.timeout_s);
+    }
     main_aufgabe.status = AufgabeStatus::Gestartet;
     main_aufgabe.gestartet = Some(chrono::Utc::now());
     let main_id = main_aufgabe.id.clone();
@@ -3321,7 +3336,16 @@ async fn trigger_cron(
                 .cron_anweisung
                 .as_deref()
                 .unwrap_or("Cron task");
-            let aufgabe = crate::types::Aufgabe::llm_call(anweisung, target, &modul.id, None);
+            let cfg = s.config.read().await;
+            let target_timeout = cfg
+                .module
+                .iter()
+                .find(|m| m.id == target || m.name == target)
+                .map(|m| m.timeout_s)
+                .unwrap_or(modul.timeout_s);
+            drop(cfg);
+            let aufgabe = crate::types::Aufgabe::llm_call(anweisung, target, &modul.id, None)
+                .with_timeout_s(target_timeout);
             let id = aufgabe.id.clone();
             match s.pipeline.speichern(&aufgabe) {
                 Ok(_) => Json(serde_json::json!({"ok": true, "task_id": id})),
