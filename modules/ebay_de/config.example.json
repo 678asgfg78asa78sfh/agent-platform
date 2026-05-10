@@ -1,0 +1,12 @@
+{
+  "client_id": "EBAY_APP_CLIENT_ID_OPTIONAL",
+  "client_secret": "EBAY_APP_CLIENT_SECRET_OPTIONAL",
+  "access_token": "",
+  "marketplace_id": "EBAY_DE",
+  "country": "DE",
+  "zip": "",
+  "max_results": 50,
+  "prefer_api": true,
+  "allow_public_html": true,
+  "request_timeout_s": 20
+}
