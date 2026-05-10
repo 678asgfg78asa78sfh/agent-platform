@@ -18,6 +18,12 @@ pub fn openai_compat_endpoint(base_url: &str, path: &str) -> String {
     }
 }
 
+pub fn deepseek_endpoint(base_url: &str, path: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    format!("{}/{}", base, path)
+}
+
 fn provider_safe_name(name: &str) -> String {
     let mut out = String::new();
     for ch in name.chars() {
@@ -149,6 +155,61 @@ fn provider_safe_messages(
             msg
         })
         .collect()
+}
+
+fn apply_reasoning_config(body: &mut serde_json::Value, backend: &LlmBackend) {
+    if let Some(reasoning) = backend.reasoning.as_ref().and_then(|r| r.request_json()) {
+        body["reasoning"] = reasoning;
+    }
+}
+
+fn normalized_reasoning_effort(effort: Option<&str>) -> Option<&'static str> {
+    match effort.map(str::trim).map(str::to_lowercase).as_deref() {
+        Some("none") | Some("off") | Some("disabled") => Some("none"),
+        Some("minimal") => Some("minimal"),
+        Some("low") => Some("low"),
+        Some("medium") => Some("medium"),
+        Some("high") => Some("high"),
+        Some("xhigh") => Some("xhigh"),
+        Some("max") => Some("max"),
+        _ => None,
+    }
+}
+
+fn deepseek_reasoning_effort(effort: Option<&str>) -> Option<&'static str> {
+    match normalized_reasoning_effort(effort) {
+        Some("xhigh") | Some("max") => Some("max"),
+        Some("minimal") | Some("low") | Some("medium") | Some("high") => Some("high"),
+        _ => None,
+    }
+}
+
+fn apply_deepseek_reasoning_config(body: &mut serde_json::Value, backend: &LlmBackend) {
+    let Some(reasoning) = backend.reasoning.as_ref() else {
+        return;
+    };
+    let normalized_effort = normalized_reasoning_effort(reasoning.effort.as_deref());
+    let disabled = reasoning.enabled == Some(false) || normalized_effort == Some("none");
+    if disabled {
+        body["thinking"] = serde_json::json!({"type": "disabled"});
+        return;
+    }
+    let should_enable = reasoning.enabled == Some(true)
+        || reasoning.max_tokens.filter(|v| *v > 0).is_some()
+        || normalized_effort.is_some();
+    if should_enable {
+        body["thinking"] = serde_json::json!({"type": "enabled"});
+    }
+    if let Some(effort) = deepseek_reasoning_effort(reasoning.effort.as_deref()) {
+        body["reasoning_effort"] = serde_json::json!(effort);
+    }
+}
+
+fn apply_provider_reasoning_config(body: &mut serde_json::Value, backend: &LlmBackend) {
+    match backend.typ {
+        LlmTyp::DeepSeek => apply_deepseek_reasoning_config(body, backend),
+        _ => apply_reasoning_config(body, backend),
+    }
 }
 
 fn restore_provider_tool_names(
@@ -338,15 +399,20 @@ impl LlmRouter {
                 }
                 Ok(accumulated)
             }
-            LlmTyp::OpenAICompat | LlmTyp::Grok => {
+            LlmTyp::OpenAICompat | LlmTyp::Grok | LlmTyp::DeepSeek => {
                 let key = backend.api_key.as_deref().unwrap_or("");
                 let safe_messages = provider_safe_messages(messages, &HashMap::new());
                 let mut body = serde_json::json!({"model": backend.model, "messages": safe_messages, "stream": true});
                 if let Some(max_tokens) = backend.max_tokens {
                     body["max_tokens"] = serde_json::json!(max_tokens);
                 }
+                apply_provider_reasoning_config(&mut body, &backend);
+                let endpoint = match backend.typ {
+                    LlmTyp::DeepSeek => deepseek_endpoint(&backend.url, "chat/completions"),
+                    _ => openai_compat_endpoint(&backend.url, "chat/completions"),
+                };
                 let resp = client
-                    .post(openai_compat_endpoint(&backend.url, "chat/completions"))
+                    .post(endpoint)
                     .header("Authorization", format!("Bearer {key}"))
                     .json(&body)
                     .send()
@@ -489,7 +555,7 @@ impl LlmRouter {
                     Ok((content, data))
                 }
             }
-            LlmTyp::OpenAICompat | LlmTyp::Grok => {
+            LlmTyp::OpenAICompat | LlmTyp::Grok | LlmTyp::DeepSeek => {
                 let key = backend.api_key.as_deref().unwrap_or("");
                 let (safe_tools, canonical_to_alias, alias_to_canonical) =
                     provider_safe_tools(tools);
@@ -499,10 +565,14 @@ impl LlmRouter {
                 if let Some(max_tokens) = backend.max_tokens {
                     body["max_tokens"] = serde_json::json!(max_tokens);
                 }
+                apply_provider_reasoning_config(&mut body, backend);
                 if !safe_tools.is_empty() {
                     body["tools"] = serde_json::json!(safe_tools);
                 }
-                let endpoint = openai_compat_endpoint(&backend.url, "chat/completions");
+                let endpoint = match backend.typ {
+                    LlmTyp::DeepSeek => deepseek_endpoint(&backend.url, "chat/completions"),
+                    _ => openai_compat_endpoint(&backend.url, "chat/completions"),
+                };
                 for attempt in 1..=OPENAI_COMPAT_EMPTY_BODY_RETRIES {
                     let resp = client
                         .post(&endpoint)
@@ -719,6 +789,7 @@ impl LlmRouter {
                     .collect()
             }
             LlmTyp::Anthropic => Err("Anthropic does not support embeddings directly".to_string()),
+            LlmTyp::DeepSeek => Err("DeepSeek does not support embeddings directly".to_string()),
         }
     }
 }
@@ -803,6 +874,50 @@ mod tests {
             openai_compat_endpoint("https://openrouter.ai/api", "models"),
             "https://openrouter.ai/api/v1/models"
         );
+        assert_eq!(
+            deepseek_endpoint("https://api.deepseek.com", "chat/completions"),
+            "https://api.deepseek.com/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_deepseek_reasoning_mapping() {
+        let mut body = serde_json::json!({"model": "deepseek-v4-pro", "messages": []});
+        let backend = LlmBackend {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            typ: LlmTyp::DeepSeek,
+            url: "https://api.deepseek.com".into(),
+            api_key: Some("x".into()),
+            model: "deepseek-v4-pro".into(),
+            timeout_s: 1,
+            identity: crate::types::ModulIdentity::default(),
+            max_tokens: None,
+            reasoning: Some(crate::types::LlmReasoningConfig {
+                enabled: None,
+                effort: Some("xhigh".into()),
+                max_tokens: None,
+                exclude: Some(true),
+            }),
+            cost_cap: None,
+            max_tool_rounds: None,
+            call_rate_limit: None,
+        };
+        apply_provider_reasoning_config(&mut body, &backend);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "max");
+
+        let mut body = serde_json::json!({});
+        let mut backend = backend;
+        backend.reasoning = Some(crate::types::LlmReasoningConfig {
+            enabled: Some(false),
+            effort: None,
+            max_tokens: None,
+            exclude: None,
+        });
+        apply_provider_reasoning_config(&mut body, &backend);
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -889,6 +1004,7 @@ mod tests {
             timeout_s: 1,
             identity: ModulIdentity::default(),
             max_tokens: None,
+            reasoning: None,
             cost_cap: None,
             max_tool_rounds: None,
             call_rate_limit: None,

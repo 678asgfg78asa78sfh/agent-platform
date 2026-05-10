@@ -88,6 +88,36 @@ h1 {
 }
 .fields input:focus { outline: none; border-color: #00aaff; }
 
+.model-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  flex-wrap: wrap;
+  margin: -0.2em 0 0.8em;
+  color: #8888aa;
+  font-size: 0.78em;
+}
+.model-tools input[type="search"] {
+  min-width: 240px;
+  flex: 1;
+  background: #0c0c22;
+  border: 1px solid #2a2a4a;
+  color: #e0e0f0;
+  padding: 0.45em 0.65em;
+  border-radius: 4px;
+  font-family: inherit;
+}
+.model-tools input[type="search"]:focus { outline: none; border-color: #00aaff; }
+.model-tools label {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35em;
+  white-space: nowrap;
+  color: #aab;
+}
+.model-count { color: #00ff88; white-space: nowrap; }
+
 .actions { display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap; }
 button {
   background: #00aaff;
@@ -179,12 +209,49 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
         <datalist id="models-openrouter"></datalist>
       </label>
     </div>
+    <div class="model-tools" data-preset="openrouter">
+      <input type="search" class="model-search" data-preset="openrouter" placeholder="Modelle durchsuchen">
+      <label><input type="checkbox" class="model-free-only" data-preset="openrouter"> <span class="model-free-text">Nur gratis</span></label>
+      <span class="model-count" data-preset="openrouter"></span>
+    </div>
     <div class="actions">
       <button class="models secondary" data-preset="openrouter" data-i18n="btn-load-models">Load models</button>
       <button class="test" data-preset="openrouter" data-i18n="btn-test">Test</button>
       <button class="save secondary" data-preset="openrouter" data-i18n="btn-save" disabled>Save &amp; continue</button>
     </div>
     <div class="result" data-preset="openrouter"></div>
+  </div>
+
+  <!-- DeepSeek -->
+  <div class="card" data-preset="deepseek">
+    <header>
+      <h2>DeepSeek</h2>
+      <span class="badge paid" data-i18n="badge-deepseek">PAID · direct API</span>
+    </header>
+    <div class="desc" data-i18n="desc-deepseek">
+      Direct DeepSeek API with native thinking controls. Uses <code>https://api.deepseek.com</code>;
+      get a key at <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a>.
+    </div>
+    <div class="fields">
+      <label data-i18n="lbl-api-key">API key
+        <input type="password" data-field="api_key" placeholder="sk-...">
+      </label>
+      <label data-i18n="lbl-model">Model
+        <input type="text" data-field="model" value="deepseek-v4-flash" list="models-deepseek">
+        <datalist id="models-deepseek"></datalist>
+      </label>
+    </div>
+    <div class="model-tools" data-preset="deepseek">
+      <input type="search" class="model-search" data-preset="deepseek" placeholder="Modelle durchsuchen">
+      <label><input type="checkbox" class="model-free-only" data-preset="deepseek"> <span class="model-free-text">Nur gratis</span></label>
+      <span class="model-count" data-preset="deepseek"></span>
+    </div>
+    <div class="actions">
+      <button class="models secondary" data-preset="deepseek" data-i18n="btn-load-models">Load models</button>
+      <button class="test" data-preset="deepseek" data-i18n="btn-test">Test</button>
+      <button class="save secondary" data-preset="deepseek" data-i18n="btn-save" disabled>Save &amp; continue</button>
+    </div>
+    <div class="result" data-preset="deepseek"></div>
   </div>
 
   <!-- Ollama -->
@@ -316,8 +383,10 @@ const I18N = {
     'admin-token-hint': 'This protects the Agent Platform admin API over LAN. It is not your LLM API key.',
     'badge-openrouter': 'FREE · many models', 'badge-ollama': 'FREE · local/LAN',
     'badge-openai': 'PAID · GPT-5.x', 'badge-anthropic': 'PAID · Claude 4.x',
+    'badge-deepseek': 'PAID · direct API',
     'badge-llamacpp': 'LOCAL · OpenAI-compatible',
     'desc-openrouter': 'OpenRouter is an LLM aggregator with dozens of models (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) behind <em>one</em> API. Free models available (e.g. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>), paid flagship models on demand. Get an API key at <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (email only, no card required for free tier).',
+    'desc-deepseek': 'Direct DeepSeek API with native thinking controls. Uses <code>https://api.deepseek.com</code>; get a key at <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a>.',
     'desc-ollama': 'If <code>ollama serve</code> runs locally or on your LAN: zero cloud. Pull a model first: <code>ollama pull llama3.2</code>. See <a href="https://ollama.com" target="_blank">ollama.com</a>.',
     'desc-openai': 'Standard OpenAI API. Get a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.',
     'desc-anthropic': 'Direct Anthropic API. Get a key at <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.',
@@ -328,6 +397,8 @@ const I18N = {
     'test-ok': '✓ Connection OK. Model response: ', 'test-err': '✗ Error: ',
     'net-err': '✗ Network error: ', 'token-saved': '✓ Admin token saved in this browser.', 'auth-missing': 'Admin token missing or wrong. Paste the Agent UI admin token above, then retry.',
     'loading-models': 'Loading models from ', 'models-ok': '✓ Models loaded: ', 'models-empty': 'No models returned by backend.',
+    'model-search': 'Search models',
+    'model-free-only': 'Free only',
   },
   de: {
     intro: 'Willkommen! Um deinen ersten Agent zu bauen brauchst du ein <strong>LLM-Backend</strong>. Wähl eine Option unten, teste sie, speichere — dauert ~30 Sekunden. Danach steht der KI-Wizard bereit und du erstellst Agenten indem du mit ihm redest.',
@@ -337,8 +408,10 @@ const I18N = {
     'admin-token-hint': 'Schuetzt die Agent-Platform-Admin-API im LAN. Das ist nicht dein LLM/API-Key.',
     'badge-openrouter': 'FREI · viele Modelle', 'badge-ollama': 'KOSTENLOS · lokal/LAN',
     'badge-openai': 'BEZAHLT · GPT-5.x', 'badge-anthropic': 'BEZAHLT · Claude 4.x',
+    'badge-deepseek': 'BEZAHLT · direkte API',
     'badge-llamacpp': 'LOKAL · OpenAI-kompatibel',
     'desc-openrouter': 'OpenRouter ist ein LLM-Aggregator mit dutzenden Modellen (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) hinter <em>einer</em> API. Freie Modelle verfügbar (z.B. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>), kostenpflichtige Top-Modelle on-demand. API-Key holen auf <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (braucht nur Email, keine Karte für Free-Tier).',
+    'desc-deepseek': 'Direkte DeepSeek API mit nativen Thinking-Controls. Nutzt <code>https://api.deepseek.com</code>; Key auf <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> holen.',
     'desc-ollama': 'Falls <code>ollama serve</code> lokal oder im LAN läuft: keine Cloud. Modell vorab ziehen: <code>ollama pull llama3.2</code>. Siehe <a href="https://ollama.com" target="_blank">ollama.com</a>.',
     'desc-openai': 'Standard OpenAI API. Key holen auf <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.',
     'desc-anthropic': 'Direkt bei Anthropic. Key auf <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a>.',
@@ -349,6 +422,8 @@ const I18N = {
     'test-ok': '✓ Verbindung OK. Modell-Antwort: ', 'test-err': '✗ Fehler: ',
     'net-err': '✗ Netzwerk-Fehler: ', 'token-saved': '✓ Admin-Token in diesem Browser gespeichert.', 'auth-missing': 'Admin-Token fehlt oder ist falsch. Oben den Agent-UI Admin-Token eintragen und erneut versuchen.',
     'loading-models': 'Lade Modelle von ', 'models-ok': '✓ Modelle geladen: ', 'models-empty': 'Backend hat keine Modelle zurueckgegeben.',
+    'model-search': 'Modelle durchsuchen',
+    'model-free-only': 'Nur gratis',
   },
 };
 let CURRENT_LOCALE = localStorage.getItem('setup_locale') || 'en';
@@ -380,6 +455,12 @@ function applyLocale(loc) {
       return;
     }
     el.innerHTML = strings[key];
+  });
+  document.querySelectorAll('.model-search').forEach(function(el) {
+    el.placeholder = strings['model-search'] || I18N.en['model-search'];
+  });
+  document.querySelectorAll('.model-free-text').forEach(function(el) {
+    el.textContent = strings['model-free-only'] || I18N.en['model-free-only'];
   });
   // Toggle button active state
   document.querySelectorAll('.lang-btn').forEach(function(btn) {
@@ -422,6 +503,93 @@ async function readSetupJson(res) {
   return text ? JSON.parse(text) : {};
 }
 
+const SETUP_MODEL_CACHE = {};
+
+function normalizeSetupModel(m) {
+  if (!m) return null;
+  if (typeof m === 'string') {
+    return {id: m, display_name: m, free: /:free$/i.test(m)};
+  }
+  const id = String(m.id || m.name || '').trim();
+  if (!id) return null;
+  return {
+    id: id,
+    display_name: String(m.display_name || m.name || id),
+    free: !!m.free || /:free$/i.test(id),
+  };
+}
+
+function sortSetupModels(models) {
+  return models.slice().sort(function(a, b) {
+    const an = (a.display_name || a.id).toLowerCase();
+    const bn = (b.display_name || b.id).toLowerCase();
+    return an.localeCompare(bn) || a.id.toLowerCase().localeCompare(b.id.toLowerCase());
+  });
+}
+
+function setupModelsFromResponse(data) {
+  const raw = Array.isArray(data.model_infos) ? data.model_infos : (Array.isArray(data.models) ? data.models : []);
+  const seen = new Set();
+  return sortSetupModels(raw.map(normalizeSetupModel).filter(function(m) {
+    if (!m || seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  }));
+}
+
+function filteredSetupModels(preset) {
+  const models = SETUP_MODEL_CACHE[preset] || [];
+  const search = document.querySelector('.model-search[data-preset="'+preset+'"]');
+  const freeOnly = document.querySelector('.model-free-only[data-preset="'+preset+'"]');
+  const q = search ? search.value.trim().toLowerCase() : '';
+  return models.filter(function(m) {
+    if (freeOnly && freeOnly.checked && !m.free) return false;
+    if (!q) return true;
+    return m.id.toLowerCase().indexOf(q) >= 0 || (m.display_name || '').toLowerCase().indexOf(q) >= 0;
+  });
+}
+
+function renderSetupModelOptions(preset, setDefault) {
+  const card = document.querySelector('.card[data-preset="'+preset+'"]');
+  if (!card) return [];
+  const modelInput = card.querySelector('input[data-field="model"]');
+  const listId = modelInput && modelInput.getAttribute('list');
+  const datalist = listId ? document.getElementById(listId) : null;
+  const allModels = SETUP_MODEL_CACHE[preset] || [];
+  const models = filteredSetupModels(preset);
+  if (datalist) {
+    datalist.innerHTML = '';
+    models.forEach(function(m) {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.label = (m.display_name && m.display_name !== m.id ? m.display_name + ' · ' : '') + (m.free ? 'free' : m.id);
+      datalist.appendChild(opt);
+    });
+  }
+  const count = document.querySelector('.model-count[data-preset="'+preset+'"]');
+  if (count && allModels.length) {
+    const freeCount = allModels.filter(function(m) { return m.free; }).length;
+    const noun = CURRENT_LOCALE === 'de' ? 'Modelle' : 'models';
+    const freeLabel = CURRENT_LOCALE === 'de' ? 'gratis' : 'free';
+    count.textContent = models.length + '/' + allModels.length + ' ' + noun + (freeCount ? ' · ' + freeCount + ' ' + freeLabel : '');
+  }
+  if (setDefault && modelInput && allModels.length) {
+    const allIds = allModels.map(function(m) { return m.id; });
+    const visibleIds = models.map(function(m) { return m.id; });
+    if (!modelInput.value || allIds.indexOf(modelInput.value) === -1 || (models.length && visibleIds.indexOf(modelInput.value) === -1)) {
+      modelInput.value = (models[0] || allModels[0]).id;
+    }
+  }
+  return models;
+}
+
+document.querySelectorAll('.model-search, .model-free-only').forEach(function(el) {
+  const ev = el.classList.contains('model-search') ? 'input' : 'change';
+  el.addEventListener(ev, function() {
+    renderSetupModelOptions(el.dataset.preset, true);
+  });
+});
+
 // Preset → LlmBackend-struct Mapping
 const PRESETS = {
   openrouter: {
@@ -432,6 +600,18 @@ const PRESETS = {
     identity: {
       bot_name: 'Assistent',
       greeting: 'Hi! Womit kann ich helfen?',
+      system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
+    },
+  },
+  deepseek: {
+    id: 'deepseek', name: 'DeepSeek',
+    typ: 'DeepSeek',
+    url: 'https://api.deepseek.com',
+    timeout_s: 120,
+    reasoning: {enabled: false, exclude: true},
+    identity: {
+      bot_name: 'Assistent',
+      greeting: 'Hi!',
       system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
     },
   },
@@ -498,9 +678,6 @@ function showResult(preset, kind, msg) {
 async function loadModels(preset) {
   const btn = document.querySelector('.models[data-preset="'+preset+'"]');
   const card = document.querySelector('.card[data-preset="'+preset+'"]');
-  const modelInput = card.querySelector('input[data-field="model"]');
-  const listId = modelInput.getAttribute('list');
-  const datalist = listId ? document.getElementById(listId) : null;
   const backend = buildBackend(preset);
   btn.disabled = true;
   showResult(preset, 'info', t('loading-models') + (backend.url || backend.name) + ' ...');
@@ -515,23 +692,22 @@ async function loadModels(preset) {
       showResult(preset, 'err', t('test-err') + (data.error || 'unknown'));
       return;
     }
-    const models = Array.isArray(data.models) ? data.models.filter(Boolean) : [];
+    const models = setupModelsFromResponse(data);
     if (!models.length) {
       showResult(preset, 'err', t('models-empty'));
       return;
     }
-    if (datalist) {
-      datalist.innerHTML = '';
-      models.forEach(function(id) {
-        const opt = document.createElement('option');
-        opt.value = id;
-        datalist.appendChild(opt);
-      });
-    }
-    if (!modelInput.value || models.indexOf(modelInput.value) === -1) {
-      modelInput.value = models[0];
-    }
-    showResult(preset, 'ok', t('models-ok') + models.slice(0, 12).join(', ') + (models.length > 12 ? ' ...' : ''));
+    SETUP_MODEL_CACHE[preset] = models;
+    const filtered = renderSetupModelOptions(preset, true);
+    const freeCount = models.filter(function(m) { return m.free; }).length;
+    const shown = filtered.length ? filtered : models;
+    showResult(
+      preset,
+      'ok',
+      t('models-ok') + shown.slice(0, 12).map(function(m) { return m.id; }).join(', ') +
+        (shown.length > 12 ? ' ...' : '') +
+        (freeCount ? ' (' + freeCount + ' free)' : '')
+    );
   } catch (e) {
     showResult(preset, 'err', t('net-err') + e.message);
   } finally {

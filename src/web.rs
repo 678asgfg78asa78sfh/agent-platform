@@ -84,6 +84,85 @@ fn can_run_more_tool_rounds(cfg: &AgentConfig, backend_id: &str, rounds: usize) 
         .unwrap_or(true)
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct LlmModelInfo {
+    id: String,
+    display_name: String,
+    free: bool,
+}
+
+fn zeroish_json_value(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64().map(|n| n == 0.0).unwrap_or(false),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().map(|n| n == 0.0).unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn model_pricing_is_free(raw: &serde_json::Value) -> bool {
+    let Some(pricing) = raw.get("pricing").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    let mut seen_price_field = false;
+    for key in [
+        "prompt",
+        "completion",
+        "request",
+        "image",
+        "web_search",
+        "internal_reasoning",
+    ] {
+        if let Some(v) = pricing.get(key) {
+            seen_price_field = true;
+            if !zeroish_json_value(v) {
+                return false;
+            }
+        }
+    }
+    seen_price_field
+}
+
+fn model_info_from_openai_value(raw: &serde_json::Value) -> Option<LlmModelInfo> {
+    let id = raw.get("id")?.as_str()?.to_string();
+    let display_name = raw
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&id)
+        .to_string();
+    let free = id.to_ascii_lowercase().ends_with(":free") || model_pricing_is_free(raw);
+    Some(LlmModelInfo {
+        id,
+        display_name,
+        free,
+    })
+}
+
+fn model_info_from_id(id: impl Into<String>, free: bool) -> LlmModelInfo {
+    let id = id.into();
+    LlmModelInfo {
+        display_name: id.clone(),
+        id,
+        free,
+    }
+}
+
+fn sort_model_infos(mut models: Vec<LlmModelInfo>) -> Vec<LlmModelInfo> {
+    let mut seen = std::collections::HashSet::new();
+    models.retain(|m| seen.insert(m.id.clone()));
+    models.sort_by(|a, b| {
+        let an = a.display_name.to_ascii_lowercase();
+        let bn = b.display_name.to_ascii_lowercase();
+        an.cmp(&bn)
+            .then_with(|| a.id.to_ascii_lowercase().cmp(&b.id.to_ascii_lowercase()))
+    });
+    models
+}
+
+fn model_ids(models: &[LlmModelInfo]) -> Vec<String> {
+    models.iter().map(|m| m.id.clone()).collect()
+}
+
 fn estimate_message_tokens(messages: &[serde_json::Value]) -> u64 {
     let chars: usize = messages
         .iter()
@@ -360,6 +439,7 @@ struct ChatToolFailure {
 struct DeepdiveProgress {
     crawl_ok: usize,
     crawl_id: Option<String>,
+    rss_evidence_ok: usize,
     search_ok: usize,
     fetch_ok: usize,
     source_note_ok: usize,
@@ -467,6 +547,10 @@ fn observe_deepdive_progress(
             progress.crawl_ok += 1;
             progress.last_evidence_round = round;
         }
+        "rss_verwaltung.fuer_deepdive" | "rss_verwaltung.fetch" | "rss_verwaltung.ingest_rag" => {
+            progress.rss_evidence_ok += 1;
+            progress.last_evidence_round = round;
+        }
         "tavily.search" | "duckduckgo.search" | "web.search" => {
             progress.search_ok += 1;
         }
@@ -496,10 +580,11 @@ fn deepdive_gate_feedback(
     final_text: &str,
 ) -> Option<String> {
     let topic = deepdive_topic_hint(user_text);
+    let enough_rss = progress.rss_evidence_ok > 0;
     let enough_manual = progress.search_ok >= 2
         && progress.fetch_ok >= 3
         && (progress.source_note_ok >= 2 || progress.rag_save_ok >= 1);
-    if progress.crawl_ok == 0 && !enough_manual {
+    if progress.crawl_ok == 0 && !enough_manual && !enough_rss {
         return Some(format!(
             "DEEPDIVE-CHECK: Die Anfrage verlangt breites Web-Crawling. Du bist noch nicht tief genug. Antworte jetzt AUSSCHLIESSLICH mit diesem Toolcall: <tool>deepdive.crawl({})</tool>",
             topic
@@ -1869,6 +1954,7 @@ async fn chat(
                             && deepdive_progress.source_note_ok >= 2;
                         if needs_deepdive
                             && deepdive_progress.crawl_ok == 0
+                            && deepdive_progress.rss_evidence_ok == 0
                             && !enough_manual
                             && tool_name == "rag.suchen"
                         {
@@ -2006,7 +2092,9 @@ async fn chat(
                         // Status: Tool-Ergebnis
                         tx.send(serde_json::json!({"type":"status","message":format!("{}: {}", if ok {"OK"} else {"FAIL"}, util::safe_truncate(&tool_result.1, 80))}).to_string()).await.ok();
 
-                        // Tool-Result im OpenAI-Format
+                        // Tool-Result im OpenAI-Format. Preserve provider-specific
+                        // assistant fields such as DeepSeek reasoning_content, but
+                        // only keep the tool call that we actually executed.
                         let call_id = raw_data
                             .pointer("/choices/0/message/tool_calls/0/id")
                             .and_then(|v| v.as_str())
@@ -2023,8 +2111,25 @@ async fn chat(
                             modul_for_tools.as_ref(),
                             &py_mods_snap,
                         );
-                        messages.push(serde_json::json!({"role": "assistant", "content": serde_json::Value::Null,
-                            "tool_calls": [{"id": &call_id, "type": "function", "function": {"name": &tool_name, "arguments": tool_args_json}}]}));
+                        let mut assistant_history = raw_data
+                            .pointer("/choices/0/message")
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                serde_json::json!({"role": "assistant", "content": serde_json::Value::Null})
+                            });
+                        if let Some(obj) = assistant_history.as_object_mut() {
+                            obj.insert("role".into(), serde_json::json!("assistant"));
+                            obj.entry("content").or_insert(serde_json::Value::Null);
+                            obj.insert(
+                                "tool_calls".into(),
+                                serde_json::json!([{
+                                    "id": &call_id,
+                                    "type": "function",
+                                    "function": {"name": &tool_name, "arguments": tool_args_json}
+                                }]),
+                            );
+                        }
+                        messages.push(assistant_history);
                         messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call_id,
                             "content": chat_tool_result_for_llm(ok, &tool_result.1)}));
 
@@ -2963,39 +3068,50 @@ async fn list_llm_models(
             match client.get(format!("{}/api/tags", backend.url)).send().await {
                 Ok(resp) => {
                     let data: serde_json::Value = resp.json().await.unwrap_or_default();
-                    let models: Vec<String> = data["models"]
+                    let models: Vec<LlmModelInfo> = data["models"]
                         .as_array()
                         .map(|arr| {
                             arr.iter()
-                                .filter_map(|m| m["name"].as_str().map(String::from))
+                                .filter_map(|m| {
+                                    m["name"]
+                                        .as_str()
+                                        .map(|name| model_info_from_id(name, true))
+                                })
                                 .collect()
                         })
                         .unwrap_or_default();
-                    models
+                    sort_model_infos(models)
                 }
                 Err(e) => return Json(serde_json::json!({"error": e.to_string(), "models": []})),
             }
         }
-        crate::types::LlmTyp::OpenAICompat | crate::types::LlmTyp::Grok => {
-            // GET /v1/models → data[].id
+        crate::types::LlmTyp::OpenAICompat
+        | crate::types::LlmTyp::Grok
+        | crate::types::LlmTyp::DeepSeek => {
+            // OpenAI-compatible providers return data[].id.
             let key = backend.api_key.as_deref().unwrap_or("");
+            let endpoint = if backend.typ == crate::types::LlmTyp::DeepSeek {
+                crate::llm::deepseek_endpoint(&backend.url, "models")
+            } else {
+                crate::llm::openai_compat_endpoint(&backend.url, "models")
+            };
             match client
-                .get(crate::llm::openai_compat_endpoint(&backend.url, "models"))
+                .get(endpoint)
                 .header("Authorization", format!("Bearer {}", key))
                 .send()
                 .await
             {
                 Ok(resp) => {
                     let data: serde_json::Value = resp.json().await.unwrap_or_default();
-                    let models: Vec<String> = data["data"]
+                    let models: Vec<LlmModelInfo> = data["data"]
                         .as_array()
                         .map(|arr| {
                             arr.iter()
-                                .filter_map(|m| m["id"].as_str().map(String::from))
+                                .filter_map(model_info_from_openai_value)
                                 .collect()
                         })
                         .unwrap_or_default();
-                    models
+                    sort_model_infos(models)
                 }
                 Err(e) => return Json(serde_json::json!({"error": e.to_string(), "models": []})),
             }
@@ -3012,14 +3128,17 @@ async fn list_llm_models(
             {
                 Ok(resp) => {
                     let data: serde_json::Value = resp.json().await.unwrap_or_default();
-                    data["data"]
+                    let models = data["data"]
                         .as_array()
                         .map(|arr| {
                             arr.iter()
-                                .filter_map(|m| m["id"].as_str().map(String::from))
+                                .filter_map(|m| {
+                                    m["id"].as_str().map(|id| model_info_from_id(id, false))
+                                })
                                 .collect()
                         })
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                    sort_model_infos(models)
                 }
                 Err(e) => return Json(serde_json::json!({"error": e.to_string(), "models": []})),
             }
@@ -3027,7 +3146,7 @@ async fn list_llm_models(
         crate::types::LlmTyp::Embedding => vec![],
     };
 
-    Json(serde_json::json!({"models": result}))
+    Json(serde_json::json!({"models": model_ids(&result), "model_infos": result}))
 }
 
 // ─── Token Tracking ───────────────────────────────
@@ -4091,19 +4210,36 @@ pub async fn wizard_models(
     };
 
     match req.provider.as_str() {
-        "Claude" | "Anthropic" => Ok(axum::Json(serde_json::json!({
-            "models": [
-                {"id": "claude-opus-4-7",   "display_name": "Claude Opus 4.7"},
-                {"id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6"},
-                {"id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5"},
-                {"id": "claude-opus-4-6",   "display_name": "Claude Opus 4.6"}
-            ]
-        }))),
-        "OpenAI" | "Grok" | "OpenRouter" | "Local/LAN" => {
-            let typ = if req.provider == "Grok" {
-                crate::types::LlmTyp::Grok
-            } else {
-                crate::types::LlmTyp::OpenAICompat
+        "Claude" | "Anthropic" => {
+            let models = sort_model_infos(vec![
+                LlmModelInfo {
+                    id: "claude-opus-4-7".into(),
+                    display_name: "Claude Opus 4.7".into(),
+                    free: false,
+                },
+                LlmModelInfo {
+                    id: "claude-sonnet-4-6".into(),
+                    display_name: "Claude Sonnet 4.6".into(),
+                    free: false,
+                },
+                LlmModelInfo {
+                    id: "claude-haiku-4-5".into(),
+                    display_name: "Claude Haiku 4.5".into(),
+                    free: false,
+                },
+                LlmModelInfo {
+                    id: "claude-opus-4-6".into(),
+                    display_name: "Claude Opus 4.6".into(),
+                    free: false,
+                },
+            ]);
+            Ok(axum::Json(serde_json::json!({"models": models})))
+        }
+        "OpenAI" | "Grok" | "DeepSeek" | "OpenRouter" | "Local/LAN" => {
+            let typ = match req.provider.as_str() {
+                "Grok" => crate::types::LlmTyp::Grok,
+                "DeepSeek" => crate::types::LlmTyp::DeepSeek,
+                _ => crate::types::LlmTyp::OpenAICompat,
             };
             if req.provider == "Local/LAN" {
                 crate::security::validate_llm_backend_url(&typ, &url)
@@ -4112,7 +4248,11 @@ pub async fn wizard_models(
                 crate::security::validate_external_url(&url)
                     .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e))?;
             }
-            let full_url = crate::llm::openai_compat_endpoint(&url, "models");
+            let full_url = if typ == crate::types::LlmTyp::DeepSeek {
+                crate::llm::deepseek_endpoint(&url, "models")
+            } else {
+                crate::llm::openai_compat_endpoint(&url, "models")
+            };
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
@@ -4142,13 +4282,11 @@ pub async fn wizard_models(
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let models: Vec<_> = arr
+            let models = arr
                 .iter()
-                .filter_map(|m| {
-                    let id = m.get("id")?.as_str()?.to_string();
-                    Some(serde_json::json!({"id": id.clone(), "display_name": id}))
-                })
+                .filter_map(model_info_from_openai_value)
                 .collect();
+            let models = sort_model_infos(models);
             Ok(axum::Json(serde_json::json!({"models": models})))
         }
         _ => Err((
@@ -4174,6 +4312,7 @@ pub async fn wizard_test_connection(
         "Claude" | "Anthropic" => crate::types::LlmTyp::Anthropic,
         "OpenAI" | "OpenRouter" | "Local/LAN" => crate::types::LlmTyp::OpenAICompat,
         "Grok" => crate::types::LlmTyp::Grok,
+        "DeepSeek" => crate::types::LlmTyp::DeepSeek,
         _ => {
             return Err((
                 axum::http::StatusCode::BAD_REQUEST,
@@ -4194,6 +4333,7 @@ pub async fn wizard_test_connection(
         timeout_s: 15,
         identity: Default::default(),
         max_tokens: None,
+        reasoning: None,
         cost_cap: None,
         max_tool_rounds: None,
         call_rate_limit: None,
@@ -4499,7 +4639,8 @@ pub async fn quality_benchmark_compare(
 
 // ═══ First-Run Setup-Wizard ══════════════════════════════
 // Zeigt dem User beim ersten Start eine einfache Seite mit vier Backend-
-// Presets (Ollama lokal, OpenRouter free-tier, OpenAI, Anthropic). User wählt
+// Presets (Ollama lokal, OpenRouter free-tier, DeepSeek, OpenAI, Anthropic).
+// User wählt
 // einen, gibt API-Key ein, klickt Test, klickt Save. Danach Redirect zum
 // Dashboard wo der Agent-Creation-Wizard sofort bereit steht.
 
@@ -4575,15 +4716,25 @@ async fn setup_models(Json(body): Json<crate::types::LlmBackend>) -> Json<serde_
                 .as_array()
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|m| m["name"].as_str().map(String::from))
+                        .filter_map(|m| {
+                            m["name"]
+                                .as_str()
+                                .map(|name| model_info_from_id(name, true))
+                        })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
         }
         crate::types::LlmTyp::OpenAICompat
         | crate::types::LlmTyp::Grok
+        | crate::types::LlmTyp::DeepSeek
         | crate::types::LlmTyp::Embedding => {
-            let mut req = client.get(crate::llm::openai_compat_endpoint(&body.url, "models"));
+            let endpoint = if body.typ == crate::types::LlmTyp::DeepSeek {
+                crate::llm::deepseek_endpoint(&body.url, "models")
+            } else {
+                crate::llm::openai_compat_endpoint(&body.url, "models")
+            };
+            let mut req = client.get(endpoint);
             if let Some(key) = body.api_key.as_deref().filter(|k| !k.is_empty()) {
                 req = req.bearer_auth(key);
             }
@@ -4606,20 +4757,37 @@ async fn setup_models(Json(body): Json<crate::types::LlmBackend>) -> Json<serde_
                 .as_array()
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|m| m["id"].as_str().map(String::from))
+                        .filter_map(model_info_from_openai_value)
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
         }
         crate::types::LlmTyp::Anthropic => vec![
-            "claude-opus-4-7".into(),
-            "claude-sonnet-4-6".into(),
-            "claude-haiku-4-5".into(),
-            "claude-opus-4-6".into(),
+            LlmModelInfo {
+                id: "claude-opus-4-7".into(),
+                display_name: "Claude Opus 4.7".into(),
+                free: false,
+            },
+            LlmModelInfo {
+                id: "claude-sonnet-4-6".into(),
+                display_name: "Claude Sonnet 4.6".into(),
+                free: false,
+            },
+            LlmModelInfo {
+                id: "claude-haiku-4-5".into(),
+                display_name: "Claude Haiku 4.5".into(),
+                free: false,
+            },
+            LlmModelInfo {
+                id: "claude-opus-4-6".into(),
+                display_name: "Claude Opus 4.6".into(),
+                free: false,
+            },
         ],
     };
+    let result = sort_model_infos(result);
 
-    Json(serde_json::json!({"ok": true, "models": result}))
+    Json(serde_json::json!({"ok": true, "models": model_ids(&result), "model_infos": result}))
 }
 
 async fn setup_test_backend(
@@ -4970,6 +5138,42 @@ mod tests {
     }
 
     #[test]
+    fn model_info_marks_openrouter_free_models() {
+        let by_suffix = serde_json::json!({"id": "qwen/qwen3-coder:free", "name": "Qwen Coder"});
+        let info = model_info_from_openai_value(&by_suffix).unwrap();
+        assert!(info.free);
+        assert_eq!(info.display_name, "Qwen Coder");
+
+        let by_pricing = serde_json::json!({
+            "id": "provider/model",
+            "pricing": {"prompt": "0", "completion": "0.0", "request": 0}
+        });
+        assert!(model_info_from_openai_value(&by_pricing).unwrap().free);
+    }
+
+    #[test]
+    fn model_infos_sort_alphabetically_by_display_name() {
+        let models = sort_model_infos(vec![
+            LlmModelInfo {
+                id: "b/model".into(),
+                display_name: "Beta".into(),
+                free: false,
+            },
+            LlmModelInfo {
+                id: "a/model".into(),
+                display_name: "alpha".into(),
+                free: true,
+            },
+            LlmModelInfo {
+                id: "z/model".into(),
+                display_name: "Zeta".into(),
+                free: false,
+            },
+        ]);
+        assert_eq!(model_ids(&models), vec!["a/model", "b/model", "z/model"]);
+    }
+
+    #[test]
     fn chat_tool_result_for_llm_truncates_large_results() {
         let large = "x".repeat(MAX_CHAT_TOOL_RESULT_CHARS + 100);
         let result = chat_tool_result_for_llm(true, &large);
@@ -5110,6 +5314,20 @@ mod tests {
         let feedback = deepdive_gate_feedback(
             &progress,
             "such mal im web nach Donald Trump",
+            "Zwischenstand",
+        )
+        .unwrap();
+        assert!(feedback.contains("rag.suchen"));
+        assert!(!feedback.contains("deepdive.crawl"));
+    }
+
+    #[test]
+    fn deepdive_gate_accepts_rss_ingest_as_fresh_evidence() {
+        let mut progress = DeepdiveProgress::default();
+        observe_deepdive_progress(&mut progress, "rss_verwaltung.fuer_deepdive", true, 1);
+        let feedback = deepdive_gate_feedback(
+            &progress,
+            "Test RSS Quellen zu Energiepolitik Deutschland",
             "Zwischenstand",
         )
         .unwrap();

@@ -1178,6 +1178,7 @@ pub async fn run_turn(
     session.transcript.push(WizardMessage {
         role: "user".into(),
         content: user_text.clone(),
+        reasoning_content: None,
         tool_calls: vec![],
         tool_call_id: None,
         tool_result: None,
@@ -1306,6 +1307,7 @@ pub async fn run_turn(
                     session.transcript.push(WizardMessage {
                         role: "user".into(),
                         content: feedback,
+                        reasoning_content: None,
                         tool_calls: vec![],
                         tool_call_id: None,
                         tool_result: None,
@@ -1328,10 +1330,16 @@ pub async fn run_turn(
         }
 
         let calls = parse_tool_calls(&tool_calls_json);
+        let reasoning_content = tool_calls_json
+            .pointer("/choices/0/message/reasoning_content")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
 
         session.transcript.push(WizardMessage {
             role: "assistant".into(),
             content: assistant_text,
+            reasoning_content,
             tool_calls: calls.clone(),
             tool_call_id: None,
             tool_result: None,
@@ -1414,6 +1422,7 @@ pub async fn run_turn(
             session.transcript.push(WizardMessage {
                 role: "tool".into(),
                 content: String::new(),
+                reasoning_content: None,
                 tool_calls: vec![],
                 tool_call_id: Some(call.id.clone()),
                 tool_result: Some(outcome.result),
@@ -1508,6 +1517,7 @@ pub async fn execute_code_gen(
         session.transcript.push(WizardMessage {
             role: "tool".into(),
             content: String::new(),
+            reasoning_content: None,
             tool_calls: vec![],
             tool_call_id: None,
             tool_result: Some(serde_json::json!({
@@ -1583,6 +1593,7 @@ pub async fn execute_code_gen(
             session.transcript.push(WizardMessage {
                 role: "tool".into(),
                 content: String::new(),
+                reasoning_content: None,
                 tool_calls: vec![],
                 tool_call_id: None,
                 tool_result: Some(
@@ -1661,6 +1672,7 @@ pub async fn execute_code_gen(
             session.transcript.push(WizardMessage {
                 role: "tool".into(),
                 content: String::new(),
+                reasoning_content: None,
                 tool_calls: vec![],
                 tool_call_id: None,
                 tool_result: Some(
@@ -1700,6 +1712,7 @@ pub async fn execute_code_gen(
             session.transcript.push(WizardMessage {
                 role: "tool".into(),
                 content: String::new(),
+                reasoning_content: None,
                 tool_calls: vec![],
                 tool_call_id: None,
                 tool_result: Some(
@@ -1719,6 +1732,7 @@ pub async fn execute_code_gen(
             session.transcript.push(WizardMessage {
                 role: "tool".into(),
                 content: String::new(),
+                reasoning_content: None,
                 tool_calls: vec![],
                 tool_call_id: None,
                 tool_result: Some(
@@ -1821,6 +1835,9 @@ fn build_provider_messages(session: &WizardSession, cfg: &AgentConfig) -> Vec<se
             "user" => msgs.push(serde_json::json!({"role": "user", "content": m.content})),
             "assistant" => {
                 let mut obj = serde_json::json!({"role": "assistant", "content": m.content});
+                if let Some(reasoning_content) = m.reasoning_content.as_deref() {
+                    obj["reasoning_content"] = serde_json::json!(reasoning_content);
+                }
                 if !m.tool_calls.is_empty() {
                     let calls: Vec<_> = m.tool_calls.iter().map(|c| serde_json::json!({
                         "id": c.id,
@@ -1940,6 +1957,7 @@ mod tests {
             timeout_s: 30,
             identity: ModulIdentity::default(),
             max_tokens: None,
+            reasoning: None,
             cost_cap: None,
             max_tool_rounds: None,
             call_rate_limit: None,
@@ -2587,6 +2605,7 @@ mod tests {
                 timeout_s: 30,
                 identity: ModulIdentity::default(),
                 max_tokens: None,
+                reasoning: None,
                 cost_cap: None,
                 max_tool_rounds: None,
                 call_rate_limit: None,

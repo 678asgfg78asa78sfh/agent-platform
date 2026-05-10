@@ -16,6 +16,10 @@ pub struct LlmBackend {
     pub identity: ModulIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Provider-specific reasoning/thinking control.
+    /// If None, no reasoning parameter is sent and provider/model defaults apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<LlmReasoningConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_cap: Option<LlmCostCap>,
     /// Maximal erlaubte Tool-/Action-Runden pro Chat/Task.
@@ -36,6 +40,58 @@ impl LlmBackend {
         self.call_rate_limit
             .as_ref()
             .and_then(LlmCallRateLimit::effective)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmReasoningConfig {
+    /// Some models, especially DeepSeek hybrids, use enabled=true/false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// OpenRouter effort: none, minimal, low, medium, high, xhigh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Token budget for models that expose reasoning budgets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Keep reasoning internal by default when configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<bool>,
+}
+
+impl LlmReasoningConfig {
+    pub fn request_json(&self) -> Option<serde_json::Value> {
+        let mut obj = serde_json::Map::new();
+        if let Some(max_tokens) = self.max_tokens.filter(|v| *v > 0) {
+            obj.insert("max_tokens".into(), serde_json::json!(max_tokens));
+            if self.enabled == Some(false) {
+                obj.insert("enabled".into(), serde_json::json!(false));
+            }
+        } else if let Some(effort) = self.normalized_effort() {
+            obj.insert("effort".into(), serde_json::json!(effort));
+        } else if let Some(enabled) = self.enabled {
+            obj.insert("enabled".into(), serde_json::json!(enabled));
+        }
+        if let Some(exclude) = self.exclude {
+            obj.insert("exclude".into(), serde_json::json!(exclude));
+        }
+        if obj.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(obj))
+        }
+    }
+
+    fn normalized_effort(&self) -> Option<&'static str> {
+        match self.effort.as_deref().map(str::trim).map(str::to_lowercase) {
+            Some(v) if v == "none" => Some("none"),
+            Some(v) if v == "minimal" => Some("minimal"),
+            Some(v) if v == "low" => Some("low"),
+            Some(v) if v == "medium" => Some("medium"),
+            Some(v) if v == "high" => Some("high"),
+            Some(v) if v == "xhigh" => Some("xhigh"),
+            _ => None,
+        }
     }
 }
 
@@ -99,6 +155,7 @@ pub enum LlmTyp {
     OpenAICompat,
     Anthropic,
     Grok,
+    DeepSeek,
     Embedding,
 }
 
@@ -580,6 +637,7 @@ pub async fn test_backend_reachable(client: &reqwest::Client, b: &LlmBackend) ->
                 format!("{}/v1/models", base)
             }
         }
+        LlmTyp::DeepSeek => format!("{}/models", b.url.trim_end_matches('/')),
         LlmTyp::Anthropic => {
             // Anthropic hat keinen /v1/models endpoint ohne auth — wir pingen die root
             b.url.trim_end_matches('/').to_string()
@@ -598,8 +656,8 @@ impl Default for AgentConfig {
     fn default() -> Self {
         // Saubere, ehrliche Default-Config: KEIN vorkonfiguriertes LLM-Backend.
         // Der User sieht nach dem ersten Start garantiert den /setup-Flow wo
-        // er auswählt was er nutzen will (OpenRouter mit freiem Tier, Ollama
-        // lokal, OpenAI, Anthropic, llama.cpp). Keine fake Ollama-Einträge die
+        // er auswählt was er nutzen will (OpenRouter mit freiem Tier, DeepSeek,
+        // Ollama lokal, OpenAI, Anthropic, llama.cpp). Keine fake Ollama-Einträge die
         // suggerieren "hier läuft was" wenn auf der Zielmaschine gar kein
         // Ollama ist. Wizard ist aktiviert aber zeigt sich erst nachdem der
         // Setup-Flow ein funktionierendes Backend eingetragen hat (Setup
@@ -746,6 +804,8 @@ pub struct WizardMessage {
     pub role: String, // "user" | "assistant" | "tool"
     #[serde(default)]
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<WizardToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -7,7 +7,6 @@ before the LLM writes a synthesis.
 """
 
 import html
-import importlib.util
 import ipaddress
 import json
 import os
@@ -15,7 +14,6 @@ import re
 import socket
 import sys
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -23,13 +21,10 @@ from html.parser import HTMLParser
 from uuid import uuid4
 
 
-MODUL_DIR = os.path.dirname(os.path.abspath(__file__))
-_RSS_MODULE = None
-
 MODULE = {
     "name": "deepdive",
     "description": "Crawler fuer mehrstufige Recherche: Web suchen, Quellen abrufen, Datum/Text/Links extrahieren und RAG-Notizen speichern.",
-    "version": "1.9",
+    "version": "1.6",
     "settings": {
         "max_sources": {"type": "number", "label": "Seed-Quellen pro Crawl", "default": 8},
         "max_search_queries": {"type": "number", "label": "Suchvarianten", "default": 6},
@@ -40,11 +35,7 @@ MODULE = {
         "timeout_s": {"type": "number", "label": "Timeout je Request", "default": 6},
         "python_timeout_s": {"type": "number", "label": "Python Tool Timeout", "default": 120},
         "max_chars_per_source": {"type": "number", "label": "Max Textzeichen je Quelle", "default": 6000},
-        "search_provider": {"type": "select", "label": "Websuche", "default": "auto", "options": ["auto", "tavily", "duckduckgo"]},
-        "tavily_api_key": {"type": "password", "label": "Tavily API Key", "default": ""},
-        "tavily_search_depth": {"type": "select", "label": "Tavily Suchtiefe", "default": "basic", "options": ["basic", "advanced"]},
         "allow_private_networks": {"type": "bool", "label": "Private/LAN URLs erlauben", "default": False},
-        "dedupe_source_url_hours": {"type": "number", "label": "RAG-Dedupe fuer gleiche URL (Stunden)", "default": 72},
     },
     "tools": [
         {
@@ -289,10 +280,9 @@ def _crawl(query, config):
             _trace(trace, "crawl.deadline", {"stage": "seed_search"})
             break
         executed_searches.append(search_query)
-        search_tool = _configured_search_tool_name(config)
         try:
-            _trace(trace, "search.start", {"query": search_query, "engine": search_tool})
-            search_tool, raw_results, search_note = _search_web(search_query, 10, timeout_s, config)
+            _trace(trace, "search.start", {"query": search_query, "engine": "duckduckgo_lite"})
+            raw_results = _search_duckduckgo(search_query, 10, timeout_s)
             accepted = 0
             for result in raw_results:
                 url = _clean_url(result.get("url") or "")
@@ -311,22 +301,15 @@ def _crawl(query, config):
             _trace(
                 trace,
                 "search.done",
-                {
-                    "query": search_query,
-                    "engine": search_tool,
-                    "results": len(raw_results),
-                    "accepted": accepted,
-                    **({"note": search_note} if search_note else {}),
-                },
+                {"query": search_query, "results": len(raw_results), "accepted": accepted},
             )
             _tool_trace(
                 tool_trace,
-                search_tool,
+                "duckduckgo.search",
                 "OK",
                 {
                     "phase": "seed",
                     "query": search_query,
-                    "engine": search_tool,
                     "results": len(raw_results),
                     "accepted": accepted,
                 },
@@ -336,46 +319,12 @@ def _crawl(query, config):
             _trace(trace, "search.fail", {"query": search_query, "error": str(exc)})
             _tool_trace(
                 tool_trace,
-                search_tool,
+                "duckduckgo.search",
                 "FAIL",
-                {"phase": "seed", "query": search_query, "engine": search_tool, "error": str(exc)},
+                {"phase": "seed", "query": search_query, "error": str(exc)},
             )
 
-    # ── RSS-Integration: RSS-Quellen als zusätzliche Kandidaten ──
-    rss_candidates_added = 0
-    try:
-        rss_module = _load_rss_module()
-        rss_source_list = rss_module._fuer_deepdive(json.dumps({
-            "query": query,
-            "refresh": True,
-            "rag_ingest": True,
-            "stale_after_minutes": 30,
-            "limit_sources": 8,
-            "limit_items": 12,
-            "max_items_per_source": 30,
-        }), config)
-        # Nur echte Item-URLs extrahieren – nicht den ganzen RSS-Block in den LLM-Kontext kippen.
-        if rss_source_list:
-            rss_urls = _extract_rss_item_urls(rss_source_list)
-            for rss_url in rss_urls[:8]:
-                if rss_url not in candidate_urls and _is_allowed_http_url(rss_url, allow_private):
-                    candidate_urls.add(rss_url)
-                    candidates.append({
-                        "url": rss_url,
-                        "search_query": query,
-                        "depth": 0,
-                        "parent_url": "",
-                        "discovery_method": "rss",
-                        "discovery_reason": f"RSS-Item passend zu: {query}",
-                    })
-                    rss_candidates_added += 1
-    except Exception as exc:
-        _trace(trace, "rss.fail", {"error": str(exc)[:220]})
-        _tool_trace(tool_trace, "rss_verwaltung.fuer_deepdive", "FAIL", {"error": str(exc)[:220]})
-    if rss_candidates_added:
-        _trace(trace, "rss.inject", {"added": rss_candidates_added})
-        _tool_trace(tool_trace, "rss_verwaltung.fuer_deepdive", "OK", {"added_candidates": rss_candidates_added})
-    selected = _select_sources(candidates, max_sources, query)
+    selected = _select_sources(candidates, max_sources)
     _trace(
         trace,
         "sources.select",
@@ -553,7 +502,7 @@ def _crawl(query, config):
                             {
                                 "title": link["text"],
                                 "url": link["url"],
-                                "snippet": f"Follow-up-Linktext: {link['text']}",
+                                "snippet": f"Follow-up aus Quelle {url}: {link['text']}",
                                 "search_query": result.get("search_query") or "",
                                 "depth": depth + 1,
                                 "parent_url": url,
@@ -622,16 +571,14 @@ def _crawl(query, config):
                         continue
                     executed_searches.append(derived_query)
                     derived_queries_done += 1
-                    search_tool = _configured_search_tool_name(config)
                     try:
                         _trace(
                             trace,
                             "derived_search.start",
-                            {"query": derived_query, "from_url": url, "engine": search_tool},
+                            {"query": derived_query, "from_url": url},
                         )
                         derived_candidates = []
-                        search_tool, derived_results, search_note = _search_web(derived_query, 5, timeout_s, config)
-                        for dres in derived_results:
+                        for dres in _search_duckduckgo(derived_query, 5, timeout_s):
                             durl = _clean_url(dres.get("url") or "")
                             if not durl or durl in known_urls:
                                 continue
@@ -644,27 +591,24 @@ def _crawl(query, config):
                             dres["discovery_method"] = "derived_search"
                             dres["discovery_reason"] = f"Nachsuche aus Quelle: {page['title'] or url}"
                             derived_candidates.append(dres)
-                        selected_derived = _select_sources(derived_candidates, 2, derived_query)
+                        selected_derived = _select_sources(derived_candidates, 2)
                         _trace(
                             trace,
                             "derived_search.done",
                             {
                                 "query": derived_query,
-                                "engine": search_tool,
                                 "candidates": len(derived_candidates),
                                 "selected": len(selected_derived),
                                 "urls": [item["url"] for item in selected_derived],
-                                **({"note": search_note} if search_note else {}),
                             },
                         )
                         _tool_trace(
                             tool_trace,
-                            search_tool,
+                            "duckduckgo.search",
                             "OK",
                             {
                                 "phase": "derived",
                                 "query": derived_query,
-                                "engine": search_tool,
                                 "from_url": url,
                                 "candidates": len(derived_candidates),
                                 "selected": len(selected_derived),
@@ -694,12 +638,11 @@ def _crawl(query, config):
                         )
                         _tool_trace(
                             tool_trace,
-                            search_tool,
+                            "duckduckgo.search",
                             "FAIL",
                             {
                                 "phase": "derived",
                                 "query": derived_query,
-                                "engine": search_tool,
                                 "from_url": url,
                                 "error": str(exc),
                             },
@@ -834,140 +777,6 @@ def _build_search_queries(query, max_queries=6):
     return _unique(variants)[:max_queries]
 
 
-def _load_rss_module():
-    global _RSS_MODULE
-    if _RSS_MODULE is not None:
-        return _RSS_MODULE
-
-    rss_path = os.path.abspath(os.path.join(MODUL_DIR, "..", "rss_verwaltung", "module.py"))
-    if not os.path.exists(rss_path):
-        raise RuntimeError(f"RSS-Modul nicht gefunden: {rss_path}")
-    spec = importlib.util.spec_from_file_location("deepdive_rss_verwaltung", rss_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"RSS-Modul kann nicht geladen werden: {rss_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    _RSS_MODULE = module
-    return module
-
-
-def _search_web(query, max_results, timeout_s, config):
-    provider = _search_provider(config)
-    fallback_note = ""
-    api_key = _tavily_api_key(config)
-
-    if provider in {"auto", "tavily"}:
-        if api_key:
-            try:
-                return "tavily.search", _search_tavily(query, max_results, timeout_s, config, api_key), ""
-            except Exception as exc:
-                if provider == "tavily":
-                    raise
-                fallback_note = f"tavily_fallback: {_short_error(exc)}"
-        elif provider == "tavily":
-            raise RuntimeError("Tavily API Key nicht konfiguriert. Bitte DeepDive-Setting oder modules/tavily/config.json setzen.")
-
-    return "duckduckgo.search", _search_duckduckgo(query, max_results, timeout_s), fallback_note
-
-
-def _search_provider(config):
-    provider = str((config or {}).get("search_provider") or "auto").strip().lower()
-    aliases = {
-        "ddg": "duckduckgo",
-        "duckduckgo_lite": "duckduckgo",
-        "duckduckgo-lite": "duckduckgo",
-    }
-    provider = aliases.get(provider, provider)
-    if provider not in {"auto", "tavily", "duckduckgo"}:
-        return "auto"
-    return provider
-
-
-def _configured_search_tool_name(config):
-    provider = _search_provider(config)
-    if provider == "tavily":
-        return "tavily.search"
-    if provider == "duckduckgo":
-        return "duckduckgo.search"
-    return "tavily.search" if _tavily_api_key(config) else "duckduckgo.search"
-
-
-def _short_error(value, limit=180):
-    text = _collapse_ws(str(value or ""))
-    if len(text) > limit:
-        return text[:limit].rstrip() + "..."
-    return text
-
-
-def _tavily_api_key(config):
-    cfg = config or {}
-    explicit = str(cfg.get("tavily_api_key") or "").strip()
-    if explicit:
-        return explicit
-
-    env_key = os.environ.get("TAVILY_API_KEY", "").strip()
-    if env_key:
-        return env_key
-
-    tavily_cfg_path = os.path.abspath(os.path.join(MODUL_DIR, "..", "tavily", "config.json"))
-    try:
-        with open(tavily_cfg_path, "r", encoding="utf-8") as fh:
-            tavily_cfg = json.load(fh)
-        for key in ("api_key", "tavily_api_key"):
-            value = str(tavily_cfg.get(key) or "").strip()
-            if value:
-                return value
-    except Exception:
-        pass
-    return ""
-
-
-def _search_tavily(query, max_results, timeout_s, config, api_key):
-    search_depth = str((config or {}).get("tavily_search_depth") or (config or {}).get("search_depth") or "basic").strip().lower()
-    if search_depth not in {"basic", "advanced"}:
-        search_depth = "basic"
-    body = json.dumps(
-        {
-            "query": query,
-            "max_results": int(max(1, min(20, max_results))),
-            "search_depth": search_depth,
-            "include_answer": False,
-            "include_raw_content": False,
-        }
-    ).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.tavily.com/search",
-        data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=max(8, timeout_s)) as resp:
-            payload = resp.read(1_000_000)
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read(500).decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        raise RuntimeError(f"Tavily API HTTP {exc.code}{(': ' + _short_error(detail)) if detail else ''}") from exc
-
-    data = json.loads(payload.decode("utf-8", errors="replace"))
-    results = []
-    for item in data.get("results") or []:
-        if not isinstance(item, dict):
-            continue
-        url = _clean_url(item.get("url") or "")
-        if not url:
-            continue
-        title = _collapse_ws(item.get("title") or url)
-        snippet = _collapse_ws(item.get("content") or item.get("snippet") or "")
-        results.append({"title": title[:220], "url": url, "snippet": snippet[:700]})
-        if len(results) >= max_results:
-            break
-    return results
-
-
 def _search_duckduckgo(query, max_results, timeout_s):
     encoded = urllib.parse.quote_plus(query)
     url = f"https://lite.duckduckgo.com/lite/?q={encoded}"
@@ -1002,24 +811,14 @@ def _search_duckduckgo(query, max_results, timeout_s):
     return out
 
 
-def _select_sources(candidates, max_sources, query=""):
+def _select_sources(candidates, max_sources):
     selected = []
     host_counts = {}
     preferred = []
-    terms = _query_terms(query)
-    broad_query = _is_broad_query(query)
     for result in candidates:
         host = urllib.parse.urlparse(result["url"]).netloc.lower().removeprefix("www.")
         score = 0
         text = f"{result.get('title','')} {result.get('snippet','')} {result.get('url','')}".lower()
-        term_hits = sum(1 for term in terms if term in text)
-        if terms and term_hits == 0 and not broad_query and result.get("discovery_method") != "rss":
-            continue
-        score += term_hits * 8
-        if terms and term_hits >= min(2, len(terms)):
-            score += 4
-        if result.get("discovery_method") == "rss":
-            score += 6
         if any(word in text for word in ("aktuell", "news", "nachrichten", "heute", "live")):
             score += 5
         if any(domain in host for domain in ("tagesschau", "bundestag", "bundesregierung", "faz", "zdf", "spiegel", "zeit", "dw.com", "reuters", "apnews", "britannica", "wikipedia")):
@@ -1078,8 +877,6 @@ def _link_score(query, link, parent_host, parent_page_role="source"):
     reasons = []
     if score:
         reasons.append("Query-Bezug")
-    if terms and not term_hits and not _is_broad_query(query):
-        return 0, ""
     current_words = (
         "aktuell", "news", "nachrichten", "heute", "live", "ticker", "entwicklung",
         "analyse", "kommentar", "hintergrund", "fakten", "timeline", "chronologie",
@@ -1165,10 +962,7 @@ def _derive_search_queries(query, page):
 def _relevance_score(query, result, page):
     text = f"{result.get('title','')} {result.get('snippet','')} {page.get('title','')} {page.get('text','')[:4000]}".lower()
     terms = _query_terms(query)
-    term_hits = sum(1 for term in terms if term in text)
-    if terms and term_hits == 0 and not _is_broad_query(query):
-        return 0
-    score = term_hits * 3
+    score = sum(3 for term in terms if term in text)
     if any(word in text for word in ("aktuell", "news", "nachrichten", "heute", "live", "entwicklung")):
         score += 8
     if page.get("dates"):
@@ -1343,8 +1137,7 @@ def _skip_link(url, label):
     low = f"{url} {label}".lower()
     bad_parts = (
         "#", "mailto:", "javascript:", "/login", "/signin", "/abo", "/newsletter",
-        "/signup", "/register", "session_redirect=", "/datenschutz", "/privacy",
-        "/impressum", "/kontakt", "/shop", "/account",
+        "/datenschutz", "/privacy", "/impressum", "/kontakt", "/shop", "/account",
         ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".pdf", ".zip", ".mp4",
         "facebook.com", "instagram.com", "linkedin.com/share", "whatsapp", "mailto",
     )
@@ -1390,18 +1183,6 @@ def _host(url):
 
 def _query_terms(query):
     return _important_words(query, 10)
-
-
-def _is_broad_query(query):
-    terms = _query_terms(query)
-    if not terms:
-        return True
-    broad_terms = {
-        "deutschland", "politik", "wirtschaft", "welt", "international",
-        "europa", "usa", "news", "nachrichten", "ereignisse", "lage",
-        "ticker", "liveblog", "ueberblick", "überblick",
-    }
-    return len(terms) <= 2 and any(term in broad_terms for term in terms)
 
 
 def _important_words(text, limit):
@@ -1777,16 +1558,6 @@ def _store_rag_note(note, config):
     rag_dir = os.path.join(data_dir, "rag", safe_pool)
     try:
         os.makedirs(rag_dir, exist_ok=True)
-        source_url = _line_value(note, "source_url")
-        dedupe_hours = int(config.get("dedupe_source_url_hours") or 72)
-        if source_url and dedupe_hours > 0:
-            existing = _existing_rag_for_source_url(rag_dir, source_url, dedupe_hours)
-            if existing:
-                existing_id, existing_age = existing
-                return True, (
-                    f"Im RAG Pool '{safe_pool}' bereits vorhanden "
-                    f"(id: {existing_id[:8]}, source_url_dedupe, age_h: {existing_age:.1f})"
-                )
         entry_id = str(uuid4())
         entry = {
             "id": entry_id,
@@ -1815,67 +1586,6 @@ def _store_rag_note(note, config):
         return False, f"RAG speichern fehlgeschlagen: {exc}"
 
 
-def _existing_rag_for_source_url(rag_dir, source_url, max_age_hours):
-    wanted = _canonical_source_url(source_url)
-    if not wanted:
-        return None
-    now = datetime.now(timezone.utc)
-    try:
-        files = sorted(
-            (p for p in os.scandir(rag_dir) if p.is_file() and p.name.endswith(".json")),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except FileNotFoundError:
-        return None
-    for entry in files[:3000]:
-        try:
-            with open(entry.path, encoding="utf-8") as fh:
-                data = json.load(fh)
-            existing_url = data.get("source_url") or _line_value(data.get("text", ""), "source_url")
-            if _canonical_source_url(existing_url) != wanted:
-                continue
-            ts = _parse_rag_timestamp(data.get("timestamp") or data.get("captured_at_utc"))
-            age_h = (now - ts).total_seconds() / 3600 if ts else 0.0
-            if age_h <= max_age_hours:
-                return data.get("id") or os.path.splitext(entry.name)[0], age_h
-        except Exception:
-            continue
-    return None
-
-
-def _canonical_source_url(url):
-    parsed = urllib.parse.urlparse(_clean_url(url))
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return ""
-    drop_prefixes = ("utm_",)
-    drop_names = {"fbclid", "gclid", "mc_cid", "mc_eid", "cmpid", "xtor"}
-    query_pairs = []
-    for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True):
-        low = key.lower()
-        if low in drop_names or any(low.startswith(prefix) for prefix in drop_prefixes):
-            continue
-        query_pairs.append((key, value))
-    path = parsed.path or "/"
-    if path != "/":
-        path = path.rstrip("/")
-    query = urllib.parse.urlencode(query_pairs, doseq=True)
-    return urllib.parse.urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", query, ""))
-
-
-def _parse_rag_timestamp(value):
-    if not value:
-        return None
-    raw = str(value).strip().replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(raw)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-
 def _first_param(params, key):
     if isinstance(params, dict):
         return str(params.get(key) or params.get("0") or "").strip()
@@ -1902,25 +1612,6 @@ def _clean_url(url):
     if parsed.scheme not in {"http", "https"}:
         return ""
     return urllib.parse.urlunparse(parsed._replace(fragment=""))
-
-
-def _extract_rss_item_urls(packet):
-    urls = []
-    seen = set()
-    for line in (packet or "").splitlines():
-        value = ""
-        stripped = line.strip()
-        if stripped.startswith("item_url:"):
-            value = stripped.split("item_url:", 1)[1].strip()
-        elif stripped.startswith("url:"):
-            value = stripped.split("url:", 1)[1].strip()
-        if not value:
-            continue
-        value = _clean_url(value)
-        if value and value not in seen:
-            seen.add(value)
-            urls.append(value)
-    return urls
 
 
 def _unwrap_duckduckgo_url(raw_url):

@@ -1,0 +1,324 @@
+"""RSS-Quellen-Speicher mit Bewertungssystem (Seriositaet, Ausrichtung, Reichweite, Kategorie). Dient als kuratierte Feed-Datenbank fuer Deepdive-Recherchen."""
+import json, sys, os, uuid
+from datetime import datetime
+
+DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "quellen.json")
+
+KATEGORIEN = ["Politik", "Wirtschaft", "Recht", "Technologie", "Wissenschaft", "Gesundheit", "Kultur", "Sport", "Bildung", "Umwelt", "International", "Lokal"]
+SERIOESITAET = ["sehr_hoch", "hoch", "mittel", "niedrig", "unbekannt"]
+AUSRICHTUNG = ["links", "mitte_links", "neutral", "mitte_rechts", "rechts", "unbekannt"]
+REICHWEITE = ["international", "national", "regional", "lokal", "unbekannt"]
+AKTUALITAET = ["live", "taeglich", "mehrmals_woche", "wochentlich", "unregelmaessig", "unbekannt"]
+SPRACHEN = ["de", "en", "fr", "es", "it", "nl", "pl", "andere"]
+
+MODULE = {
+    "name": "rss_verwaltung",
+    "description": "RSS-Quellen-Speicher mit Bewertungssystem (Seriositaet, Ausrichtung, Reichweite, Kategorie). Dient als kuratierte Feed-Datenbank fuer Deepdive-Recherchen.",
+    "version": "2.0",
+    "settings": {},
+    "tools": [
+        {
+            "name": "rss_verwaltung.hinzufuegen",
+            "description": "Fuegt eine neue RSS-Quelle hinzu. Erwartet JSON: {url, name, kategorie, sprache, serioesitaet, ausrichtung, reichweite, aktualitaet, notizen?}",
+            "params": ["daten_json"]
+        },
+        {
+            "name": "rss_verwaltung.auflisten",
+            "description": "Listet RSS-Quellen auf. Optionale Filter als JSON: {kategorie?, sprache?, ausrichtung?, reichweite?, min_serioesitaet?, sort?}",
+            "params": ["filter_json"]
+        },
+        {
+            "name": "rss_verwaltung.entfernen",
+            "description": "Entfernt eine RSS-Quelle anhand der ID",
+            "params": ["quellen_id"]
+        },
+        {
+            "name": "rss_verwaltung.bewerten",
+            "description": "Bewertet eine RSS-Quelle. Erwartet JSON: {id, serioesitaet?, ausrichtung?, reichweite?, aktualitaet?, notizen?}",
+            "params": ["daten_json"]
+        },
+        {
+            "name": "rss_verwaltung.fuer_deepdive",
+            "description": "Gibt passende RSS-Quellen fuer eine Deepdive-Recherche zurueck. Erwartet JSON: {kategorie?, sprache?, min_serioesitaet?, praeferierte_ausrichtung?}",
+            "params": ["anfrage_json"]
+        },
+        {
+            "name": "rss_verwaltung.kategorien",
+            "description": "Zeigt alle verfuegbaren Kategorien, Bewertungsdimensionen und moeglichen Werte an",
+            "params": []
+        },
+        {
+            "name": "rss_verwaltung.suche",
+            "description": "Sucht RSS-Quellen nach Name oder Schlagwort. Text-Suche ueber Name, Notizen und Kategorie.",
+            "params": ["suchtext"]
+        },
+        {
+            "name": "rss_verwaltung.stats",
+            "description": "Zeigt Statistiken ueber gespeicherte RSS-Quellen (Anzahl, Verteilung nach Kategorie, Sprache, Seriositaet etc.)",
+            "params": []
+        }
+    ],
+}
+
+# --- Hilfsfunktionen ---
+
+def _load():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return {"quellen": [], "version": 2}
+
+def _save(data):
+    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+def _val(entered, allowed, default="unbekannt"):
+    if entered in allowed:
+        return entered
+    return default
+
+def _serioesitaet_rank(s):
+    ranks = {"sehr_hoch": 5, "hoch": 4, "mittel": 3, "niedrig": 2, "unbekannt": 1}
+    return ranks.get(s, 1)
+
+# --- handle_tool ---
+
+def handle_tool(tool_name, params, config):
+    data = _load()
+
+    # --- hinzufuegen ---
+    if tool_name == "rss_verwaltung.hinzufuegen":
+        try:
+            q = json.loads(params[0]) if params else {}
+        except (json.JSONDecodeError, IndexError):
+            return {"success": False, "data": "Fehler: Ungueltiger JSON-Parameter. Erwartet: {url, name, kategorie, sprache, serioesitaet, ausrichtung, reichweite, aktualitaet}"}
+
+        if not q.get("url") or not q.get("name"):
+            return {"success": False, "data": "Fehler: 'url' und 'name' sind Pflichtfelder."}
+
+        # Dubletten-Check
+        for existing in data["quellen"]:
+            if existing["url"].strip("/") == q["url"].strip("/"):
+                return {"success": False, "data": f"Fehler: Diese URL existiert bereits als Quelle '{existing['name']}' (ID: {existing['id']})"}
+
+        quelle = {
+            "id": uuid.uuid4().hex[:8],
+            "url": q["url"],
+            "name": q["name"],
+            "kategorie": _val(q.get("kategorie"), KATEGORIEN),
+            "sprache": _val(q.get("sprache"), SPRACHEN),
+            "serioesitaet": _val(q.get("serioesitaet"), SERIOESITAET),
+            "ausrichtung": _val(q.get("ausrichtung"), AUSRICHTUNG),
+            "reichweite": _val(q.get("reichweite"), REICHWEITE),
+            "aktualitaet": _val(q.get("aktualitaet"), AKTUALITAET),
+            "notizen": q.get("notizen", ""),
+            "hinzugefuegt": datetime.now().isoformat(),
+            "letzte_aenderung": datetime.now().isoformat(),
+        }
+        data["quellen"].append(quelle)
+        _save(data)
+        return {"success": True, "data": f"Quelle '{quelle['name']}' hinzugefuegt (ID: {quelle['id']})."}
+
+    # --- auflisten ---
+    if tool_name == "rss_verwaltung.auflisten":
+        try:
+            f = json.loads(params[0]) if params and params[0] else {}
+        except (json.JSONDecodeError, IndexError):
+            f = {}
+
+        quellen = data["quellen"]
+
+        if f.get("kategorie"):
+            quellen = [q for q in quellen if q["kategorie"] == f["kategorie"]]
+        if f.get("sprache"):
+            quellen = [q for q in quellen if q["sprache"] == f["sprache"]]
+        if f.get("ausrichtung"):
+            quellen = [q for q in quellen if q["ausrichtung"] == f["ausrichtung"]]
+        if f.get("reichweite"):
+            quellen = [q for q in quellen if q["reichweite"] == f["reichweite"]]
+        if f.get("min_serioesitaet"):
+            min_r = _serioesitaet_rank(f["min_serioesitaet"])
+            quellen = [q for q in quellen if _serioesitaet_rank(q["serioesitaet"]) >= min_r]
+
+        sort_by = f.get("sort", "name")
+        if sort_by == "serioesitaet":
+            quellen = sorted(quellen, key=lambda q: _serioesitaet_rank(q["serioesitaet"]), reverse=True)
+        elif sort_by == "kategorie":
+            quellen = sorted(quellen, key=lambda q: q["kategorie"])
+        elif sort_by == "sprache":
+            quellen = sorted(quellen, key=lambda q: q["sprache"])
+        else:
+            quellen = sorted(quellen, key=lambda q: q["name"].lower())
+
+        if not quellen:
+            return {"success": True, "data": "Keine Quellen gefunden (ggf. Filter anpassen)."}
+
+        lines = []
+        for q in quellen:
+            lines.append(f"[{q['id']}] {q['name']} | Kat: {q['kategorie']} | Serioes: {q['serioesitaet']} | "
+                         f"Ausrichtung: {q['ausrichtung']} | Reichw: {q['reichweite']} | "
+                         f"{q['sprache'].upper()} | Akt: {q['aktualitaet']}")
+        return {"success": True, "data": f"{len(quellen)} Quellen:\n" + "\n".join(lines)}
+
+    # --- entfernen ---
+    if tool_name == "rss_verwaltung.entfernen":
+        qid = params[0] if params else ""
+        vorher = len(data["quellen"])
+        data["quellen"] = [q for q in data["quellen"] if q["id"] != qid]
+        if len(data["quellen"]) == vorher:
+            return {"success": False, "data": f"Keine Quelle mit ID '{qid}' gefunden."}
+        _save(data)
+        return {"success": True, "data": f"Quelle '{qid}' wurde entfernt."}
+
+    # --- bewerten ---
+    if tool_name == "rss_verwaltung.bewerten":
+        try:
+            b = json.loads(params[0]) if params else {}
+        except (json.JSONDecodeError, IndexError):
+            return {"success": False, "data": "Fehler: Ungueltiger JSON-Parameter."}
+
+        if not b.get("id"):
+            return {"success": False, "data": "Fehler: 'id' ist Pflichtfeld."}
+
+        for q in data["quellen"]:
+            if q["id"] == b["id"]:
+                if "serioesitaet" in b:
+                    q["serioesitaet"] = _val(b["serioesitaet"], SERIOESITAET)
+                if "ausrichtung" in b:
+                    q["ausrichtung"] = _val(b["ausrichtung"], AUSRICHTUNG)
+                if "reichweite" in b:
+                    q["reichweite"] = _val(b["reichweite"], REICHWEITE)
+                if "aktualitaet" in b:
+                    q["aktualitaet"] = _val(b["aktualitaet"], AKTUALITAET)
+                if "kategorie" in b:
+                    q["kategorie"] = _val(b["kategorie"], KATEGORIEN)
+                if "sprache" in b:
+                    q["sprache"] = _val(b["sprache"], SPRACHEN)
+                if "notizen" in b:
+                    q["notizen"] = b["notizen"]
+                q["letzte_aenderung"] = datetime.now().isoformat()
+                _save(data)
+                return {"success": True, "data": f"Quelle '{q['name']}' (ID: {q['id']}) wurde aktualisiert."}
+        return {"success": False, "data": f"Keine Quelle mit ID '{b['id']}' gefunden."}
+
+    # --- fuer_deepdive ---
+    if tool_name == "rss_verwaltung.fuer_deepdive":
+        try:
+            anf = json.loads(params[0]) if params and params[0] else {}
+        except (json.JSONDecodeError, IndexError):
+            anf = {}
+
+        quellen = data["quellen"]
+
+        if anf.get("kategorie"):
+            if anf["kategorie"] in KATEGORIEN:
+                quellen = [q for q in quellen if q["kategorie"] == anf["kategorie"]]
+        if anf.get("sprache"):
+            if anf["sprache"] in SPRACHEN:
+                quellen = [q for q in quellen if q["sprache"] == anf["sprache"]]
+        if anf.get("min_serioesitaet"):
+            min_r = _serioesitaet_rank(anf["min_serioesitaet"])
+            quellen = [q for q in quellen if _serioesitaet_rank(q["serioesitaet"]) >= min_r]
+        if anf.get("praeferierte_ausrichtung"):
+            pref = anf["praeferierte_ausrichtung"]
+            # Sort so preferred alignment is first, but include others too
+            quellen = sorted(quellen, key=lambda q: 0 if q["ausrichtung"] == pref else 1)
+
+        # Default: hoechste Seriositaet zuerst
+        quellen = sorted(quellen, key=lambda q: _serioesitaet_rank(q["serioesitaet"]), reverse=True)
+
+        # Top 10
+        quellen = quellen[:10]
+
+        if not quellen:
+            return {"success": True, "data": "Keine passenden Quellen gefunden. Bitte weniger restriktive Filter verwenden."}
+
+        lines = []
+        for q in quellen:
+            lines.append(f"  - {q['name']}: {q['url']} | Kat: {q['kategorie']} | Serioes: {q['serioesitaet']} | "
+                         f"Ausrichtung: {q['ausrichtung']} | {q['sprache'].upper()}")
+        return {"success": True, "data": f"Empfohlene RSS-Quellen fuer Deepdive:\n" + "\n".join(lines)}
+
+    # --- kategorien ---
+    if tool_name == "rss_verwaltung.kategorien":
+        out = f"""
+=== VERFUEGBARE KATEGORIEN ===
+{', '.join(KATEGORIEN)}
+
+=== SERIOESITAET ===
+{', '.join(SERIOESITAET)} (Rangfolge: sehr_hoch > hoch > mittel > niedrig > unbekannt)
+
+=== AUSRICHTUNG (politisch) ===
+{', '.join(AUSRICHTUNG)}
+
+=== REICHWEITE ===
+{', '.join(REICHWEITE)}
+
+=== AKTUALITAET ===
+{', '.join(AKTUALITAET)}
+
+=== SPRACHEN ===
+{', '.join(SPRACHEN)}
+"""
+        return {"success": True, "data": out.strip()}
+
+    # --- suche ---
+    if tool_name == "rss_verwaltung.suche":
+        suchtext = params[0].lower() if params else ""
+        if not suchtext:
+            return {"success": False, "data": "Fehler: Suchtext erforderlich."}
+
+        treffer = []
+        for q in data["quellen"]:
+            if suchtext in q["name"].lower() or suchtext in q.get("notizen", "").lower() or suchtext in q["kategorie"].lower():
+                treffer.append(q)
+
+        if not treffer:
+            return {"success": True, "data": f"Keine Treffer fuer '{params[0]}'."}
+
+        lines = []
+        for q in treffer:
+            lines.append(f"[{q['id']}] {q['name']}: {q['url']} | Kat: {q['kategorie']} | "
+                         f"Serioes: {q['serioesitaet']} | {q['sprache'].upper()}")
+        return {"success": True, "data": f"{len(treffer)} Treffer:\n" + "\n".join(lines)}
+
+    # --- stats ---
+    if tool_name == "rss_verwaltung.stats":
+        qs = data["quellen"]
+        total = len(qs)
+        if total == 0:
+            return {"success": True, "data": "Keine Quellen gespeichert."}
+
+        def count_by(field):
+            counts = {}
+            for q in qs:
+                v = q.get(field, "unbekannt")
+                counts[v] = counts.get(v, 0) + 1
+            return sorted(counts.items(), key=lambda x: x[1], reverse=True)
+
+        out = f"=== RSS-QUELLEN STATISTIK (total: {total}) ===\n\n"
+        out += "Nach Kategorie:\n" + "\n".join(f"  {k}: {v}" for k, v in count_by("kategorie")) + "\n\n"
+        out += "Nach Seriositaet:\n" + "\n".join(f"  {k}: {v}" for k, v in count_by("serioesitaet")) + "\n\n"
+        out += "Nach Ausrichtung:\n" + "\n".join(f"  {k}: {v}" for k, v in count_by("ausrichtung")) + "\n\n"
+        out += "Nach Reichweite:\n" + "\n".join(f"  {k}: {v}" for k, v in count_by("reichweite")) + "\n\n"
+        out += "Nach Sprache:\n" + "\n".join(f"  {k}: {v}" for k, v in count_by("sprache")) + "\n\n"
+        out += "Nach Aktualitaet:\n" + "\n".join(f"  {k}: {v}" for k, v in count_by("aktualitaet"))
+        return {"success": True, "data": out}
+
+    return {"success": False, "data": f"Unbekanntes Tool: {tool_name}"}
+
+
+if __name__ == "__main__":
+    for line in sys.stdin:
+        try:
+            req = json.loads(line.strip())
+            if req.get("action") == "describe":
+                print(json.dumps(MODULE), flush=True)
+            elif req.get("action") == "handle_tool":
+                result = handle_tool(req["tool"], req.get("params", []), req.get("config", {}))
+                print(json.dumps(result), flush=True)
+            else:
+                print(json.dumps({"error": f"Unknown action: {req.get('action')}"}), flush=True)
+        except Exception as e:
+            print(json.dumps({"error": str(e)}), flush=True)

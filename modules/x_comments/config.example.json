@@ -1,0 +1,9 @@
+{
+  "bearer_token": "PASTE_X_BEARER_TOKEN_HERE",
+  "max_results": 20,
+  "max_pages": 1,
+  "lang": "",
+  "include_author_details": false,
+  "add_opinion_terms": true,
+  "sort_order": "relevancy"
+}

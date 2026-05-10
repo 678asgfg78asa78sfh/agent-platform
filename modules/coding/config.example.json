@@ -1,0 +1,21 @@
+{
+  "workspace_root": "",
+  "allow_project_root": false,
+  "max_search_results": 20,
+  "max_read_lines": 220,
+  "max_file_size_kb": 768,
+  "snapshot_before_patch": true,
+  "snapshot_max_files": 700,
+  "snapshot_max_file_kb": 768,
+  "command_timeout_s": 120,
+  "allowed_run_commands": [
+    "python3 -m py_compile",
+    "python3 -m pytest",
+    "pytest",
+    "cargo test",
+    "cargo check",
+    "npm test",
+    "npm run build",
+    "go test"
+  ]
+}

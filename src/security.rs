@@ -502,11 +502,13 @@ mod tests {
         assert!(validate_llm_backend_url(&LlmTyp::Embedding, "http://[fd00::20]:8080").is_ok());
         assert!(validate_llm_backend_url(&LlmTyp::Grok, "http://127.0.0.1:11434").is_err());
         assert!(validate_llm_backend_url(&LlmTyp::Grok, "http://192.168.1.20:8080").is_err());
+        assert!(validate_llm_backend_url(&LlmTyp::DeepSeek, "http://127.0.0.1:11434").is_err());
         assert!(
             validate_llm_backend_url(&LlmTyp::OpenAICompat, "http://169.254.169.254/latest")
                 .is_err()
         );
         assert!(validate_llm_backend_url(&LlmTyp::Grok, "https://api.x.ai").is_ok());
+        assert!(validate_llm_backend_url(&LlmTyp::DeepSeek, "https://api.deepseek.com").is_ok());
     }
 
     #[test]

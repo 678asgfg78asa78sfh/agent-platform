@@ -79,6 +79,9 @@ fn compact_rag_text(entry: &RagEntry) -> String {
     {
         return compact_deepdive_text(entry);
     }
+    if entry.text.starts_with("RSS_NEWS_NOTE") {
+        return compact_rss_news_text(entry);
+    }
     crate::util::safe_truncate(&entry.text, 1800).to_string()
 }
 
@@ -224,6 +227,72 @@ fn compact_deepdive_text(entry: &RagEntry) -> String {
         crate::util::safe_truncate(&collapse_ws(excerpt), 1400)
     ));
     out.join("\n")
+}
+
+fn compact_rss_news_text(entry: &RagEntry) -> String {
+    let mut out = vec![format!(
+        "rag_id: {}\nstored_at_utc: {}{}",
+        entry.id,
+        entry.timestamp,
+        age_suffix(&entry.timestamp)
+    )];
+    for key in [
+        "captured_at_utc",
+        "source_last_seen_utc",
+        "topic",
+        "rss_item_id",
+        "rss_source_id",
+        "source_url",
+        "source_title",
+        "source_feed_url",
+        "source_name",
+        "source_type",
+        "source_category",
+        "source_language",
+        "source_reliability",
+        "source_alignment",
+        "source_reach",
+        "published_at_utc",
+        "fetched_at_utc",
+        "recency_label",
+        "rss_score",
+        "deepdive_next_step",
+    ] {
+        if let Some(v) = line_value(&entry.text, key) {
+            out.push(format!("{}: {}", key, v));
+        }
+    }
+
+    out.push(rss_source_tag(entry));
+
+    if let Some(summary) = section_after(&entry.text, "source_summary:") {
+        let summary = summary
+            .split("\nassessment_required:")
+            .next()
+            .unwrap_or(summary)
+            .trim();
+        if !summary.is_empty() {
+            out.push(format!(
+                "summary_excerpt:\n{}",
+                crate::util::safe_truncate(&collapse_ws(summary), 1000)
+            ));
+        }
+    }
+    out.join("\n")
+}
+
+fn rss_source_tag(entry: &RagEntry) -> String {
+    let url = line_value(&entry.text, "source_url").unwrap_or_else(|| "(kein URL-Fundort)".into());
+    let title = line_value(&entry.text, "source_title").unwrap_or_else(|| "(kein Titel)".into());
+    let captured = line_value(&entry.text, "captured_at_utc").unwrap_or_default();
+    let published = line_value(&entry.text, "published_at_utc").unwrap_or_default();
+    let source = line_value(&entry.text, "source_name").unwrap_or_default();
+    let reliability = line_value(&entry.text, "source_reliability").unwrap_or_default();
+    let alignment = line_value(&entry.text, "source_alignment").unwrap_or_default();
+    format!(
+        "<quellen>\n- rag_id: {}\n  fundort: {}\n  titel: {}\n  quelle: {}\n  veroeffentlicht_utc: {}\n  abgerufen_utc: {}\n  serioesitaet: {}\n  ausrichtung: {}\n</quellen>",
+        entry.id, url, title, source, published, captured, reliability, alignment
+    )
 }
 
 fn deepdive_source_tag(entry: &RagEntry) -> String {
@@ -423,6 +492,7 @@ pub async fn suchen(
     } else {
         loaded_entries
     };
+    let query_keywords = extract_keywords(query);
 
     // Vector search if embedding available
     if let Some(qvec) = query_embedding {
@@ -436,6 +506,15 @@ pub async fn suchen(
             })
             .filter(|(score, _)| *score > 0.3)
             .collect();
+
+        // Python modules such as deepdive/rss write RAG files directly and do
+        // not have precomputed embeddings. Keep keyword hits in the result set
+        // so fresh source notes remain visible when vector search is enabled.
+        for (score, entry) in keyword_ranked_entries(&entries, &query_keywords) {
+            if !results.iter().any(|(_, existing)| existing.id == entry.id) {
+                results.push((score, entry));
+            }
+        }
 
         results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -452,7 +531,7 @@ pub async fn suchen(
                 })
                 .collect();
             return ToolResult::ok(format!(
-                "RAG Ergebnisse ({} gefunden, vector search):\n{}",
+                "RAG Ergebnisse ({} gefunden, hybrid search):\n{}",
                 results.len(),
                 top.join("\n\n")
             ));
@@ -460,26 +539,7 @@ pub async fn suchen(
     }
 
     // Keyword fallback
-    let query_keywords = extract_keywords(query);
-    let mut results: Vec<(f32, &RagEntry)> = vec![];
-
-    for entry in &entries {
-        let matches = query_keywords
-            .iter()
-            .filter(|qk| {
-                entry.keywords.iter().any(|rk| rk.contains(qk.as_str()))
-                    || entry.text.to_lowercase().contains(qk.as_str())
-            })
-            .count();
-        if matches > 0 {
-            let mut score = matches as f32 / query_keywords.len().max(1) as f32;
-            if entry.text.starts_with("DEEPDIVE_CRAWL_MANIFEST") {
-                score += 0.25;
-            }
-            results.push((score, entry));
-        }
-    }
-
+    let mut results = keyword_ranked_entries(&entries, &query_keywords);
     results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     if results.is_empty() {
@@ -505,6 +565,33 @@ pub async fn suchen(
             top.join("\n\n")
         ))
     }
+}
+
+fn keyword_ranked_entries<'a>(
+    entries: &'a [RagEntry],
+    query_keywords: &[String],
+) -> Vec<(f32, &'a RagEntry)> {
+    let mut results: Vec<(f32, &RagEntry)> = vec![];
+    for entry in entries {
+        let matches = query_keywords
+            .iter()
+            .filter(|qk| {
+                entry.keywords.iter().any(|rk| rk.contains(qk.as_str()))
+                    || entry.text.to_lowercase().contains(qk.as_str())
+            })
+            .count();
+        if matches > 0 {
+            let mut score = matches as f32 / query_keywords.len().max(1) as f32;
+            if entry.text.starts_with("DEEPDIVE_CRAWL_MANIFEST") {
+                score += 0.25;
+            }
+            if entry.text.starts_with("RSS_NEWS_NOTE") {
+                score += 0.15;
+            }
+            results.push((score, entry));
+        }
+    }
+    results
 }
 
 fn display_score(score: f32) -> f32 {
@@ -567,5 +654,82 @@ mod tests {
             Some("dd-20260507T011624Z-5f8430b0")
         );
         assert!(crawl_id_from_query("Friedrich Merz").is_none());
+    }
+
+    #[test]
+    fn test_compact_rss_news_text_keeps_source_assessment() {
+        let entry = RagEntry {
+            id: "rss-rag-1".into(),
+            timestamp: "2026-05-09T10:00:00Z".into(),
+            keywords: vec![],
+            embedding: None,
+            embedding_model: None,
+            text: [
+                "RSS_NEWS_NOTE",
+                "captured_at_utc: 2026-05-09T10:00:00Z",
+                "source_url: https://example.test/news/1",
+                "source_title: Energie Politik Beschluss",
+                "source_name: Example News",
+                "source_reliability: hoch",
+                "source_alignment: neutral",
+                "published_at_utc: 2026-05-09T09:00:00Z",
+                "source_summary:",
+                "Die Regierung beschliesst neue Energie Regeln.",
+            ]
+            .join("\n"),
+        };
+
+        let compact = compact_rss_news_text(&entry);
+        assert!(compact.contains("source_reliability: hoch"));
+        assert!(compact.contains("source_alignment: neutral"));
+        assert!(compact.contains("<quellen>"));
+        assert!(compact.contains("summary_excerpt:"));
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_search_returns_rss_notes_without_embedding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = "hybrid-rss";
+        let stored = speichern(
+            tmp.path(),
+            pool,
+            "unrelated embedded note",
+            Some(vec![1.0, 0.0]),
+            Some("test-embed".into()),
+        )
+        .await;
+        assert!(stored.success);
+
+        let entry = RagEntry {
+            id: "rss-direct".into(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            keywords: extract_keywords("Energie Politik Example News"),
+            embedding: None,
+            embedding_model: None,
+            text: [
+                "RSS_NEWS_NOTE",
+                "captured_at_utc: 2026-05-09T10:00:00Z",
+                "source_url: https://example.test/news/1",
+                "source_title: Energie Politik Beschluss",
+                "source_name: Example News",
+                "source_reliability: hoch",
+                "source_alignment: neutral",
+                "source_summary:",
+                "Die Regierung beschliesst neue Energie Regeln.",
+            ]
+            .join("\n"),
+        };
+        let dir = rag_dir(tmp.path(), pool);
+        let json = serde_json::to_string_pretty(&entry).unwrap();
+        std::fs::write(dir.join("rss-direct.json"), json).unwrap();
+
+        let result = suchen(tmp.path(), pool, "energie politik", Some(&[1.0, 0.0])).await;
+        assert!(result.success);
+        assert!(result.data.contains("hybrid search"));
+        assert!(
+            result
+                .data
+                .contains("source_title: Energie Politik Beschluss")
+        );
     }
 }

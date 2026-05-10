@@ -276,6 +276,7 @@ mod tests {
             timeout_s: 30,
             identity: Default::default(),
             max_tokens: None,
+            reasoning: None,
             cost_cap: None,
             max_tool_rounds: None,
             call_rate_limit: None,

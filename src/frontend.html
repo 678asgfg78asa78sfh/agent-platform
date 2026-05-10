@@ -133,6 +133,11 @@ input:focus, textarea:focus, select:focus { border-color: var(--cyan); box-shado
 select { cursor: pointer; }
 textarea { resize: vertical; min-height: 60px; }
 label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 3px; display: block; }
+.model-filter-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.model-filter-row input[type="search"] { min-width: 180px; flex: 1; }
+.model-filter-row .inline-check { display: inline-flex; align-items: center; gap: 5px; width: auto; margin: 0; white-space: nowrap; }
+.model-filter-row .inline-check input { width: auto; }
+.model-filter-count { color: var(--green); font-size: 10px; white-space: nowrap; }
 
 .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 9px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
 .badge-blue { background: rgba(0,170,255,0.12); color: var(--blue); border: 1px solid rgba(0,170,255,0.25); }
@@ -417,6 +422,11 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
   background: radial-gradient(circle at 30% 30%, #4a2a5a, #2a1a3a, #1a0a2a);
   border: 2px solid var(--red);
   box-shadow: 0 0 30px var(--red-glow), 0 0 60px rgba(255,68,102,0.25), 0 0 100px rgba(255,68,102,0.1), 0 0 150px rgba(255,68,102,0.05), inset 0 0 25px rgba(255,68,102,0.35);
+}
+.llm-gem-orb.typ-DeepSeek {
+  background: radial-gradient(circle at 30% 30%, #24566a, #173946, #071c26);
+  border: 2px solid var(--blue);
+  box-shadow: 0 0 30px var(--blue-glow), 0 0 60px rgba(0,170,255,0.25), 0 0 100px rgba(0,170,255,0.1), 0 0 150px rgba(0,170,255,0.05), inset 0 0 25px rgba(0,170,255,0.35);
 }
 @keyframes innerLight {
   0%,100% { background: radial-gradient(circle at 30% 20%, rgba(255,255,255,0.35), transparent 55%); }
@@ -941,7 +951,7 @@ body::after {
             <input type="checkbox" id="wcfg-enabled"> Enabled</label></div>
           <div style="margin:8px 0;"><label>Provider
             <select id="wcfg-provider">
-              <option>Claude</option><option>OpenAI</option><option>Grok</option><option>OpenRouter</option><option>Local/LAN</option>
+              <option>Claude</option><option>OpenAI</option><option>Grok</option><option>DeepSeek</option><option>OpenRouter</option><option>Local/LAN</option>
             </select></label></div>
           <div style="margin:8px 0;"><label>API URL
             <input type="text" id="wcfg-url" style="width:320px;"></label></div>
@@ -954,6 +964,11 @@ body::after {
               <input type="text" id="wcfg-model" style="width:200px;" placeholder="oder frei eingeben">
               <button class="btn" type="button" onclick="refreshWizardModels()">Pull</button>
               <button class="btn" type="button" onclick="testWizardConnection()">Test connection</button>
+            </div>
+            <div class="model-filter-row" id="wcfg-model-tools" style="display:none;">
+              <input type="search" id="wcfg-model-search" placeholder="Modelle durchsuchen">
+              <label class="inline-check"><input type="checkbox" id="wcfg-model-free-only"> Gratis</label>
+              <span class="model-filter-count" id="wcfg-model-count"></span>
             </div>
           </label></div>
           <div style="margin:8px 0;"><label>Timeout (ms)
@@ -1204,6 +1219,7 @@ body::after {
       <select id="llm-typ">
         <option value="llamacpp">llama.cpp / LAN OpenAI-compatible</option>
         <option value="openrouter">OpenRouter</option>
+        <option value="deepseek">DeepSeek</option>
         <option value="openai">OpenAI</option>
         <option value="custom-openai">Custom OpenAI-compatible</option>
         <option value="ollama">Ollama</option>
@@ -1220,14 +1236,35 @@ body::after {
         <input type="text" id="llm-model" placeholder="model-name" style="flex:1;" />
         <button class="btn btn-sm" id="llm-fetch-models" type="button" style="white-space:nowrap;">Modelle pullen</button>
       </div>
+      <div class="model-filter-row" id="llm-model-tools" style="display:none;">
+        <input type="search" id="llm-model-search" placeholder="Modelle durchsuchen">
+        <label class="inline-check"><input type="checkbox" id="llm-model-free-only"> Gratis</label>
+        <span class="model-filter-count" id="llm-model-count"></span>
+      </div>
     </div>
     <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin:12px 0 6px;">Limits</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       <div class="form-row"><label>Timeout (seconds)</label><input type="number" id="llm-timeout" value="120" /></div>
       <div class="form-row"><label>Max output tokens</label><input type="number" id="llm-max-tokens" placeholder="leer = default" /></div>
+      <div class="form-row"><label>Thinking / Reasoning</label>
+        <select id="llm-reasoning-mode">
+          <option value="">Provider default</option>
+          <option value="off">Off</option>
+          <option value="enabled">On (model default)</option>
+          <option value="minimal">Minimal</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
+          <option value="xhigh">XHigh</option>
+        </select>
+      </div>
+      <div class="form-row"><label>Thinking token budget</label><input type="number" id="llm-reasoning-max-tokens" min="0" placeholder="leer = effort" /></div>
       <div class="form-row"><label>Tool rounds</label><input type="number" id="llm-max-tool-rounds" value="0" min="0" placeholder="0 = unlimited" /></div>
       <div class="form-row"><label>API calls / window</label><input type="number" id="llm-rate-calls" min="0" placeholder="leer/0 = off" /></div>
       <div class="form-row"><label>Rate window (seconds)</label><input type="number" id="llm-rate-window" value="60" min="1" /></div>
+      <div style="display:flex;align-items:end;padding-bottom:2px;">
+        <label style="display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--text-dim);"><input type="checkbox" id="llm-reasoning-exclude" checked> Hide reasoning output</label>
+      </div>
       <div style="display:flex;align-items:end;padding-bottom:2px;">
         <label style="display:inline-flex;gap:6px;align-items:center;font-size:12px;color:var(--text-dim);"><input type="checkbox" id="llm-rate-enabled"> Enable API rate limit</label>
       </div>
@@ -1299,6 +1336,7 @@ body::after {
       <label>LLM Provider</label>
       <select id="wizard-provider">
         <option value="Grok">Grok / xAI</option>
+        <option value="DeepSeek">DeepSeek</option>
         <option value="OpenAICompat">OpenAI Compatible</option>
         <option value="Ollama">Ollama (local)</option>
         <option value="Anthropic">Anthropic Claude</option>
@@ -1317,7 +1355,7 @@ body::after {
 
     <div class="form-row">
       <label>Model</label>
-      <input type="text" id="wizard-model" placeholder="grok-4-1-fast-non-reasoning" />
+      <input type="text" id="wizard-model" placeholder="model-name" />
     </div>
 
     <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
@@ -1588,6 +1626,7 @@ function llmTypIcon(typ) {
     case 'OpenAICompat': return '\uD83C\uDF10';
     case 'Anthropic': return '\uD83E\uDD16';
     case 'Grok': return '\uD83D\uDC7E';
+    case 'DeepSeek': return 'DS';
     default: return '\u2699';
   }
 }
@@ -2763,6 +2802,7 @@ function populateWizardSettings(cfg) {
   var providerLabel = 'Claude';
   if (llm.typ === 'Anthropic') providerLabel = 'Claude';
   else if (llm.typ === 'Grok')  providerLabel = 'Grok';
+  else if (llm.typ === 'DeepSeek')  providerLabel = 'DeepSeek';
   else if (llm.typ === 'OpenAICompat') {
     providerLabel = /openrouter/i.test(llm.url || '') ? 'OpenRouter'
       : /api\.openai\.com/i.test(llm.url || '') ? 'OpenAI'
@@ -2786,17 +2826,19 @@ function collectWizardSettings() {
   var typ = 'Anthropic';
   if (providerLabel === 'OpenAI' || providerLabel === 'OpenRouter' || providerLabel === 'Local/LAN') typ = 'OpenAICompat';
   else if (providerLabel === 'Grok') typ = 'Grok';
+  else if (providerLabel === 'DeepSeek') typ = 'DeepSeek';
   else if (providerLabel === 'Claude') typ = 'Anthropic';
   return {
     enabled: ge('wcfg-enabled').checked,
     llm: {
       id: providerLabel === 'Local/LAN' ? 'wizard-local' : 'wizard', name: providerLabel === 'Local/LAN' ? 'Wizard Local/LAN' : 'Wizard', typ: typ,
-      url: ge('wcfg-url').value, api_key: ge('wcfg-key').value,
-      model: ge('wcfg-model').value,
-      timeout_s: Math.max(1, Math.round((parseInt(ge('wcfg-timeout').value, 10) || 30000) / 1000)),
-      identity: {bot_name: '', greeting: '', system_prompt: ''},
-      max_tokens: null
-    },
+	      url: ge('wcfg-url').value, api_key: ge('wcfg-key').value,
+	      model: ge('wcfg-model').value,
+	      timeout_s: Math.max(1, Math.round((parseInt(ge('wcfg-timeout').value, 10) || 30000) / 1000)),
+	      identity: {bot_name: '', greeting: '', system_prompt: ''},
+	      max_tokens: null,
+	      reasoning: providerLabel === 'DeepSeek' ? {enabled: false, exclude: true} : null
+	    },
     allow_code_gen: ge('wcfg-codegen').checked,
     max_rounds_per_session: parseInt(ge('wcfg-rounds').value, 10) || 30,
     max_tool_rounds_per_turn: 5,
@@ -2966,6 +3008,143 @@ async function restoreBackup(slot) {
 setInterval(refreshBackupsList, 30000);
 document.addEventListener('DOMContentLoaded', refreshBackupsList);
 
+var wizardFetchedModels = [];
+var llmFetchedModels = [];
+
+function normalizeModelEntry(m) {
+  if (!m) return null;
+  if (typeof m === 'string') return {id: m, display_name: m, free: /:free$/i.test(m)};
+  var id = String(m.id || m.name || '').trim();
+  if (!id) return null;
+  return {
+    id: id,
+    display_name: String(m.display_name || m.name || id),
+    free: !!m.free || /:free$/i.test(id)
+  };
+}
+
+function normalizeModelList(models) {
+  var seen = {};
+  return (models || []).map(normalizeModelEntry).filter(function(m) {
+    if (!m || seen[m.id]) return false;
+    seen[m.id] = true;
+    return true;
+  }).sort(function(a, b) {
+    var an = (a.display_name || a.id).toLowerCase();
+    var bn = (b.display_name || b.id).toLowerCase();
+    return an.localeCompare(bn) || a.id.toLowerCase().localeCompare(b.id.toLowerCase());
+  });
+}
+
+function filterModelList(models, searchId, freeId) {
+  var search = ge(searchId);
+  var free = ge(freeId);
+  var q = search ? search.value.trim().toLowerCase() : '';
+  return (models || []).filter(function(m) {
+    if (free && free.checked && !m.free) return false;
+    if (!q) return true;
+    return m.id.toLowerCase().indexOf(q) >= 0 || (m.display_name || '').toLowerCase().indexOf(q) >= 0;
+  });
+}
+
+function renderModelSelect(selectId, inputId, toolsId, searchId, freeId, countId, models, selectFirst) {
+  var sel = ge(selectId);
+  var input = ge(inputId);
+  if (!sel || !input) return [];
+  var filtered = filterModelList(models, searchId, freeId);
+  var current = input.value;
+  sel.innerHTML = '';
+  filtered.forEach(function(m) {
+    var opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = (m.display_name && m.display_name !== m.id ? m.display_name + ' · ' : '') + m.id + (m.free ? ' · free' : '');
+    if (m.id === current) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  if (ge(toolsId)) ge(toolsId).style.display = models.length ? 'flex' : 'none';
+  if (ge(countId)) {
+    var freeCount = (models || []).filter(function(m) { return m.free; }).length;
+    ge(countId).textContent = filtered.length + '/' + models.length + ' Modelle' + (freeCount ? ' · ' + freeCount + ' gratis' : '');
+  }
+  if (models.length) {
+    sel.style.display = 'block';
+    input.style.display = 'none';
+  }
+  if (selectFirst && filtered.length && (!current || !filtered.some(function(m) { return m.id === current; }))) {
+    input.value = filtered[0].id;
+    sel.value = filtered[0].id;
+  }
+  if (!filtered.length && models.length) {
+    input.style.display = 'block';
+    sel.style.display = 'none';
+  }
+  sel.onchange = function() { input.value = this.value; };
+  return filtered;
+}
+
+function renderWizardModelList(selectFirst) {
+  return renderModelSelect(
+    'wcfg-model-select',
+    'wcfg-model',
+    'wcfg-model-tools',
+    'wcfg-model-search',
+    'wcfg-model-free-only',
+    'wcfg-model-count',
+    wizardFetchedModels,
+    selectFirst
+  );
+}
+
+function renderLlmModelList(selectFirst) {
+  return renderModelSelect(
+    'llm-model-select',
+    'llm-model',
+    'llm-model-tools',
+    'llm-model-search',
+    'llm-model-free-only',
+    'llm-model-count',
+    llmFetchedModels,
+    selectFirst
+  );
+}
+
+function clearLlmModelPicker() {
+  llmFetchedModels = [];
+  if (ge('llm-model-select')) {
+    ge('llm-model-select').style.display = 'none';
+    ge('llm-model-select').innerHTML = '';
+  }
+  if (ge('llm-model')) ge('llm-model').style.display = 'block';
+  if (ge('llm-model-tools')) ge('llm-model-tools').style.display = 'none';
+  if (ge('llm-model-search')) ge('llm-model-search').value = '';
+  if (ge('llm-model-free-only')) ge('llm-model-free-only').checked = false;
+  if (ge('llm-model-count')) ge('llm-model-count').textContent = '';
+}
+
+function clearWizardModelPicker() {
+  wizardFetchedModels = [];
+  if (ge('wcfg-model-select')) {
+    ge('wcfg-model-select').innerHTML = '';
+    ge('wcfg-model-select').style.display = 'inline-block';
+  }
+  if (ge('wcfg-model')) ge('wcfg-model').style.display = 'inline-block';
+  if (ge('wcfg-model-tools')) ge('wcfg-model-tools').style.display = 'none';
+  if (ge('wcfg-model-search')) ge('wcfg-model-search').value = '';
+  if (ge('wcfg-model-free-only')) ge('wcfg-model-free-only').checked = false;
+  if (ge('wcfg-model-count')) ge('wcfg-model-count').textContent = '';
+}
+
+['wcfg-model-search', 'wcfg-model-free-only'].forEach(function(id) {
+  document.addEventListener(id.indexOf('search') >= 0 ? 'input' : 'change', function(ev) {
+    if (ev.target && ev.target.id === id) renderWizardModelList(true);
+  });
+});
+['llm-model-search', 'llm-model-free-only'].forEach(function(id) {
+  document.addEventListener(id.indexOf('search') >= 0 ? 'input' : 'change', function(ev) {
+    if (ev.target && ev.target.id === id) renderLlmModelList(true);
+  });
+});
+
 async function refreshWizardModels() {
   var provider = ge('wcfg-provider').value;
   var url = encodeURIComponent(ge('wcfg-url').value);
@@ -2975,14 +3154,9 @@ async function refreshWizardModels() {
     var r = await fetch('/api/wizard/models?provider=' + provider + '&api_url=' + url + '&api_key=' + key, {headers: headers});
     if (!r.ok) { alert('Models pull failed: ' + r.status); return; }
     var d = await r.json();
-    var sel = ge('wcfg-model-select');
-    if (!sel) return;
-    sel.innerHTML = '';
-    (d.models || []).forEach(function(m) {
-      var opt = document.createElement('option');
-      opt.value = m.id; opt.textContent = m.display_name || m.id;
-      sel.appendChild(opt);
-    });
+    wizardFetchedModels = normalizeModelList(d.model_infos || d.models || []);
+    if (!wizardFetchedModels.length) { alert('Keine Modelle gefunden'); return; }
+    renderWizardModelList(true);
   } catch(e) { alert('Pull failed: ' + e); }
 }
 
@@ -3011,11 +3185,16 @@ async function testWizardConnection() {
     var sel = ge('wcfg-provider');
     if (!sel) return;
     sel.addEventListener('change', function() {
-      var urls = { Claude: 'https://api.anthropic.com', OpenAI: 'https://api.openai.com',
-                   Grok: 'https://api.x.ai', OpenRouter: 'https://openrouter.ai',
-                   'Local/LAN': '' };
-      if (ge('wcfg-url')) ge('wcfg-url').value = urls[this.value] || '';
-    });
+	      var urls = { Claude: 'https://api.anthropic.com', OpenAI: 'https://api.openai.com',
+	                   Grok: 'https://api.x.ai', OpenRouter: 'https://openrouter.ai/api',
+	                   DeepSeek: 'https://api.deepseek.com',
+	                   'Local/LAN': '' };
+	      if (ge('wcfg-url')) ge('wcfg-url').value = urls[this.value] || '';
+	      if (this.value === 'DeepSeek' && ge('wcfg-model') && !ge('wcfg-model').value.trim()) {
+	        ge('wcfg-model').value = 'deepseek-v4-flash';
+	      }
+	      clearWizardModelPicker();
+	    });
   });
 })();
 
@@ -3864,6 +4043,41 @@ function collectLlmCostCap() {
   return cap;
 }
 
+function setLlmReasoningForm(b) {
+  var r = b && b.reasoning || null;
+  var mode = '';
+  if (r) {
+    if (r.enabled === false) mode = 'off';
+    else if (r.effort) mode = String(r.effort);
+    else if (r.enabled === true) mode = 'enabled';
+  }
+  ge('llm-reasoning-mode').value = mode;
+  ge('llm-reasoning-max-tokens').value = r && r.max_tokens ? String(r.max_tokens) : '';
+  ge('llm-reasoning-exclude').checked = !r || r.exclude !== false;
+}
+
+function collectLlmReasoning() {
+  var mode = ge('llm-reasoning-mode').value || '';
+  var maxTokens = readNullableInt('llm-reasoning-max-tokens');
+  if (!mode && maxTokens == null) return null;
+  var reasoning = {
+    exclude: ge('llm-reasoning-exclude').checked
+  };
+  if (mode === 'off') {
+    reasoning.enabled = false;
+    return reasoning;
+  }
+  if (maxTokens != null) {
+    reasoning.max_tokens = maxTokens;
+    if (!mode) reasoning.enabled = true;
+  } else if (mode === 'enabled') {
+    reasoning.enabled = true;
+  } else if (mode) {
+    reasoning.effort = mode;
+  }
+  return reasoning;
+}
+
 function setLlmRuntimeLimitsForm(b) {
   b = b || {};
   ge('llm-max-tool-rounds').value = b.max_tool_rounds == null ? 0 : String(b.max_tool_rounds);
@@ -3888,12 +4102,14 @@ function collectLlmCallRateLimit() {
 function editLlm(idx) {
   editingLlmIdx = idx;
   var b = appConfig.llm_backends[idx];
+  clearLlmModelPicker();
   ge('modal-llm-title').textContent = 'Edit LLM Gem';
   ge('llm-id').value = b.id; ge('llm-id').disabled = true;
   ge('llm-name').value = b.name; ge('llm-typ').value = providerFromBackend(b);
   ge('llm-url').value = b.url; ge('llm-model').value = b.model;
   ge('llm-apikey').value = b.api_key || ''; ge('llm-timeout').value = b.timeout_s;
   ge('llm-max-tokens').value = b.max_tokens || '';
+  setLlmReasoningForm(b);
   setLlmCostCapForm(b.cost_cap || null);
   setLlmRuntimeLimitsForm(b);
   ge('llm-bot-name').value = (b.identity && b.identity.bot_name) || '';
@@ -3904,6 +4120,7 @@ function editLlm(idx) {
 
 function openNewLlmGem() {
   editingLlmIdx = -1;
+  clearLlmModelPicker();
   ge('modal-llm-title').textContent = 'Add LLM Gem';
   ge('llm-id').value = '';
   ge('llm-id').disabled = false;
@@ -3911,12 +4128,10 @@ function openNewLlmGem() {
   ge('llm-typ').value = 'llamacpp';
   ge('llm-url').value = '';
   ge('llm-model').value = '';
-  ge('llm-model').style.display = 'block';
-  ge('llm-model-select').style.display = 'none';
-  ge('llm-model-select').innerHTML = '';
   ge('llm-apikey').value = '';
   ge('llm-timeout').value = 120;
   ge('llm-max-tokens').value = '';
+  setLlmReasoningForm(null);
   setLlmCostCapForm(null);
   setLlmRuntimeLimitsForm({max_tool_rounds: 0, call_rate_limit: null});
   ge('llm-bot-name').value = '';
@@ -3946,38 +4161,24 @@ ge('llm-fetch-models').addEventListener('click', function() {
     model: ge('llm-model').value.trim() || 'local',
     timeout_s: parseInt(ge('llm-timeout').value) || 120,
     max_tokens: parseInt(ge('llm-max-tokens').value) || null,
+    reasoning: collectLlmReasoning(),
     max_tool_rounds: modelMaxToolRounds,
     call_rate_limit: collectLlmCallRateLimit(),
     identity: { bot_name: 'Agent', greeting: '', system_prompt: 'Du bist ein hilfreicher Assistent.' }
   }).then(function(data) {
     if (data.error) { toast('Modelle laden fehlgeschlagen: ' + data.error, 'error'); return; }
-    _showModelList(data.models || []);
+    _showModelList(data.model_infos || data.models || []);
   }).catch(function(e) { toast('Modelle laden fehlgeschlagen: ' + e.message, 'error'); });
 });
 
 function _showModelList(models) {
-  var sel = ge('llm-model-select');
-  var input = ge('llm-model');
-  if (models.length === 0) {
+  llmFetchedModels = normalizeModelList(models);
+  if (llmFetchedModels.length === 0) {
     toast('Keine Modelle gefunden', 'info');
     return;
   }
-  sel.innerHTML = '';
-  var currentModel = input.value;
-  models.forEach(function(m) {
-    var opt = document.createElement('option');
-    opt.value = m; opt.textContent = m;
-    if (m === currentModel) opt.selected = true;
-    sel.appendChild(opt);
-  });
-  sel.style.display = 'block';
-  input.style.display = 'none';
-  sel.addEventListener('change', function() { input.value = this.value; });
-  if (!currentModel || models.indexOf(currentModel) === -1) {
-    input.value = models[0];
-    sel.value = models[0];
-  }
-  toast(models.length + ' Modelle geladen', 'success');
+  renderLlmModelList(true);
+  toast(llmFetchedModels.length + ' Modelle geladen', 'success');
 }
 
 function slugifyId(value) {
@@ -3998,6 +4199,7 @@ function uniqueLlmId(baseId) {
 var LLM_PROVIDER_DEFAULT_URLS = {
   llamacpp: '',
   openrouter: 'https://openrouter.ai/api',
+  deepseek: 'https://api.deepseek.com',
   openai: 'https://api.openai.com',
   'custom-openai': '',
   ollama: 'http://localhost:11434',
@@ -4008,6 +4210,7 @@ var LLM_PROVIDER_DEFAULT_URLS = {
 var LLM_PROVIDER_PLACEHOLDERS = {
   llamacpp: 'http://192.168.x.x:8080',
   openrouter: 'https://openrouter.ai/api',
+  deepseek: 'https://api.deepseek.com',
   openai: 'https://api.openai.com',
   'custom-openai': 'https://host.example/v1',
   ollama: 'http://localhost:11434',
@@ -4015,10 +4218,15 @@ var LLM_PROVIDER_PLACEHOLDERS = {
   grok: 'https://api.x.ai'
 };
 
+var LLM_PROVIDER_DEFAULT_MODELS = {
+  deepseek: 'deepseek-v4-flash'
+};
+
 function llmProviderToTyp(provider) {
   if (provider === 'ollama') return 'Ollama';
   if (provider === 'anthropic') return 'Anthropic';
   if (provider === 'grok') return 'Grok';
+  if (provider === 'deepseek') return 'DeepSeek';
   return 'OpenAICompat';
 }
 
@@ -4027,7 +4235,9 @@ function providerFromBackend(backend) {
   if (backend.typ === 'Ollama') return 'ollama';
   if (backend.typ === 'Anthropic') return 'anthropic';
   if (backend.typ === 'Grok') return 'grok';
+  if (backend.typ === 'DeepSeek') return 'deepseek';
   var url = (backend.url || '').toLowerCase();
+  if (url.indexOf('api.deepseek.com') >= 0) return 'deepseek';
   if (url.indexOf('openrouter') >= 0) return 'openrouter';
   if (url.indexOf('api.openai.com') >= 0) return 'openai';
   if (/localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])\./.test(url)) return 'llamacpp';
@@ -4037,6 +4247,7 @@ function providerFromBackend(backend) {
 function providerLabel(provider) {
   if (provider === 'llamacpp') return 'llama.cpp';
   if (provider === 'openrouter') return 'OpenRouter';
+  if (provider === 'deepseek') return 'DeepSeek';
   if (provider === 'openai') return 'OpenAI';
   if (provider === 'custom-openai') return 'OpenAI-compatible';
   if (provider === 'ollama') return 'Ollama';
@@ -4055,13 +4266,19 @@ function isKnownProviderDefaultUrl(url) {
 function updateLlmProviderUi(forceDefault) {
   var provider = ge('llm-typ').value;
   var urlEl = ge('llm-url');
+  var modelEl = ge('llm-model');
   var current = urlEl.value.trim();
   var next = LLM_PROVIDER_DEFAULT_URLS[provider] || '';
   urlEl.placeholder = LLM_PROVIDER_PLACEHOLDERS[provider] || 'https://host.example/v1';
   if (forceDefault || !current || isKnownProviderDefaultUrl(current)) urlEl.value = next;
-  ge('llm-model-select').style.display = 'none';
-  ge('llm-model-select').innerHTML = '';
-  ge('llm-model').style.display = 'block';
+  if (modelEl && LLM_PROVIDER_DEFAULT_MODELS[provider] && (forceDefault || !modelEl.value.trim())) {
+    modelEl.value = LLM_PROVIDER_DEFAULT_MODELS[provider];
+  }
+  if (provider === 'deepseek' && (forceDefault || !ge('llm-reasoning-mode').value)) {
+    ge('llm-reasoning-mode').value = 'off';
+    ge('llm-reasoning-exclude').checked = true;
+  }
+  clearLlmModelPicker();
 }
 
 ge('llm-typ').addEventListener('change', function() { updateLlmProviderUi(false); });
@@ -4083,6 +4300,7 @@ ge('llm-submit').addEventListener('click', function() {
 	    model: model, api_key: ge('llm-apikey').value.trim() || null,
 	    timeout_s: parseInt(ge('llm-timeout').value) || 120,
 	    max_tokens: maxTokens,
+	    reasoning: collectLlmReasoning(),
 	    max_tool_rounds: maxToolRounds,
 	    cost_cap: collectLlmCostCap(),
 	    call_rate_limit: collectLlmCallRateLimit(),
@@ -4122,6 +4340,7 @@ ge('llm-test').addEventListener('click', function() {
     model: model,
     timeout_s: parseInt(ge('llm-timeout').value) || 120,
     max_tokens: parseInt(ge('llm-max-tokens').value) || 24,
+    reasoning: collectLlmReasoning(),
     max_tool_rounds: testMaxToolRounds,
     call_rate_limit: collectLlmCallRateLimit(),
     identity: { bot_name: 'Agent', greeting: '', system_prompt: 'Du bist ein hilfreicher Assistent.' }
@@ -4143,8 +4362,11 @@ ge('modal-llm-cancel').addEventListener('click', function() { closeModal('modal-
 
 /* Agent Creation Wizard */
 ge('wizard-provider').addEventListener('change', function() {
-  var urls = { Grok: 'https://api.x.ai', OpenAICompat: 'https://api.openai.com', Ollama: 'http://localhost:11434', Anthropic: 'https://api.anthropic.com' };
+  var urls = { Grok: 'https://api.x.ai', DeepSeek: 'https://api.deepseek.com', OpenAICompat: 'https://api.openai.com', Ollama: 'http://localhost:11434', Anthropic: 'https://api.anthropic.com' };
   ge('wizard-url').value = urls[this.value] || '';
+  if (this.value === 'DeepSeek' && ge('wizard-model') && !ge('wizard-model').value.trim()) {
+    ge('wizard-model').value = 'deepseek-v4-flash';
+  }
 });
 
 function generateSystemPrompt(name, lang, personality) {
@@ -4191,10 +4413,11 @@ function finishWizard() {
     name: name,
     typ: provider,
     url: url,
-    api_key: apikey || null,
-    model: model,
-    timeout_s: 120,
-    identity: {
+	    api_key: apikey || null,
+	    model: model,
+	    timeout_s: 120,
+	    reasoning: provider === 'DeepSeek' ? {enabled: false, exclude: true} : null,
+	    identity: {
       bot_name: name,
       greeting: lang === 'de' ? 'Hallo! Ich bin ' + name + '.' : 'Hello! I am ' + name + '.',
       system_prompt: prompt
