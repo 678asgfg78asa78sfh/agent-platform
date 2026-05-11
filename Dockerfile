@@ -19,6 +19,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
+        python3-bs4 \
         python3-pip \
         ca-certificates \
         tini \
