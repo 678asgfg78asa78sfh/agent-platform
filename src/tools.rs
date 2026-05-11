@@ -1732,6 +1732,7 @@ fn build_agent_meta_modules_snapshot(
                          "google_api_key":{"type":"password","label":"Google API Key","default":""},
                          "google_cx":{"type":"string","label":"Google CX","default":""},
                          "grok_api_key":{"type":"password","label":"Grok API Key","default":""},
+                         "grok_model":{"type":"string","label":"Grok Search Model","default":"grok-4.3"},
                          "max_results":{"type":"number","label":"Max Ergebnisse","default":8}},
             "tools": [{"name":"web.search","description":"Web-Suche","params":["query"]},
                       {"name":"http.get","description":"URL abrufen","params":["url"]}]

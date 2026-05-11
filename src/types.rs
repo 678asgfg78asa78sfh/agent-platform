@@ -251,6 +251,8 @@ pub struct ModulSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grok_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grok_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<u32>, // default: 8
 
     // ── Cron ─────────────────────────────────────

@@ -13,6 +13,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+try:
+    import job_history_common as job_history
+except Exception:  # pragma: no cover
+    job_history = None
+
 
 MODULE = {
     "name": "ebay_de",
@@ -179,6 +186,7 @@ def _search(params, config, analysis_first=False):
             lines.append("setup_required: eBay Browse API Credentials fehlen im Modul oder in EBAY_CLIENT_ID/EBAY_CLIENT_SECRET/EBAY_ACCESS_TOKEN.")
         lines.extend(f"- {e}" for e in errors)
         lines.append("hint: Fuer stabile Ergebnisse eBay Developer Client ID/Secret oder access_token in den Modul-Settings setzen.")
+        record_history("ebay_de", "ebay_de.analyze" if analysis_first else "ebay_de.search", query, payload, "failed", config, [], "; ".join(errors), {"setup_missing": setup_missing})
         return fail("\n".join(lines))
 
     listings = dedupe_listings(listings)
@@ -187,6 +195,22 @@ def _search(params, config, analysis_first=False):
     filter_report["dropped"] = dropped
     listings = listings[:limit]
     analysis = analyze_listings(listings)
+    record_history(
+        "ebay_de",
+        "ebay_de.analyze" if analysis_first else "ebay_de.search",
+        query,
+        payload,
+        "success",
+        config,
+        history_sources_from_listings(listings),
+        "",
+        {
+            "source": source,
+            "results": len(listings),
+            "priced_results": analysis.get("priced_count", 0),
+            "dropped": filter_report.get("dropped") or {},
+        },
+    )
     text = format_result(query, listings, analysis, source, raw, errors, analysis_first=analysis_first, filter_report=filter_report)
     return ok(limit_output(text, config))
 
@@ -795,6 +819,56 @@ def filter_help():
             'example: {"query":"Ryzen 5 3600","limit":80,"buying_option":"sofortkauf","condition":"gebraucht","seller_type":"privat","shipping":"free","location_country":"DE","sort":"price_asc"}',
         ]
     )
+
+
+def history_sources_from_listings(listings):
+    if job_history is None:
+        return []
+    sources = []
+    for item in listings:
+        sources.append(
+            job_history.source(
+                source_type="ebay_listing",
+                source_url=item.get("url", ""),
+                source_title=item.get("title", ""),
+                source_id=item.get("item_id", ""),
+                source_name=item.get("seller", ""),
+                score=item.get("total_eur"),
+                metadata={
+                    "price_eur": item.get("price_eur"),
+                    "shipping_eur": item.get("shipping_eur"),
+                    "total_eur": item.get("total_eur"),
+                    "condition": item.get("condition", ""),
+                    "condition_id": item.get("condition_id", ""),
+                    "seller_feedback": item.get("seller_feedback", ""),
+                    "seller_account_type": item.get("seller_account_type", ""),
+                    "location": item.get("location", ""),
+                    "buying_options": item.get("buying_options", ""),
+                    "source": item.get("source", ""),
+                },
+            )
+        )
+    return sources
+
+
+def record_history(module, tool, query, params, status, config, sources, error="", metrics=None):
+    if job_history is None:
+        return
+    try:
+        job_history.record_job(
+            module=module,
+            tool=tool,
+            query=query,
+            params=params,
+            status=status,
+            config=config,
+            sources=sources,
+            summary=f"{tool} {status}",
+            error=error,
+            metrics=metrics or {},
+        )
+    except Exception:
+        pass
 
 
 def build_search_url(query, payload, limit):

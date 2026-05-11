@@ -7,6 +7,7 @@ it does not log in, solve challenges, or bypass rate limits.
 
 import html
 import json
+import os
 import re
 import sys
 import time
@@ -14,10 +15,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 try:
     from bs4 import BeautifulSoup
 except Exception:  # pragma: no cover - runtime dependency guard
     BeautifulSoup = None
+
+try:
+    import job_history_common as job_history
+except Exception:  # pragma: no cover
+    job_history = None
 
 
 MODULE = {
@@ -116,9 +124,21 @@ def _search(params, config):
     url = build_search_url(query, payload, config)
     ok_fetch, body, err = fetch_url(url, config)
     if not ok_fetch:
+        record_history("reddit_scraper", "reddit_scraper.search", query, payload, "failed", config, [], err, {"url": url})
         return fail(f"REDDIT_SEARCH_FAILED\nquery: {query}\nurl: {url}\nerror: {err}")
 
     results = parse_search_html(body, limit, cfg_bool(payload.get("include_subreddits"), False))
+    record_history(
+        "reddit_scraper",
+        "reddit_scraper.search",
+        query,
+        payload,
+        "success",
+        config,
+        sources_from_search(results),
+        "",
+        {"url": url, "results": len(results)},
+    )
     text = format_search(query, url, results, payload)
     return ok(limit_output(text, config))
 
@@ -137,12 +157,24 @@ def _thread(params, config):
     target = build_thread_url(url, payload)
     ok_fetch, body, err = fetch_url(target, config)
     if not ok_fetch:
+        record_history("reddit_scraper", "reddit_scraper.thread", url, payload, "failed", config, [], err, {"url": target})
         return fail(f"REDDIT_THREAD_FAILED\nurl: {target}\nerror: {err}")
 
     comment_limit = cfg_int(payload.get("comment_limit", payload.get("comments", config.get("max_comments", 30))), 30, 0, 500)
     max_depth = cfg_int(payload.get("max_depth", config.get("max_comment_depth", 4)), 4, 0, 20)
     min_score = cfg_int(payload.get("min_score", -10_000), -10_000, -1000000, 1000000)
     parsed = parse_thread_html(body, target, comment_limit, max_depth, min_score)
+    record_history(
+        "reddit_scraper",
+        "reddit_scraper.thread",
+        parsed.get("post", {}).get("title") or target,
+        payload,
+        "success",
+        config,
+        sources_from_threads([parsed]),
+        "",
+        {"url": target, "comments_returned": len(parsed.get("comments") or [])},
+    )
     return ok(limit_output(format_thread(parsed), config))
 
 
@@ -166,6 +198,7 @@ def _pull(params, config):
     search_url = build_search_url(query, payload, config)
     ok_fetch, body, err = fetch_url(search_url, config)
     if not ok_fetch:
+        record_history("reddit_scraper", "reddit_scraper.pull", query, payload, "failed", config, [], err, {"url": search_url})
         return fail(f"REDDIT_PULL_FAILED\nquery: {query}\nurl: {search_url}\nerror: {err}")
 
     results = parse_search_html(body, search_limit, False)
@@ -182,6 +215,22 @@ def _pull(params, config):
             continue
         threads.append(parse_thread_html(thread_body, target, comments_per_thread, max_depth, min_score))
 
+    record_history(
+        "reddit_scraper",
+        "reddit_scraper.pull",
+        query,
+        payload,
+        "partial" if errors else "success",
+        config,
+        sources_from_search(results) + sources_from_threads(threads),
+        "; ".join(errors),
+        {
+            "search_url": search_url,
+            "search_results": len(results),
+            "threads_fetched": len(threads),
+            "errors": len(errors),
+        },
+    )
     text = format_pull(query, search_url, results, threads, errors, payload)
     return ok(limit_output(text, config))
 
@@ -466,6 +515,72 @@ def help_text():
             'example pull: {"query":"UFO disclosure","threads":3,"comments_per_thread":25,"sort":"relevance","time":"month"}',
         ]
     )
+
+
+def sources_from_search(results):
+    if job_history is None:
+        return []
+    return [
+        job_history.source(
+            source_type="reddit_thread" if item.get("kind") == "thread" else "reddit_subreddit",
+            source_url=item.get("url", ""),
+            source_title=item.get("title", ""),
+            source_id=item.get("id", ""),
+            source_name=item.get("subreddit", ""),
+            score=item.get("score"),
+            metadata={
+                "comments": item.get("comments"),
+                "age": item.get("age"),
+                "author": item.get("author"),
+                "snippet": item.get("snippet", ""),
+            },
+        )
+        for item in results
+    ]
+
+
+def sources_from_threads(threads):
+    if job_history is None:
+        return []
+    sources = []
+    for parsed in threads:
+        post = parsed.get("post") or {}
+        sources.append(
+            job_history.source(
+                source_type="reddit_thread",
+                source_url=parsed.get("url") or post.get("url", ""),
+                source_title=post.get("title", ""),
+                source_id=post.get("id", ""),
+                source_name=post.get("subreddit", ""),
+                score=post.get("score"),
+                metadata={
+                    "author": post.get("author", ""),
+                    "comments_total": post.get("comments"),
+                    "comments_returned": len(parsed.get("comments") or []),
+                },
+            )
+        )
+    return sources
+
+
+def record_history(module, tool, query, params, status, config, sources, error="", metrics=None):
+    if job_history is None:
+        return
+    try:
+        job_history.record_job(
+            module=module,
+            tool=tool,
+            query=query,
+            params=params,
+            status=status,
+            config=config,
+            sources=sources,
+            summary=f"{tool} {status}",
+            error=error,
+            metrics=metrics or {},
+        )
+    except Exception:
+        pass
 
 
 def normalize_reddit_url(url):

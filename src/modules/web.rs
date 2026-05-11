@@ -423,17 +423,30 @@ async fn search_grok(settings: &ModulSettings, query: &str) -> ToolResult {
     };
 
     let client = build_client(30);
+    let model = settings
+        .grok_model
+        .as_deref()
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or("grok-4.3");
     let body = serde_json::json!({
-        "model": "grok-3-mini",
-        "messages": [
-            {"role": "system", "content": "Du bist ein Web-Recherche-Assistent. Suche nach der Anfrage und gib die wichtigsten Ergebnisse als strukturierte Liste zurück. Pro Ergebnis: Titel, URL, kurze Beschreibung."},
-            {"role": "user", "content": format!("Suche im Web nach: {}", query)}
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": "Du bist ein Web-Recherche-Assistent. Nutze Web Search und gib die wichtigsten Ergebnisse als strukturierte Liste zurueck. Pro Ergebnis: Titel, URL, kurze Beschreibung."
+            },
+            {
+                "role": "user",
+                "content": format!("Suche im Web nach: {}", query)
+            }
         ],
-        "search_mode": "auto"
+        "tools": [
+            {"type": "web_search"}
+        ]
     });
 
     let resp = match client
-        .post("https://api.x.ai/v1/chat/completions")
+        .post("https://api.x.ai/v1/responses")
         .header("Authorization", format!("Bearer {}", api_key))
         .header("Content-Type", "application/json")
         .json(&body)
@@ -444,26 +457,51 @@ async fn search_grok(settings: &ModulSettings, query: &str) -> ToolResult {
         Err(e) => return ToolResult::fail(format!("Grok Fehler: {}", e)),
     };
 
+    let status = resp.status();
     let data: serde_json::Value = match resp.json().await {
         Ok(d) => d,
         Err(e) => return ToolResult::fail(format!("Grok Parse Fehler: {}", e)),
     };
+    if !status.is_success() {
+        return ToolResult::fail(format!("Grok HTTP {}: {}", status, data));
+    }
 
-    let content = data["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("");
+    let content = extract_responses_text(&data);
     if content.is_empty() {
         ToolResult::fail("Grok: Leere Antwort".into())
     } else {
         ToolResult::ok(format!(
             "Grok Web Search für '{}':\n\n{}",
             query,
-            truncate(content, 4000)
+            truncate(&content, 4000)
         ))
     }
 }
 
 // ─── Helpers ───────────────────────────────────────
+
+fn extract_responses_text(data: &serde_json::Value) -> String {
+    if let Some(text) = data.get("output_text").and_then(|v| v.as_str()) {
+        return text.to_string();
+    }
+
+    let mut parts = Vec::new();
+    if let Some(output) = data.get("output").and_then(|v| v.as_array()) {
+        for item in output {
+            if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
+                for block in content {
+                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                        parts.push(text.to_string());
+                    }
+                }
+            }
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                parts.push(text.to_string());
+            }
+        }
+    }
+    parts.join("\n")
+}
 
 fn build_client(timeout_secs: u64) -> reqwest::Client {
     // SSRF-Schutz auf jedem Redirect-Hop: der initiale URL wird von
