@@ -228,6 +228,8 @@ const SECRET_KEYS: &[&str] = &[
     "serper_api_key",
     "google_api_key",
     "grok_api_key",
+    "grok_search_api_key",
+    "xai_api_key",
     "api_auth_token",
 ];
 

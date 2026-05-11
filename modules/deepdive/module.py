@@ -25,11 +25,13 @@ from uuid import uuid4
 
 MODUL_DIR = os.path.dirname(os.path.abspath(__file__))
 _RSS_MODULE = None
+_REDDIT_MODULE = None
+_GROK_SEARCH_MODULE = None
 
 MODULE = {
     "name": "deepdive",
     "description": "Crawler fuer mehrstufige Recherche: Web suchen, Quellen abrufen, Datum/Text/Links extrahieren und RAG-Notizen speichern.",
-    "version": "1.9",
+    "version": "2.0",
     "settings": {
         "max_sources": {"type": "number", "label": "Seed-Quellen pro Crawl", "default": 8},
         "max_search_queries": {"type": "number", "label": "Suchvarianten", "default": 6},
@@ -43,6 +45,13 @@ MODULE = {
         "search_provider": {"type": "select", "label": "Websuche", "default": "auto", "options": ["auto", "tavily", "duckduckgo"]},
         "tavily_api_key": {"type": "password", "label": "Tavily API Key", "default": ""},
         "tavily_search_depth": {"type": "select", "label": "Tavily Suchtiefe", "default": "basic", "options": ["basic", "advanced"]},
+        "enable_reddit_sources": {"type": "bool", "label": "Reddit als DeepDive-Quelle", "default": False},
+        "reddit_max_threads": {"type": "number", "label": "Reddit Threads", "default": 3},
+        "enable_grok_search_sources": {"type": "bool", "label": "Grok Web/X Search als DeepDive-Quelle", "default": False},
+        "grok_search_api_key": {"type": "password", "label": "xAI API Key fuer DeepDive", "default": ""},
+        "grok_search_model": {"type": "string", "label": "Grok Search Model", "default": "grok-4.3"},
+        "grok_search_mode": {"type": "select", "label": "Grok Search Modus", "default": "research", "options": ["research", "web", "x"]},
+        "grok_search_max_sources": {"type": "number", "label": "Grok Quellen in Crawl", "default": 8},
         "allow_private_networks": {"type": "bool", "label": "Private/LAN URLs erlauben", "default": False},
         "dedupe_source_url_hours": {"type": "number", "label": "RAG-Dedupe fuer gleiche URL (Stunden)", "default": 72},
     },
@@ -244,6 +253,10 @@ def _crawl(query, config):
     timeout_s = _clamp_int(config.get("timeout_s"), 6, 3, 12)
     python_timeout_s = _clamp_int(config.get("python_timeout_s"), 120, 20, 180)
     max_chars = _clamp_int(config.get("max_chars_per_source"), 6000, 1200, 16000)
+    enable_reddit_sources = _cfg_bool(config.get("enable_reddit_sources"), False)
+    reddit_max_threads = _clamp_int(config.get("reddit_max_threads"), 3, 0, 6)
+    enable_grok_search_sources = _cfg_bool(config.get("enable_grok_search_sources"), False)
+    grok_search_max_sources = _clamp_int(config.get("grok_search_max_sources"), 8, 0, 20)
     allow_private = bool(config.get("allow_private_networks") or False)
     deadline = time.monotonic() + max(10, python_timeout_s - 5)
     crawl_started_at = datetime.now(timezone.utc)
@@ -264,6 +277,8 @@ def _crawl(query, config):
             "max_derived_queries": max_derived_queries,
             "timeout_s": timeout_s,
             "python_timeout_s": python_timeout_s,
+            "enable_reddit_sources": enable_reddit_sources,
+            "enable_grok_search_sources": enable_grok_search_sources,
         },
     )
     _tool_trace(
@@ -375,6 +390,68 @@ def _crawl(query, config):
     if rss_candidates_added:
         _trace(trace, "rss.inject", {"added": rss_candidates_added})
         _tool_trace(tool_trace, "rss_verwaltung.fuer_deepdive", "OK", {"added_candidates": rss_candidates_added})
+
+    external_packets = []
+    if enable_reddit_sources and reddit_max_threads > 0:
+        try:
+            packet, reddit_urls = _collect_reddit_sources(query, reddit_max_threads, config)
+            stored, storage_msg = _store_rag_note(_external_packet_note(crawl_id, query, "reddit_scraper.pull", packet), config)
+            external_packets.append(("reddit_scraper.pull", len(reddit_urls), stored, storage_msg))
+            added = 0
+            for reddit_url in reddit_urls[:reddit_max_threads]:
+                if reddit_url not in candidate_urls and _is_allowed_http_url(reddit_url, allow_private):
+                    candidate_urls.add(reddit_url)
+                    candidates.append({
+                        "title": "Reddit Thread",
+                        "url": reddit_url,
+                        "search_query": query,
+                        "depth": 0,
+                        "parent_url": "",
+                        "discovery_method": "reddit",
+                        "discovery_reason": f"Reddit-Diskussion passend zu: {query}",
+                    })
+                    added += 1
+            _trace(trace, "reddit.inject", {"urls": len(reddit_urls), "added": added, "stored": stored})
+            _tool_trace(
+                tool_trace,
+                "reddit_scraper.pull",
+                "OK",
+                {"urls": len(reddit_urls), "added_candidates": added, "rag": storage_msg},
+            )
+        except Exception as exc:
+            _trace(trace, "reddit.fail", {"error": str(exc)[:220]})
+            _tool_trace(tool_trace, "reddit_scraper.pull", "FAIL", {"error": str(exc)[:220]})
+
+    if enable_grok_search_sources and grok_search_max_sources > 0:
+        try:
+            packet, grok_urls, grok_tool = _collect_grok_search_sources(query, config)
+            stored, storage_msg = _store_rag_note(_external_packet_note(crawl_id, query, grok_tool, packet), config)
+            external_packets.append((grok_tool, len(grok_urls), stored, storage_msg))
+            added = 0
+            for grok_url in grok_urls[:grok_search_max_sources]:
+                if grok_url not in candidate_urls and _is_allowed_http_url(grok_url, allow_private):
+                    candidate_urls.add(grok_url)
+                    candidates.append({
+                        "title": "Grok Search Source",
+                        "url": grok_url,
+                        "search_query": query,
+                        "depth": 0,
+                        "parent_url": "",
+                        "discovery_method": "grok_search",
+                        "discovery_reason": f"Grok Web/X Search Quelle passend zu: {query}",
+                    })
+                    added += 1
+            _trace(trace, "grok_search.inject", {"tool": grok_tool, "urls": len(grok_urls), "added": added, "stored": stored})
+            _tool_trace(
+                tool_trace,
+                grok_tool,
+                "OK",
+                {"urls": len(grok_urls), "added_candidates": added, "rag": storage_msg},
+            )
+        except Exception as exc:
+            _trace(trace, "grok_search.fail", {"error": str(exc)[:220]})
+            _tool_trace(tool_trace, "grok_search", "FAIL", {"error": str(exc)[:220]})
+
     selected = _select_sources(candidates, max_sources, query)
     _trace(
         trace,
@@ -780,6 +857,7 @@ def _crawl(query, config):
         f"sources_fetched: {len(fetched)}/{max_total_pages}",
         f"rag_pool: {str(config.get('rag_pool') or 'DeepDive')}",
         f"manifest: {manifest_msg}",
+        f"external_packets: {len(external_packets)}",
         "",
         "Quellen (Seeds + Follow-ups):",
     ]
@@ -798,6 +876,10 @@ def _crawl(query, config):
     if search_errors:
         lines.extend(["", "Suchfehler:"])
         lines.extend(f"- {entry}" for entry in search_errors[:4])
+    if external_packets:
+        lines.extend(["", "Externe DeepDive-Pakete:"])
+        for tool, url_count, stored, storage_msg in external_packets[:6]:
+            lines.append(f"- {tool}: urls={url_count} rag_stored={stored} {storage_msg}")
 
     lines.extend(["", "DEEPDIVE_TOOL_TRACE:"])
     lines.extend(_tool_trace_lines(tool_trace))
@@ -839,16 +921,194 @@ def _load_rss_module():
     if _RSS_MODULE is not None:
         return _RSS_MODULE
 
-    rss_path = os.path.abspath(os.path.join(MODUL_DIR, "..", "rss_verwaltung", "module.py"))
-    if not os.path.exists(rss_path):
-        raise RuntimeError(f"RSS-Modul nicht gefunden: {rss_path}")
-    spec = importlib.util.spec_from_file_location("deepdive_rss_verwaltung", rss_path)
+    _RSS_MODULE = _load_sibling_module("rss_verwaltung", "deepdive_rss_verwaltung")
+    return _RSS_MODULE
+
+
+def _load_reddit_module():
+    global _REDDIT_MODULE
+    if _REDDIT_MODULE is not None:
+        return _REDDIT_MODULE
+    _REDDIT_MODULE = _load_sibling_module("reddit_scraper", "deepdive_reddit_scraper")
+    return _REDDIT_MODULE
+
+
+def _load_grok_search_module():
+    global _GROK_SEARCH_MODULE
+    if _GROK_SEARCH_MODULE is not None:
+        return _GROK_SEARCH_MODULE
+    _GROK_SEARCH_MODULE = _load_sibling_module("grok_search", "deepdive_grok_search")
+    return _GROK_SEARCH_MODULE
+
+
+def _load_sibling_module(module_name, import_name):
+    module_path = os.path.abspath(os.path.join(MODUL_DIR, "..", module_name, "module.py"))
+    if not os.path.exists(module_path):
+        raise RuntimeError(f"Modul nicht gefunden: {module_path}")
+    spec = importlib.util.spec_from_file_location(import_name, module_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"RSS-Modul kann nicht geladen werden: {rss_path}")
+        raise RuntimeError(f"Modul kann nicht geladen werden: {module_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    _RSS_MODULE = module
     return module
+
+
+def _collect_reddit_sources(query, max_threads, config):
+    reddit_module = _load_reddit_module()
+    reddit_config = _module_settings(config, "reddit_scraper")
+    reddit_config.update(
+        {
+            "data_dir": config.get("data_dir", ""),
+            "rag_pool": config.get("rag_pool", "DeepDive"),
+            "max_output_chars": max(16000, _clamp_int(reddit_config.get("max_output_chars"), 24000, 2000, 80000)),
+        }
+    )
+    payload = {
+        "query": query,
+        "threads": max_threads,
+        "comments_per_thread": _clamp_int(config.get("reddit_comments_per_thread"), 12, 0, 80),
+        "sort": str(config.get("reddit_sort") or "relevance"),
+        "time": str(config.get("reddit_time") or "month"),
+    }
+    result = reddit_module.handle_tool("reddit_scraper.pull", [json.dumps(payload)], reddit_config)
+    if not result.get("success"):
+        raise RuntimeError(result.get("data") or "reddit_scraper.pull failed")
+    packet = str(result.get("data") or "")
+    urls = _extract_urls(packet, allowed_hosts=("reddit.com", "old.reddit.com"))
+    thread_urls = [url for url in urls if "/comments/" in urllib.parse.urlparse(url).path]
+    if thread_urls:
+        urls = thread_urls
+    else:
+        urls = [url for url in urls if "/search/" not in urllib.parse.urlparse(url).path]
+    return packet, urls
+
+
+def _collect_grok_search_sources(query, config):
+    grok_module = _load_grok_search_module()
+    grok_config = _grok_search_config(config)
+    mode = str(config.get("grok_search_mode") or "research").strip().lower()
+    tool = {
+        "web": "grok_search.web",
+        "x": "grok_search.x",
+        "research": "grok_search.research",
+        "both": "grok_search.research",
+    }.get(mode, "grok_search.research")
+    payload = {
+        "query": query,
+        "max_output_tokens": _clamp_int(config.get("grok_search_max_output_tokens"), 900, 200, 6000),
+    }
+    if config.get("grok_search_allowed_domains"):
+        payload["allowed_domains"] = _csv_list(config.get("grok_search_allowed_domains"), 5)
+    if config.get("grok_search_allowed_x_handles"):
+        payload["allowed_x_handles"] = _csv_list(config.get("grok_search_allowed_x_handles"), 10)
+    result = grok_module.handle_tool(tool, [json.dumps(payload)], grok_config)
+    if not result.get("success"):
+        raise RuntimeError(result.get("data") or f"{tool} failed")
+    packet = str(result.get("data") or "")
+    return packet, _extract_urls(packet), tool
+
+
+def _external_packet_note(crawl_id, query, tool, packet):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    urls = _extract_urls(packet)
+    lines = [
+        "DEEPDIVE_EXTERNAL_PACKET",
+        f"crawl_id: {crawl_id}",
+        f"captured_at_utc: {now}",
+        f"source_last_seen_utc: {now}",
+        f"topic: {query}",
+        f"source_title: {tool} packet",
+        f"tool: {tool}",
+        f"urls_found: {len(urls)}",
+        "source_urls:",
+    ]
+    for url in urls[:30]:
+        lines.append("- " + url)
+    lines.extend(
+        [
+            "assessment_required: compare with fetched sources; treat social/X/Reddit as signal, not proof",
+            "packet_text:",
+            str(packet or "")[:20000],
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _module_settings(config, module_typ):
+    runtime = _runtime_config(config)
+    preferred_id = str((config or {}).get(f"{module_typ}_module_id") or "").strip()
+    candidates = [
+        module
+        for module in runtime.get("module", [])
+        if isinstance(module, dict)
+        and (module.get("typ") == module_typ or str(module.get("id", "")).startswith(f"{module_typ}."))
+    ]
+    selected = None
+    if preferred_id:
+        selected = next((module for module in candidates if module.get("id") == preferred_id or module.get("name") == preferred_id), None)
+    if selected is None:
+        selected = next((module for module in candidates if _settings_has_key(module.get("settings") or {})), None)
+    if selected is None and candidates:
+        selected = candidates[0]
+    settings = dict((selected or {}).get("settings") or {})
+    for key in ("data_dir", "rag_pool", "home_dir", "project_root", "modules_dir"):
+        if (config or {}).get(key) and not settings.get(key):
+            settings[key] = config.get(key)
+    return settings
+
+
+def _grok_search_config(config):
+    settings = _module_settings(config, "grok_search")
+    explicit_key = str((config or {}).get("grok_search_api_key") or "").strip()
+    if explicit_key:
+        settings["api_key"] = explicit_key
+    if not settings.get("api_key"):
+        backend_key = _xai_api_key_from_runtime(config)
+        if backend_key:
+            settings["api_key"] = backend_key
+    explicit_model = str((config or {}).get("grok_search_model") or "").strip()
+    if explicit_model:
+        settings["model"] = explicit_model
+    settings.setdefault("api_base", "https://api.x.ai")
+    settings.setdefault("model", "grok-4.3")
+    settings.setdefault("request_timeout_s", _clamp_int((config or {}).get("grok_search_timeout_s"), 60, 5, 300))
+    settings.setdefault("max_output_chars", 24000)
+    return settings
+
+
+def _runtime_config(config):
+    path = os.path.join(_data_dir(config), "config.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _data_dir(config):
+    configured = str((config or {}).get("data_dir") or "").strip()
+    if configured:
+        return configured
+    return os.path.abspath(os.path.join(MODUL_DIR, "..", "..", "agent-data"))
+
+
+def _settings_has_key(settings):
+    if not isinstance(settings, dict):
+        return False
+    return bool(settings.get("api_key") or settings.get("bearer_token") or settings.get("grok_api_key"))
+
+
+def _xai_api_key_from_runtime(config):
+    runtime = _runtime_config(config)
+    for backend in runtime.get("llm_backends", []):
+        if not isinstance(backend, dict):
+            continue
+        if backend.get("typ") == "Grok" or "grok" in str(backend.get("id", "")).lower():
+            key = str(backend.get("api_key") or "").strip()
+            if key:
+                return key
+    return os.environ.get("XAI_API_KEY", "").strip() or os.environ.get("GROK_API_KEY", "").strip()
 
 
 def _search_web(query, max_results, timeout_s, config):
@@ -1991,6 +2251,26 @@ def _extract_url(text):
     return m.group(0).rstrip(".,);]")
 
 
+def _extract_urls(text, allowed_hosts=None):
+    urls = []
+    seen = set()
+    for raw in re.findall(r"https?://[^\s<>\"]+", text or ""):
+        raw = raw.rstrip(".,);]}'\"")
+        url = _clean_url(raw)
+        if not url:
+            continue
+        if allowed_hosts:
+            host = (urllib.parse.urlparse(url).hostname or "").lower()
+            allowed = any(host == allowed_host or host.endswith("." + allowed_host) for allowed_host in allowed_hosts)
+            if not allowed:
+                continue
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
 def _extract_dates(text):
     patterns = [
         r"\b(?:19|20)\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\d|3[01])\b",
@@ -2024,6 +2304,26 @@ def _unique(values):
     return result
 
 
+def _csv_list(value, limit=10):
+    if isinstance(value, (list, tuple, set)):
+        parts = [str(item).strip() for item in value]
+    else:
+        parts = [part.strip() for part in re.split(r"[,\n;]+", str(value or ""))]
+    result = []
+    seen = set()
+    for part in parts:
+        if not part:
+            continue
+        key = part.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(part)
+        if len(result) >= limit:
+            break
+    return result
+
+
 def _safe_id(value):
     if not value or len(value) > 128:
         return ""
@@ -2040,6 +2340,21 @@ def _clamp_int(value, default, low, high):
     except Exception:
         n = default
     return max(low, min(high, n))
+
+
+def _cfg_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "ja", "on", "y"}:
+        return True
+    if text in {"0", "false", "no", "nein", "off", "n"}:
+        return False
+    return default
 
 
 def _keywords(text):
