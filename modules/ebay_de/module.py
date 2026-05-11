@@ -169,11 +169,14 @@ def _search(params, config, analysis_first=False):
             errors.append(err)
 
     if not listings:
+        setup_missing = not has_api_credentials(config)
         lines = [
             "EBAY_DE_SEARCH_FAILED",
             f"query: {query}",
             "reason: Keine Listings erhalten.",
         ]
+        if setup_missing:
+            lines.append("setup_required: eBay Browse API Credentials fehlen im Modul oder in EBAY_CLIENT_ID/EBAY_CLIENT_SECRET/EBAY_ACCESS_TOKEN.")
         lines.extend(f"- {e}" for e in errors)
         lines.append("hint: Fuer stabile Ergebnisse eBay Developer Client ID/Secret oder access_token in den Modul-Settings setzen.")
         return fail("\n".join(lines))
@@ -315,6 +318,15 @@ def get_access_token(config):
         return token
     except Exception:
         return ""
+
+
+def has_api_credentials(config):
+    access_token = str(config.get("access_token") or os.environ.get("EBAY_ACCESS_TOKEN") or "").strip()
+    if access_token:
+        return True
+    client_id = str(config.get("client_id") or os.environ.get("EBAY_CLIENT_ID") or "").strip()
+    client_secret = str(config.get("client_secret") or os.environ.get("EBAY_CLIENT_SECRET") or "").strip()
+    return bool(client_id and client_secret)
 
 
 def fetch_public_html(url, config):
@@ -836,7 +848,7 @@ def build_api_filters(payload, config=None):
     location_country = normalize_country(select_value(payload, "location_country", "item_location_country", "standort_land", "standort") or config.get("default_location_country"))
     if location_country:
         filters.append(f"itemLocationCountry:{location_country}")
-    delivery_country = normalize_country(select_value(payload, "delivery_country", "ship_to_country", "versandland") or config.get("default_delivery_country"))
+    delivery_country = normalize_country(select_value(payload, "delivery_country", "ship_to_country", "versandland") or config.get("default_delivery_country") or config.get("country") or "DE")
     delivery_postal = select_value(payload, "delivery_postal_code", "postal_code", "zip", "plz") or config.get("zip")
     ship_mode = shipping_mode(payload)
     shipping_max = select_value(payload, "shipping_max", "max_shipping", "max_delivery_cost", "versand_max")
