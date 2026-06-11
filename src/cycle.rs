@@ -1,10 +1,10 @@
 use crate::llm::LlmRouter;
 use crate::pipeline::Pipeline;
 use crate::tools;
+use crate::turn::{ActivityMarker, mark_activity, with_activity_heartbeat};
 use crate::types::*;
 use crate::util;
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::{
     Arc,
     atomic::{AtomicI64, Ordering},
@@ -15,16 +15,8 @@ const MAX_TASK_TOOL_RESULT_CHARS: usize = 4000;
 const MAX_TASK_OLD_TOOL_RESULT_CHARS: usize = 500;
 const MIN_TASK_IDLE_TIMEOUT_S: u64 = 30;
 
-type ActivityMarker = Arc<AtomicI64>;
-
 fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
-}
-
-fn mark_activity(activity: &Option<ActivityMarker>) {
-    if let Some(marker) = activity {
-        marker.store(now_ts(), Ordering::Relaxed);
-    }
 }
 
 fn idle_timed_out(last_activity_ts: i64, now_ts: i64, timeout_secs: u64) -> bool {
@@ -42,28 +34,6 @@ async fn wait_for_idle_timeout(activity: ActivityMarker, timeout_secs: u64) {
         let elapsed = now.saturating_sub(last).max(0) as u64;
         let sleep_s = timeout_secs.saturating_sub(elapsed).clamp(1, 5);
         tokio::time::sleep(std::time::Duration::from_secs(sleep_s)).await;
-    }
-}
-
-async fn with_activity_heartbeat<F>(activity: &Option<ActivityMarker>, future: F) -> F::Output
-where
-    F: Future,
-{
-    mark_activity(activity);
-    let Some(marker) = activity.clone() else {
-        return future.await;
-    };
-    tokio::pin!(future);
-    loop {
-        tokio::select! {
-            result = &mut future => {
-                marker.store(now_ts(), Ordering::Relaxed);
-                return result;
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                marker.store(now_ts(), Ordering::Relaxed);
-            }
-        }
     }
 }
 
@@ -1601,13 +1571,35 @@ async fn exec_llm(
         let cfg_snap = cfg_guard.clone();
         (gcfg, cfg_snap)
     };
-    let mut backend_id = modul.llm_backend.clone();
-    let mut model_str = cfg_snap
+    let backend_id = modul.llm_backend.clone();
+    let model_str = cfg_snap
         .llm_backends
         .iter()
         .find(|b| b.id == backend_id)
         .map(|b| b.model.clone())
         .unwrap_or_default();
+    let task_id = aufgabe.id.clone();
+    let task_modul_id = aufgabe.modul.clone();
+    let mut engine = crate::turn::TurnEngine {
+        pipeline,
+        llm,
+        cfg_snap: &cfg_snap,
+        gcfg: &gcfg,
+        py_mods_snap: &py_mods_snap,
+        modul: Some(&modul),
+        log_label: &modul.name,
+        log_task_id: Some(&task_id),
+        attribution_id: &task_modul_id,
+        tokens,
+        status_tx: None,
+        activity: activity.clone(),
+        tool_calls_disabled,
+        backup_id: modul.backup_llm.clone(),
+        backend_id,
+        model_str,
+        guardrail_retries: 0,
+        used_fallback: false,
+    };
 
     let mut messages: Vec<serde_json::Value> = vec![];
     messages.push(serde_json::json!({"role": "system", "content": full_system}));
@@ -1616,14 +1608,12 @@ async fn exec_llm(
     let final_answer;
     let mut tool_round = 0;
     let mut total_tokens: u64 = 0;
-    let mut guardrail_retries: u32 = 0;
-    let mut used_fallback = false;
 
     loop {
         if let Some(max_tool_rounds) = cfg_snap
             .llm_backends
             .iter()
-            .find(|b| b.id == backend_id)
+            .find(|b| b.id == engine.backend_id)
             .and_then(|b| b.tool_round_limit())
         {
             if tool_round >= max_tool_rounds {
@@ -1685,7 +1675,7 @@ async fn exec_llm(
             if let Err(hit) = crate::web::check_llm_cap(
                 &pipeline.store.pool,
                 &cfg_live,
-                &backend_id,
+                &engine.backend_id,
                 &messages,
                 aufgabe.cap_override,
             )
@@ -1713,342 +1703,46 @@ async fn exec_llm(
             }
         }
 
-        while let Some(wait) = llm.reserve_rate_slot_or_wait(&backend_id).await {
-            mark_activity(&activity);
-            let wait_s = wait.as_secs().max(1);
+        // LLM-Runde: Rate-Slot, Call (mit Backup), Token-Tracking, Text-Tag-
+        // Injektion, Guardrail-Retry/-Fallback, Multi-Call-Parsing — alles in
+        // der geteilten Turn-Engine (gleiche Logik wie im Chat-Loop, web.rs).
+        let (outcome, usage) = engine.run_round(&mut messages, &openai_tools).await;
+        total_tokens += usage.total();
+
+        // Token budget warning (pro Modul)
+        if token_budget_warning > 0
+            && total_tokens > token_budget_warning
+            && total_tokens - usage.total() <= token_budget_warning
+        {
             pipeline.log(
                 &modul.name,
                 Some(&aufgabe.id),
-                LogTyp::Info,
+                LogTyp::Warning,
                 &format!(
-                    "LLM call rate-limit aktiv: backend '{}' pausiert {}s",
-                    backend_id, wait_s
+                    "Token-Budget Warnung: {}/{} Tokens verbraucht",
+                    total_tokens, token_budget
                 ),
             );
-            tokio::time::sleep(wait).await;
         }
 
-        let result = with_activity_heartbeat(
-            &activity,
-            llm.chat_with_tools(
-                &backend_id,
-                modul.backup_llm.as_deref(),
-                &messages,
-                &openai_tools,
-            ),
-        )
-        .await;
 
-        match result {
-            Ok((response, mut raw_data)) => {
+        match outcome {
+            crate::turn::RoundOutcome::ToolCalls {
+                calls: parsed_calls,
+                raw_message,
+                ..
+            } => {
                 mark_activity(&activity);
-                // Token tracking lokal (Modul-Budget) + global (USD-Cap über web::track_tokens).
-                let input_tokens = raw_data
-                    .pointer("/usage/prompt_tokens")
-                    .and_then(|v| v.as_u64())
-                    .or_else(|| {
-                        raw_data
-                            .pointer("/prompt_eval_count")
-                            .and_then(|v| v.as_u64())
-                    })
-                    .unwrap_or(0);
-                let output_tokens = raw_data
-                    .pointer("/usage/completion_tokens")
-                    .and_then(|v| v.as_u64())
-                    .or_else(|| raw_data.pointer("/eval_count").and_then(|v| v.as_u64()))
-                    .unwrap_or(0);
-                total_tokens += input_tokens + output_tokens;
+                tool_round += 1;
 
-                let cfg_accounting = config.read().await.clone();
-                crate::web::track_tokens(
-                    &pipeline.store.pool,
-                    tokens,
-                    &cfg_accounting,
-                    &backend_id,
-                    &model_str,
-                    &aufgabe.modul,
-                    &raw_data,
-                )
-                .await;
-
-                // Guardrail-Bypass-Fix: wenn das LLM ein <tool>name(params)</tool> im
-                // Response-Text hatte statt OpenAI tool_calls, injiziere den Call als
-                // synthetische tool_calls in raw_data. Args werden mit den Schema-
-                // Namen versehen (required[] aus tools_as_openai_json) statt param0/
-                // param1 — sonst findet der downstream schema-aware Parser die Keys
-                // nicht und liefert alle Parameter leer zurück (GLM-Finding Run 5).
-                // Ohne Schema (unbekanntes Tool) fällt auf param<i> zurück; der Call
-                // wird dann beim Guardrail wegen "unknown tool" rejected — das ist
-                // das gewünschte Verhalten (fail-safe).
-                if raw_data.pointer("/choices/0/message/tool_calls").is_none() {
-                    if let Some((t_name, t_params)) = crate::tools::parse_tool_call(&response) {
-                        let schema =
-                            crate::tools::schema_required_for(&t_name, &modul, &py_mods_snap);
-                        let mut args = serde_json::Map::new();
-                        if let Some(ref schema_keys) = schema {
-                            // Schema-Reihenfolge: mappt params positionsweise auf required-Namen
-                            for (i, key) in schema_keys.iter().enumerate() {
-                                let val = t_params.get(i).cloned().unwrap_or_default();
-                                args.insert(key.clone(), serde_json::json!(val));
-                            }
-                        } else {
-                            // Kein Schema → synthetische param<i> Namen; der nachfolgende
-                            // Schema-basierte Parser findet sie nicht → alle Params empty →
-                            // Guardrail rejected das als unknown tool / invalid args.
-                            for (i, p) in t_params.iter().enumerate() {
-                                args.insert(format!("param{}", i), serde_json::json!(p));
-                            }
-                        }
-                        let args_str = serde_json::to_string(&args).unwrap_or("{}".into());
-                        let synthetic_call = serde_json::json!({
-                            "id": "call_fallback_tag",
-                            "type": "function",
-                            "function": {"name": t_name, "arguments": args_str},
-                        });
-                        if let Some(choice) = raw_data.pointer_mut("/choices/0/message") {
-                            if let Some(obj) = choice.as_object_mut() {
-                                obj.insert(
-                                    "tool_calls".into(),
-                                    serde_json::json!([synthetic_call]),
-                                );
-                            }
-                        } else if let Some(choices) = raw_data
-                            .pointer_mut("/choices")
-                            .and_then(|v| v.as_array_mut())
-                        {
-                            if choices.is_empty() {
-                                choices.push(serde_json::json!({"message": {"tool_calls": [synthetic_call]}}));
-                            }
-                        } else if let Some(obj) = raw_data.as_object_mut() {
-                            obj.insert(
-                                "choices".into(),
-                                serde_json::json!([
-                                    {"message": {"tool_calls": [synthetic_call]}}
-                                ]),
-                            );
-                        }
-                    }
-                }
-
-                // Token budget warning (pro Modul)
-                if token_budget_warning > 0
-                    && total_tokens > token_budget_warning
-                    && total_tokens - (input_tokens + output_tokens) <= token_budget_warning
-                {
-                    pipeline.log(
-                        &modul.name,
-                        Some(&aufgabe.id),
-                        LogTyp::Warning,
-                        &format!(
-                            "Token-Budget Warnung: {}/{} Tokens verbraucht",
-                            total_tokens, token_budget
-                        ),
-                    );
-                }
-
-                // ── Guardrail validation ───────────────────────────────────
-                if gcfg.enabled {
-                    let last_user_msg = messages
-                        .iter()
-                        .rev()
-                        .find(|m| m["role"] == "user")
-                        .and_then(|m| m["content"].as_str())
-                        .map(|s| s.to_string());
-                    let max_retries_for_backend = gcfg
-                        .per_backend_overrides
-                        .get(&backend_id)
-                        .copied()
-                        .unwrap_or(gcfg.max_retries);
-                    let vctx = crate::guardrail::ValidatorContext {
-                        modul_id: &aufgabe.modul,
-                        cfg: &cfg_snap,
-                        py_modules: &py_mods_snap,
-                        last_user_msg: last_user_msg.as_deref(),
-                        strict_mode: gcfg.strict_mode,
-                    };
-                    match crate::guardrail::validate_response(&raw_data, &vctx) {
-                        Ok(_parsed) => {
-                            let ev = crate::types::GuardrailEvent {
-                                ts: chrono::Utc::now().timestamp(),
-                                modul: aufgabe.modul.clone(),
-                                backend: backend_id.clone(),
-                                model: model_str.clone(),
-                                tool_name: _parsed.first().map(|c| c.tool_name.clone()),
-                                passed: true,
-                                errors: vec![],
-                                retry_attempt: guardrail_retries,
-                                final_outcome: if guardrail_retries > 0 {
-                                    "retried".into()
-                                } else {
-                                    "ok".into()
-                                },
-                                similar_suggestion: None,
-                            };
-                            let _ = crate::guardrail::log_event(&pipeline.base, &ev).await;
-                            guardrail_retries = 0;
-                        }
-                        Err(errors) => {
-                            let is_last = guardrail_retries >= max_retries_for_backend;
-                            let ev = crate::types::GuardrailEvent {
-                                ts: chrono::Utc::now().timestamp(),
-                                modul: aufgabe.modul.clone(),
-                                backend: backend_id.clone(),
-                                model: model_str.clone(),
-                                tool_name: None,
-                                passed: false,
-                                errors: errors.clone(),
-                                retry_attempt: guardrail_retries,
-                                final_outcome: if is_last {
-                                    "hard_fail".into()
-                                } else {
-                                    "retried".into()
-                                },
-                                similar_suggestion: None,
-                            };
-                            let _ = crate::guardrail::log_event(&pipeline.base, &ev).await;
-                            if is_last {
-                                // Check if backup_llm available + fallback flag on
-                                let mod_cfg =
-                                    cfg_snap.module.iter().find(|m| m.id == aufgabe.modul);
-                                let backup_id = mod_cfg.and_then(|m| m.backup_llm.clone());
-                                if gcfg.fallback_on_hard_fail
-                                    && backup_id.is_some()
-                                    && !used_fallback
-                                {
-                                    if let Some(bid) = backup_id {
-                                        if let Some(bb) = cfg_snap
-                                            .llm_backends
-                                            .iter()
-                                            .find(|b| b.id == bid)
-                                            .cloned()
-                                        {
-                                            let codes: Vec<String> =
-                                                errors.iter().map(|e| e.code.clone()).collect();
-                                            let _ = crate::guardrail::log_fallback_event(
-                                                &pipeline.base,
-                                                &backend_id,
-                                                &bid,
-                                                &aufgabe.modul,
-                                                &codes,
-                                            )
-                                            .await;
-                                            backend_id = bb.id.clone();
-                                            model_str = bb.model.clone();
-                                            used_fallback = true;
-                                            guardrail_retries = 0;
-                                            continue; // retry with backup
-                                        }
-                                    }
-                                }
-                                // Real hard-fail
-                                let codes: Vec<String> =
-                                    errors.iter().map(|e| e.code.clone()).collect();
-                                let msg = format!("Guardrail hard-fail: {}", codes.join(", "));
-                                pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Failed, &msg);
-                                aufgabe.ergebnis = Some(format!("FAILED: {}", msg));
-                                if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed)
-                                {
-                                    pipeline.log(
-                                        "cycle",
-                                        Some(&aufgabe.id),
-                                        LogTyp::Error,
-                                        &format!("Verschieben failed: {e}"),
-                                    );
-                                }
-                                return;
-                            } else {
-                                mark_activity(&activity);
-                                // Den Fehlversuch in die History legen, BEVOR das
-                                // Feedback kommt — sonst referenziert das Feedback
-                                // eine Antwort, die das Modell nie gesehen hat.
-                                if !response.trim().is_empty() {
-                                    messages.push(serde_json::json!({
-                                        "role": "assistant", "content": &response
-                                    }));
-                                }
-                                let feedback = crate::guardrail::synth_feedback_user_message(
-                                    &errors,
-                                    max_retries_for_backend,
-                                    guardrail_retries,
-                                );
-                                messages
-                                    .push(serde_json::json!({"role": "user", "content": feedback}));
-                                guardrail_retries += 1;
-                                continue;
-                            }
-                        }
-                    }
-                }
-                // ── End guardrail ──────────────────────────────────────────
-
-                // Tool-Call-Extraktion mit Schema-basiertem Parameter-Ordering:
-                // pro Call wird das required[]-Array des passenden Tools aufgeloest
-                // und an den Parser gegeben (schließt den path_keys-Heuristik-Bypass).
-                // Es werden ALLE Calls der Runde uebernommen — DeepSeek V4/Grok/Qwen3
-                // senden regelmaessig mehrere parallele Calls; nur calls[0] auszufuehren
-                // hiess: Rest stillschweigend verworfen plus eine teure Extra-LLM-Runde
-                // pro uebrigem Tool.
-                let mut parsed_calls: Vec<tools::ParsedOpenAiCall> = if tool_calls_disabled {
-                    Vec::new()
-                } else if raw_data != serde_json::Value::Null {
-                    tools::parse_openai_tool_calls_multi(&raw_data, |name| {
-                        tools::schema_required_for(name, &modul, &py_mods_snap)
-                    })
-                } else {
-                    Vec::new()
-                };
-                // Text-Tag-Fallback (<tool>name(...)</tool>) nur wenn Tool-Calls fuer
-                // dieses Modul erlaubt sind. Vorher hing der Fallback HINTER dem
-                // disable_tool_calls-Check und hebelte das Setting aus: ein Modul mit
-                // disable_tool_calls=true fuehrte Text-Tag-Calls trotzdem aus.
-                if parsed_calls.is_empty()
-                    && !tool_calls_disabled
-                    && let Some((name, params)) = tools::parse_tool_call(&response)
-                {
-                    let arguments_json = raw_data
-                        .pointer("/choices/0/message/tool_calls/0/function/arguments")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("{}")
-                        .to_string();
-                    parsed_calls.push(tools::ParsedOpenAiCall {
-                        id: "call_fallback_tag".into(),
-                        name,
-                        params,
-                        arguments_json,
-                    });
-                }
-
-                if !parsed_calls.is_empty() {
-                    mark_activity(&activity);
-                    tool_round += 1;
-
-                    // Assistant-History VOR den Tool-Ergebnissen: vollstaendige
-                    // Original-Message behalten (DeepSeek reasoning_content muss nach
-                    // einem Tool-Call zurueckgereicht werden), tool_calls normalisiert
-                    // auf die geparsten Calls, damit jede Call-ID exakt eine
-                    // role:"tool"-Antwort bekommt.
-                    let mut assistant_history = raw_data
-                        .pointer("/choices/0/message")
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            serde_json::json!({"role": "assistant", "content": serde_json::Value::Null})
-                        });
-                    if let Some(obj) = assistant_history.as_object_mut() {
-                        obj.insert("role".into(), serde_json::json!("assistant"));
-                        obj.entry("content").or_insert(serde_json::Value::Null);
-                        let calls_json: Vec<serde_json::Value> = parsed_calls
-                            .iter()
-                            .map(|c| {
-                                serde_json::json!({
-                                    "id": c.id,
-                                    "type": "function",
-                                    "function": {"name": c.name, "arguments": c.arguments_json}
-                                })
-                            })
-                            .collect();
-                        obj.insert("tool_calls".into(), serde_json::json!(calls_json));
-                    }
-                    messages.push(assistant_history);
+                // Assistant-History VOR den Tool-Ergebnissen (provider-Felder wie
+                // DeepSeek reasoning_content bleiben erhalten, jede Call-ID bekommt
+                // genau eine role:"tool"-Antwort).
+                messages.push(crate::turn::build_assistant_history(
+                    &raw_message,
+                    &parsed_calls,
+                    |c| c.arguments_json.clone(),
+                ));
 
                     // Sub-Aufgaben anlegen (eine pro Call), bevor die Ausfuehrung startet.
                     let mut sub_ids: Vec<String> = Vec::with_capacity(parsed_calls.len());
@@ -2078,21 +1772,12 @@ async fn exec_llm(
                     // Task mehrfach rufen — nur KOMPLETTE Task-Wiederholungen werden
                     // dedupliziert. task_id + round + call-index macht den Key pro
                     // Iteration und pro Call eindeutig.
-                    //
-                    // Read-only Calls (Suchen/Fetches) laufen nebenlaeufig — bei
-                    // Multi-Search-Runden der groesste Latenzgewinn. Alles andere
-                    // strikt sequenziell in Emissions-Reihenfolge, weil Seiteneffekt-
-                    // Reihenfolge zaehlen kann.
-                    let parallel = parsed_calls.len() > 1
-                        && parsed_calls
-                            .iter()
-                            .all(|c| tools::is_parallel_safe_tool(&c.name));
-                    let task_id_for_calls = aufgabe.id.clone();
-                    let task_modul = aufgabe.modul.clone();
-                    let results: Vec<(bool, String)> = if parallel {
-                        let task_id_ref = &task_id_for_calls;
-                        let task_modul_ref = &task_modul;
-                        let futs = parsed_calls.iter().enumerate().map(|(idx, call)| {
+                    let task_id_ref: &str = &task_id;
+                    let task_modul_ref: &str = &task_modul_id;
+                    let results = crate::turn::execute_parsed_calls(
+                        &parsed_calls,
+                        &activity,
+                        |idx, call| {
                             let tool_task_id =
                                 format!("{}#r{}c{}", task_id_ref, tool_round, idx);
                             async move {
@@ -2109,32 +1794,9 @@ async fn exec_llm(
                                 )
                                 .await
                             }
-                        });
-                        with_activity_heartbeat(&activity, futures_util::future::join_all(futs))
-                            .await
-                    } else {
-                        let mut seq = Vec::with_capacity(parsed_calls.len());
-                        for (idx, call) in parsed_calls.iter().enumerate() {
-                            let tool_task_id = format!("{}#r{}c{}", aufgabe.id, tool_round, idx);
-                            let r = with_activity_heartbeat(
-                                &activity,
-                                exec_tool(
-                                    &call.name,
-                                    &call.params,
-                                    &aufgabe.modul,
-                                    Some(&tool_task_id),
-                                    pipeline,
-                                    config,
-                                    llm,
-                                    py_modules,
-                                    py_pool,
-                                ),
-                            )
-                            .await;
-                            seq.push(r);
-                        }
-                        seq
-                    };
+                        },
+                    )
+                    .await;
 
                     for ((call, sub_id), tool_result) in
                         parsed_calls.iter().zip(sub_ids.iter()).zip(results.iter())
@@ -2166,54 +1828,45 @@ async fn exec_llm(
                                 util::safe_truncate(&tool_result.1, 100)
                             ),
                         );
-                        messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call.id,
-                            "content": task_tool_result_for_llm(tool_result.0, &tool_result.1)}));
                     }
+                    crate::turn::append_tool_results(
+                        &mut messages,
+                        &parsed_calls,
+                        &results,
+                        task_tool_result_for_llm,
+                    );
                     mark_activity(&activity);
 
                     // History trimmen: alte Tool-Results kuerzen
-                    let keep_full = 6;
-                    if messages.len() > 2 + keep_full + 4 {
-                        for i in 2..(messages.len().saturating_sub(keep_full)) {
-                            if messages[i].get("role").and_then(|v| v.as_str()) == Some("tool") {
-                                if let Some(content) =
-                                    messages[i].get("content").and_then(|v| v.as_str())
-                                {
-                                    if content.chars().count() > MAX_TASK_OLD_TOOL_RESULT_CHARS {
-                                        let short = format!(
-                                            "{}...[gekuerzt]",
-                                            util::safe_truncate(
-                                                content,
-                                                MAX_TASK_OLD_TOOL_RESULT_CHARS
-                                            )
-                                        );
-                                        messages[i]["content"] = serde_json::json!(short);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    crate::turn::trim_old_tool_messages(
+                        &mut messages,
+                        2,
+                        6,
+                        MAX_TASK_OLD_TOOL_RESULT_CHARS,
+                    );
                     continue;
-                } else {
-                    mark_activity(&activity);
-                    final_answer = response;
-                    break;
-                }
             }
-            Err(e) => {
-                // LLM-Call ist fehlgeschlagen — die Reservation aus check_daily_budget
-                // muss zurückgebucht werden, sonst akkumuliert sie. track_tokens wird
-                // hier NICHT gerufen (keine Response), also muss release explizit.
-                {
-                    let cfg_live = config.read().await;
-                    crate::web::release_reservation(
-                        &pipeline.store.pool,
-                        tokens,
-                        &cfg_live,
-                        &model_str,
-                    )
-                    .await;
+            crate::turn::RoundOutcome::Final { text } => {
+                mark_activity(&activity);
+                final_answer = text;
+                break;
+            }
+            crate::turn::RoundOutcome::GuardrailHardFail { codes } => {
+                let msg = format!("Guardrail hard-fail: {}", codes.join(", "));
+                pipeline.log(&modul.name, Some(&aufgabe.id), LogTyp::Failed, &msg);
+                aufgabe.ergebnis = Some(format!("FAILED: {}", msg));
+                if let Err(e) = pipeline.verschieben(aufgabe, AufgabeStatus::Failed) {
+                    pipeline.log(
+                        "cycle",
+                        Some(&aufgabe.id),
+                        LogTyp::Error,
+                        &format!("Verschieben failed: {e}"),
+                    );
                 }
+                return;
+            }
+            crate::turn::RoundOutcome::LlmError(e) => {
+                // Reservation wurde bereits in der Engine freigegeben.
                 aufgabe.retry_count += 1;
                 if aufgabe.retry_count <= aufgabe.retry {
                     pipeline.log(
