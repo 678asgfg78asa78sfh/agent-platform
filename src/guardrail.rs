@@ -801,6 +801,7 @@ mod tests {
             max_tool_rounds: None,
             call_rate_limit: None,
             internal: false,
+            tool_choice_supported: None,
         });
         cfg.module.push(ModulConfig {
             id: "chat.bob".into(),

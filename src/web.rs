@@ -3148,6 +3148,7 @@ async fn chat(
             activity: None,
             tool_calls_disabled: false,
             backup_id: backup_id.clone(),
+            tool_choice_once: None,
             backend_id,
             model_str: model_str_initial,
             guardrail_retries: 0,
@@ -3155,6 +3156,14 @@ async fn chat(
         };
         let needs_deepdive = is_deepdive_request(&last_user_msg)
             && !rejects_research_tools(&original_last_user_msg_for_enhancers);
+        // Recherche-Pflicht auf Protokollebene: erste Runde mit
+        // tool_choice="required" statt nachtraeglichem STOPP-Prompt. Die
+        // STOPP-Bloecke unten bleiben als Fallback fuer Provider, die
+        // tool_choice ignorieren.
+        if !openai_tools.is_empty() && (needs_deepdive || is_light_research_request(&last_user_msg))
+        {
+            engine.tool_choice_once = Some("required".into());
+        }
         let mut deepdive_progress = DeepdiveProgress::default();
         let mut deepdive_gate_retries: u32 = 0;
 
@@ -5785,6 +5794,7 @@ pub async fn wizard_test_connection(
         max_tool_rounds: None,
         call_rate_limit: None,
         internal: false,
+        tool_choice_supported: None,
     };
 
     // Try a minimal ping: single user message "ping"

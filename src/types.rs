@@ -32,6 +32,11 @@ pub struct LlmBackend {
     /// Internal backend used only by pipeline workers, hidden from normal agent UI.
     #[serde(default, skip_serializing_if = "is_false")]
     pub internal: bool,
+    /// Ob das Backend OpenAI-Style tool_choice versteht. None/Some(true) =
+    /// senden; Some(false) = Opt-out (z.B. sehr alte llama.cpp-Builds, die
+    /// unbekannte Felder ablehnen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice_supported: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

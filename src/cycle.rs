@@ -1591,6 +1591,7 @@ async fn exec_llm(
         activity: activity.clone(),
         tool_calls_disabled,
         backup_id: modul.backup_llm.clone(),
+        tool_choice_once: None,
         backend_id,
         model_str,
         guardrail_retries: 0,
@@ -2344,6 +2345,7 @@ mod tests {
             max_tool_rounds: None,
             call_rate_limit: None,
             internal: false,
+            tool_choice_supported: None,
         }
     }
 

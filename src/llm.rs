@@ -29,6 +29,45 @@ pub fn deepseek_endpoint(base_url: &str, path: &str) -> String {
     format!("{}/{}", base, path)
 }
 
+/// Request-Optionen fuer chat_with_tools_opts.
+#[derive(Debug, Default, Clone)]
+pub struct ChatOptions {
+    /// OpenAI-Style tool_choice ("required" | "auto" | "none"). Wird nur
+    /// gesendet, wenn Tools im Request stehen und das Backend es nicht per
+    /// `tool_choice_supported=false` ausschliesst (Opt-out fuer alte
+    /// llama.cpp-Builds). Anthropic bekommt das Mapping required→{"type":"any"}.
+    pub tool_choice: Option<String>,
+}
+
+fn apply_tool_choice(
+    body: &mut serde_json::Value,
+    backend: &LlmBackend,
+    has_tools: bool,
+    opts: &ChatOptions,
+) {
+    let Some(choice) = opts.tool_choice.as_deref() else {
+        return;
+    };
+    if !has_tools || backend.tool_choice_supported == Some(false) {
+        return;
+    }
+    match backend.typ {
+        LlmTyp::Anthropic => {
+            let t = match choice {
+                "required" => "any",
+                "none" => "none",
+                _ => "auto",
+            };
+            body["tool_choice"] = serde_json::json!({"type": t});
+        }
+        // Ollama /api/chat kennt kein tool_choice.
+        LlmTyp::Ollama | LlmTyp::Embedding => {}
+        _ => {
+            body["tool_choice"] = serde_json::json!(choice);
+        }
+    }
+}
+
 fn provider_safe_name(name: &str) -> String {
     let mut out = String::new();
     for ch in name.chars() {
@@ -406,15 +445,37 @@ impl LlmRouter {
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
     ) -> Result<(String, serde_json::Value), String> {
+        self.chat_with_tools_opts(
+            backend_id,
+            backup_id,
+            messages,
+            tools,
+            &ChatOptions::default(),
+        )
+        .await
+    }
+
+    /// Wie `chat_with_tools`, mit Request-Optionen (z.B. tool_choice="required",
+    /// um Recherche-Pflicht auf Protokollebene zu erzwingen statt per
+    /// STOPP-Prompt-Nudging).
+    pub async fn chat_with_tools_opts(
+        &self,
+        backend_id: &str,
+        backup_id: Option<&str>,
+        messages: &[serde_json::Value],
+        tools: &[serde_json::Value],
+        opts: &ChatOptions,
+    ) -> Result<(String, serde_json::Value), String> {
         match self
-            .chat_with_tools_single(backend_id, messages, tools)
+            .chat_with_tools_single(backend_id, messages, tools, opts)
             .await
         {
             Ok(r) => Ok(r),
             Err(e) => {
                 if let Some(bkp) = backup_id {
                     tracing::warn!("LLM {} failed, trying backup {}: {}", backend_id, bkp, e);
-                    self.chat_with_tools_single(bkp, messages, tools).await
+                    self.chat_with_tools_single(bkp, messages, tools, opts)
+                        .await
                 } else {
                     Err(e)
                 }
@@ -555,6 +616,7 @@ impl LlmRouter {
         id: &str,
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
+        opts: &ChatOptions,
     ) -> Result<(String, serde_json::Value), String> {
         let backend = self
             .backend(id)
@@ -563,7 +625,7 @@ impl LlmRouter {
         crate::security::validate_llm_backend_url(&backend.typ, &backend.url)
             .map_err(|e| format!("LLM URL denied: {e}"))?;
         let client = self.get_client(backend.timeout_s).await?;
-        Self::dispatch_chat(&backend, messages, tools, &client).await
+        Self::dispatch_chat(&backend, messages, tools, &client, opts).await
     }
 
     /// Ad-hoc variant: takes a full LlmBackend struct instead of a registry ID.
@@ -577,7 +639,7 @@ impl LlmRouter {
         crate::security::validate_llm_backend_url(&backend.typ, &backend.url)
             .map_err(|e| format!("LLM URL denied: {e}"))?;
         let client = self.get_client(backend.timeout_s).await?;
-        Self::dispatch_chat(backend, messages, tools, &client).await
+        Self::dispatch_chat(backend, messages, tools, &client, &ChatOptions::default()).await
     }
 
     /// Public-Wrapper für setup_test_backend — same dispatch, aber ohne den
@@ -590,7 +652,7 @@ impl LlmRouter {
     ) -> Result<(String, serde_json::Value), String> {
         crate::security::validate_llm_backend_url(&backend.typ, &backend.url)
             .map_err(|e| format!("LLM URL denied: {e}"))?;
-        Self::dispatch_chat(backend, messages, tools, client).await
+        Self::dispatch_chat(backend, messages, tools, client, &ChatOptions::default()).await
     }
 
     async fn dispatch_chat(
@@ -598,6 +660,7 @@ impl LlmRouter {
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
         client: &reqwest::Client,
+        opts: &ChatOptions,
     ) -> Result<(String, serde_json::Value), String> {
         match backend.typ {
             LlmTyp::Ollama => {
@@ -661,6 +724,7 @@ impl LlmRouter {
                 if !safe_tools.is_empty() {
                     body["tools"] = serde_json::json!(safe_tools);
                 }
+                apply_tool_choice(&mut body, backend, !safe_tools.is_empty(), opts);
                 let endpoint = match backend.typ {
                     LlmTyp::DeepSeek => deepseek_endpoint(&backend.url, "chat/completions"),
                     _ => openai_compat_endpoint(&backend.url, "chat/completions"),
@@ -786,6 +850,7 @@ impl LlmRouter {
                         .collect();
                     body["tools"] = serde_json::json!(anthro_tools);
                 }
+                apply_tool_choice(&mut body, backend, !safe_tools.is_empty(), opts);
                 let resp = client
                     .post(format!("{}/v1/messages", backend.url))
                     .header("x-api-key", key)
@@ -883,7 +948,10 @@ impl LlmRouter {
                 // Ollama: POST /api/embeddings (older) or /api/embed (newer)
                 let body = serde_json::json!({"model": backend.model, "prompt": text});
                 let resp = client
-                    .post(format!("{}/api/embeddings", backend.url.trim_end_matches('/')))
+                    .post(format!(
+                        "{}/api/embeddings",
+                        backend.url.trim_end_matches('/')
+                    ))
                     .json(&body)
                     .send()
                     .await
@@ -1016,6 +1084,7 @@ mod tests {
             max_tool_rounds: None,
             call_rate_limit: None,
             internal: false,
+            tool_choice_supported: None,
         };
         apply_provider_reasoning_config(&mut body, &backend);
         assert_eq!(body["thinking"]["type"], "enabled");
@@ -1138,6 +1207,59 @@ mod tests {
         assert_eq!(results[1]["tool_use_id"], "call_2");
     }
 
+    #[test]
+    fn test_apply_tool_choice_per_provider() {
+        let mut backend = LlmBackend {
+            id: "b".into(),
+            name: "b".into(),
+            typ: LlmTyp::OpenAICompat,
+            url: "http://x".into(),
+            api_key: None,
+            model: "m".into(),
+            timeout_s: 1,
+            identity: Default::default(),
+            max_tokens: None,
+            reasoning: None,
+            cost_cap: None,
+            max_tool_rounds: None,
+            call_rate_limit: None,
+            internal: false,
+            tool_choice_supported: None,
+        };
+        let opts = ChatOptions {
+            tool_choice: Some("required".into()),
+        };
+
+        // OpenAI-compat: String-Wert
+        let mut body = serde_json::json!({});
+        apply_tool_choice(&mut body, &backend, true, &opts);
+        assert_eq!(body["tool_choice"], "required");
+
+        // Ohne Tools: nichts senden
+        let mut body = serde_json::json!({});
+        apply_tool_choice(&mut body, &backend, false, &opts);
+        assert!(body.get("tool_choice").is_none());
+
+        // Backend-Opt-out
+        backend.tool_choice_supported = Some(false);
+        let mut body = serde_json::json!({});
+        apply_tool_choice(&mut body, &backend, true, &opts);
+        assert!(body.get("tool_choice").is_none());
+        backend.tool_choice_supported = None;
+
+        // Anthropic: required → {"type":"any"}
+        backend.typ = LlmTyp::Anthropic;
+        let mut body = serde_json::json!({});
+        apply_tool_choice(&mut body, &backend, true, &opts);
+        assert_eq!(body["tool_choice"]["type"], "any");
+
+        // Ollama: kein tool_choice
+        backend.typ = LlmTyp::Ollama;
+        let mut body = serde_json::json!({});
+        apply_tool_choice(&mut body, &backend, true, &opts);
+        assert!(body.get("tool_choice").is_none());
+    }
+
     #[tokio::test]
     async fn test_adhoc_returns_err_on_unreachable_backend() {
         use crate::types::{LlmBackend, LlmTyp, ModulIdentity};
@@ -1158,6 +1280,7 @@ mod tests {
             max_tool_rounds: None,
             call_rate_limit: None,
             internal: false,
+            tool_choice_supported: None,
         };
         let r = router.chat_with_tools_adhoc(&backend, &[], &[]).await;
         assert!(

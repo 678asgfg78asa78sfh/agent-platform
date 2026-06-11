@@ -2011,6 +2011,7 @@ mod tests {
             max_tool_rounds: None,
             call_rate_limit: None,
             internal: false,
+            tool_choice_supported: None,
         });
         cfg
     }
@@ -2672,6 +2673,7 @@ mod tests {
                 max_tool_rounds: None,
                 call_rate_limit: None,
                 internal: false,
+            tool_choice_supported: None,
             },
             allow_code_gen: false,
             max_rounds_per_session: 30,

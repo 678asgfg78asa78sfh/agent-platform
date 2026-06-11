@@ -110,6 +110,11 @@ pub struct TurnEngine<'a> {
     pub tool_calls_disabled: bool,
     /// Backup-Backend (modul.backup_llm) fuer LLM-Fehler UND Guardrail-Fallback.
     pub backup_id: Option<String>,
+    /// Einmaliges tool_choice fuer die NAECHSTE Runde ("required" erzwingt
+    /// einen Tool-Call auf Protokollebene — ersetzt das STOPP-Prompt-Nudging
+    /// als primaeren Mechanismus; die STOPP-Prompts bleiben Fallback fuer
+    /// Provider, die tool_choice ignorieren). Wird nach der Runde geleert.
+    pub tool_choice_once: Option<String>,
     // ── Runden-uebergreifender Zustand ──
     pub backend_id: String,
     pub model_str: String,
@@ -139,6 +144,11 @@ impl TurnEngine<'_> {
         tools_json: &[serde_json::Value],
     ) -> (RoundOutcome, RoundUsage) {
         let mut usage = RoundUsage::default();
+        // Gilt fuer alle Versuche DIESER Runde (inkl. Guardrail-Retries),
+        // danach zuruecksetzen.
+        let opts = crate::llm::ChatOptions {
+            tool_choice: self.tool_choice_once.take(),
+        };
         loop {
             while let Some(wait) = self.llm.reserve_rate_slot_or_wait(&self.backend_id).await {
                 mark_activity(&self.activity);
@@ -162,11 +172,12 @@ impl TurnEngine<'_> {
 
             let result = with_activity_heartbeat(
                 &self.activity,
-                self.llm.chat_with_tools(
+                self.llm.chat_with_tools_opts(
                     &self.backend_id,
                     self.backup_id.as_deref(),
                     messages,
                     tools_json,
+                    &opts,
                 ),
             )
             .await;
