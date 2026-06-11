@@ -110,6 +110,9 @@ pub struct TurnEngine<'a> {
     pub tool_calls_disabled: bool,
     /// Backup-Backend (modul.backup_llm) fuer LLM-Fehler UND Guardrail-Fallback.
     pub backup_id: Option<String>,
+    /// Anzahl History-Messages, die bei Kontext-Kompaktierung nie angefasst
+    /// werden (System-Prompt + Seed-User-Messages des Aufrufs).
+    pub history_fixed_prefix: usize,
     /// Einmaliges tool_choice fuer die NAECHSTE Runde ("required" erzwingt
     /// einen Tool-Call auf Protokollebene — ersetzt das STOPP-Prompt-Nudging
     /// als primaeren Mechanismus; die STOPP-Prompts bleiben Fallback fuer
@@ -149,6 +152,41 @@ impl TurnEngine<'_> {
         let opts = crate::llm::ChatOptions {
             tool_choice: self.tool_choice_once.take(),
         };
+
+        // Token-bewusste Kompaktierung, wenn das Backend ein Kontextfenster
+        // deklariert (context_window). Ohne Angabe: Verhalten wie bisher.
+        if let Some(backend) = self
+            .cfg_snap
+            .llm_backends
+            .iter()
+            .find(|b| b.id == self.backend_id)
+            && let Some(window) = backend.context_window.filter(|w| *w > 0)
+        {
+            let max_out = backend.max_tokens.unwrap_or(2048) as u64;
+            let tools_tokens: u64 = tools_json.iter().map(estimate_tokens_of).sum();
+            let budget = (window as u64)
+                .saturating_sub(max_out)
+                .saturating_sub(tools_tokens)
+                .saturating_mul(85)
+                / 100;
+            let removed = compact_messages_to_budget(
+                messages,
+                self.history_fixed_prefix,
+                6,
+                budget.max(1024),
+            );
+            if removed > 0 {
+                self.pipeline.log(
+                    self.log_label,
+                    self.log_task_id,
+                    LogTyp::Info,
+                    &format!(
+                        "Kontext-Kompaktierung: {} aeltere Gruppen entfernt (Budget ~{} Tokens, Fenster {})",
+                        removed, budget, window
+                    ),
+                );
+            }
+        }
         loop {
             while let Some(wait) = self.llm.reserve_rate_slot_or_wait(&self.backend_id).await {
                 mark_activity(&self.activity);
@@ -460,6 +498,87 @@ fn plain_text_of_message(message: &serde_json::Value) -> String {
     }
 }
 
+/// Grobe Token-Schaetzung: ~3 Zeichen pro Token (deutsch + JSON-lastig,
+/// bewusst konservativ) plus fixer Overhead pro Message.
+pub fn estimate_tokens_of(value: &serde_json::Value) -> u64 {
+    let chars = match value {
+        serde_json::Value::Null => 0,
+        serde_json::Value::String(s) => s.len(),
+        other => other.to_string().len(),
+    };
+    (chars as u64) / 3
+}
+
+pub fn estimate_messages_tokens(messages: &[serde_json::Value]) -> u64 {
+    messages
+        .iter()
+        .map(|m| {
+            let content = m.get("content").map(estimate_tokens_of).unwrap_or(0);
+            let calls = m.get("tool_calls").map(estimate_tokens_of).unwrap_or(0);
+            let reasoning = m
+                .get("reasoning_content")
+                .map(estimate_tokens_of)
+                .unwrap_or(0);
+            content + calls + reasoning + 8
+        })
+        .sum()
+}
+
+/// Kompaktiert die History unter ein Token-Budget — token-bewusst statt
+/// zeichenbasiert, und IMMER in ganzen Tool-Runden-Gruppen (assistant mit
+/// tool_calls + die zugehoerigen role:"tool"-Antworten), damit das
+/// tool_call_id-Pairing intakt bleibt. Prefix (System-Prompt + Seed-Messages)
+/// und die letzten `keep_full` Messages werden nie angefasst.
+/// Liefert die Zahl entfernter Gruppen.
+pub fn compact_messages_to_budget(
+    messages: &mut Vec<serde_json::Value>,
+    fixed_prefix: usize,
+    keep_full: usize,
+    budget_tokens: u64,
+) -> usize {
+    if estimate_messages_tokens(messages) <= budget_tokens {
+        return 0;
+    }
+    // Phase 1: alte Tool-Results hart kuerzen (billig, verlustarm).
+    trim_old_tool_messages(messages, fixed_prefix, keep_full, 200);
+
+    // Phase 2: aelteste Gruppen komplett entfernen.
+    let mut removed_groups = 0usize;
+    while estimate_messages_tokens(messages) > budget_tokens {
+        let protected_from = messages.len().saturating_sub(keep_full);
+        if protected_from <= fixed_prefix {
+            break;
+        }
+        let start = fixed_prefix;
+        let role = messages[start].get("role").and_then(|v| v.as_str());
+        let mut end = start + 1;
+        if role == Some("assistant") || role == Some("tool") {
+            // zugehoerige tool-Antworten gehoeren zur Gruppe
+            while end < protected_from
+                && messages[end].get("role").and_then(|v| v.as_str()) == Some("tool")
+            {
+                end += 1;
+            }
+        }
+        if end > protected_from {
+            break;
+        }
+        messages.drain(start..end);
+        removed_groups += 1;
+    }
+    if removed_groups > 0 {
+        let note = format!(
+            "[Kontext-Kompaktierung: {} aeltere Nachrichten-Gruppen entfernt; Auftrag und juengste Tool-Ergebnisse sind vollstaendig erhalten.]",
+            removed_groups
+        );
+        messages.insert(
+            fixed_prefix,
+            serde_json::json!({"role": "assistant", "content": note}),
+        );
+    }
+    removed_groups
+}
+
 /// Assistant-History-Message fuer die naechste Runde: Original-Message behalten
 /// (provider-Felder wie DeepSeek reasoning_content bleiben erhalten), tool_calls
 /// normalisiert auf die tatsaechlich ausgefuehrten Calls — jede Call-ID bekommt
@@ -652,6 +771,69 @@ mod tests {
         assert_eq!(last_tool["content"].as_str().unwrap().len(), 600);
         // Prefix unangetastet
         assert_eq!(messages[1]["content"], "frage");
+    }
+
+    #[test]
+    fn compact_messages_removes_whole_groups_and_keeps_pairing() {
+        let mut messages: Vec<serde_json::Value> = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "auftrag"}),
+        ];
+        for i in 0..12 {
+            messages.push(serde_json::json!({
+                "role": "assistant", "content": null,
+                "tool_calls": [{"id": format!("c{}", i), "type": "function",
+                    "function": {"name": "web.search", "arguments": "{}"}}],
+            }));
+            messages.push(serde_json::json!({
+                "role": "tool", "tool_call_id": format!("c{}", i),
+                "content": "R".repeat(3000),
+            }));
+        }
+        let before = estimate_messages_tokens(&messages);
+        // Budget gezielt UNTER dem, was Phase 1 (Trimmen alter Tool-Results)
+        // allein schafft, aber UEBER dem keep_full-Boden (letzte 6 Messages
+        // bleiben immer vollstaendig) — so muss Phase 2 Gruppen entfernen.
+        let budget = 3500u64;
+        assert!(budget < before);
+        let removed = compact_messages_to_budget(&mut messages, 2, 6, budget);
+        assert!(removed > 0, "muss Gruppen entfernen");
+        // Prefix intakt
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["content"], "auftrag");
+        // Marker direkt nach dem Prefix
+        assert!(
+            messages[2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Kontext-Kompaktierung")
+        );
+        // Pairing: jede role:tool-Message hat direkt davor einen assistant
+        // mit tool_calls (kein verwaistes Result)
+        for i in 0..messages.len() {
+            if messages[i]["role"] == "tool" {
+                assert!(
+                    messages[i - 1]["role"] == "assistant"
+                        && messages[i - 1]["tool_calls"].is_array()
+                        || messages[i - 1]["role"] == "tool",
+                    "verwaistes tool-Result an Position {}",
+                    i
+                );
+            }
+        }
+        // Budget eingehalten (kleiner Marker-Aufschlag erlaubt)
+        assert!(estimate_messages_tokens(&messages) <= budget + 60);
+    }
+
+    #[test]
+    fn compact_messages_noop_when_under_budget() {
+        let mut messages: Vec<serde_json::Value> = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "kurz"}),
+        ];
+        let removed = compact_messages_to_budget(&mut messages, 2, 6, 100_000);
+        assert_eq!(removed, 0);
+        assert_eq!(messages.len(), 2);
     }
 
     #[test]

@@ -37,6 +37,13 @@ pub struct LlmBackend {
     /// unbekannte Felder ablehnen).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice_supported: Option<bool>,
+    /// Kontextfenster des Modells in Tokens. Wenn gesetzt, kompaktiert die
+    /// Turn-Engine die History VOR jedem Call unter dieses Budget (alte
+    /// Tool-Runden werden gruppenweise entfernt statt mittendrin abgeschnitten).
+    /// None = kein Limit bekannt, Verhalten wie bisher. Besonders wichtig fuer
+    /// lokale llama.cpp-Server: die truncaten sonst stumm am Server-num_ctx.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

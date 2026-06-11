@@ -3148,6 +3148,7 @@ async fn chat(
             activity: None,
             tool_calls_disabled: false,
             backup_id: backup_id.clone(),
+            history_fixed_prefix: 1 + user_messages.as_array().map(|a| a.len()).unwrap_or(0),
             tool_choice_once: None,
             backend_id,
             model_str: model_str_initial,
@@ -5795,6 +5796,7 @@ pub async fn wizard_test_connection(
         call_rate_limit: None,
         internal: false,
         tool_choice_supported: None,
+        context_window: None,
     };
 
     // Try a minimal ping: single user message "ping"

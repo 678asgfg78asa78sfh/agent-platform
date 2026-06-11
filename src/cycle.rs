@@ -1591,6 +1591,7 @@ async fn exec_llm(
         activity: activity.clone(),
         tool_calls_disabled,
         backup_id: modul.backup_llm.clone(),
+        history_fixed_prefix: 2, // system + user-Auftrag
         tool_choice_once: None,
         backend_id,
         model_str,
@@ -2346,6 +2347,7 @@ mod tests {
             call_rate_limit: None,
             internal: false,
             tool_choice_supported: None,
+            context_window: None,
         }
     }
 

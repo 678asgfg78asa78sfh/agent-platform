@@ -557,6 +557,7 @@ mod tests {
             call_rate_limit: None,
             internal: false,
             tool_choice_supported: None,
+            context_window: None,
         });
         cfg.module.push(crate::types::ModulConfig {
             id: "chat.local".into(),

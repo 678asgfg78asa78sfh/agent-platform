@@ -1085,6 +1085,7 @@ mod tests {
             call_rate_limit: None,
             internal: false,
             tool_choice_supported: None,
+            context_window: None,
         };
         apply_provider_reasoning_config(&mut body, &backend);
         assert_eq!(body["thinking"]["type"], "enabled");
@@ -1225,6 +1226,7 @@ mod tests {
             call_rate_limit: None,
             internal: false,
             tool_choice_supported: None,
+            context_window: None,
         };
         let opts = ChatOptions {
             tool_choice: Some("required".into()),
@@ -1281,6 +1283,7 @@ mod tests {
             call_rate_limit: None,
             internal: false,
             tool_choice_supported: None,
+            context_window: None,
         };
         let r = router.chat_with_tools_adhoc(&backend, &[], &[]).await;
         assert!(
