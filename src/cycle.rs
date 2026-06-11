@@ -213,7 +213,21 @@ fn should_skip_empty_workflow_tick(
     }
     let target = modul.settings.target_modul.as_deref().unwrap_or(&modul.id);
     let root = workflow_root_for_cron_tick(pipeline, cfg, target);
-    !workflow_root_has_active_workflows(&root)
+    if workflow_root_has_active_workflows(&root) {
+        return false;
+    }
+    // Auch das Modul-Default-Verzeichnis pruefen: Workflows, die mit anderem
+    // default_output_dir erzeugt wurden (CLI/Tests, Config-Umstellungen),
+    // verhungerten sonst stumm als "running" — der Tick feuerte nie.
+    let legacy = pipeline
+        .base
+        .parent()
+        .unwrap_or(&pipeline.base)
+        .join("agent-data/workflows");
+    if legacy != root && workflow_root_has_active_workflows(&legacy) {
+        return false;
+    }
+    true
 }
 
 /// RAII-Guard der busy/handles-Einträge garantiert aufräumt — auch bei Panic

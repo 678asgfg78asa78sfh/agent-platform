@@ -2428,15 +2428,25 @@ def load_workflows(config: dict[str, Any], wanted: str = "", limit: int = 20, in
     if wanted:
         wf = load_workflow(config, wanted)
         return [wf] if wf else []
-    root = workflows_dir(config)
-    if not root.exists():
-        return []
+    roots = [workflows_dir(config)]
+    legacy = resolve_path(config, "agent-data/workflows")
+    if legacy not in roots:
+        roots.append(legacy)
+    paths: list[Path] = []
+    for root in roots:
+        if root.exists():
+            paths.extend(root.glob("wf-*/workflow.json"))
     items = []
-    for path in sorted(root.glob("wf-*/workflow.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    seen_ids: set[str] = set()
+    for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
         try:
             wf = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
+        wf_id = str(wf.get("id") or path.parent.name)
+        if wf_id in seen_ids:
+            continue
+        seen_ids.add(wf_id)
         if include_done or wf.get("status") in {"running", "waiting"}:
             items.append(wf)
         if len(items) >= limit:
@@ -2447,6 +2457,10 @@ def load_workflows(config: dict[str, Any], wanted: str = "", limit: int = 20, in
 def load_workflow(config: dict[str, Any], workflow_id: str) -> dict[str, Any] | None:
     path = workflows_dir(config) / workflow_id / "workflow.json"
     if not path.exists():
+        legacy = resolve_path(config, "agent-data/workflows") / workflow_id / "workflow.json"
+        if legacy.exists():
+            path = legacy
+    if not path.exists():
         return None
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -2456,8 +2470,12 @@ def load_workflow(config: dict[str, Any], workflow_id: str) -> dict[str, Any] | 
 
 def save_workflow(wf: dict[str, Any], config: dict[str, Any]) -> None:
     wf["updated_at"] = now_iso()
-    path = workflows_dir(config) / wf["id"] / "workflow.json"
-    write_json(path, wf)
+    # Zurueck in das Verzeichnis schreiben, in dem der Workflow lebt — sonst
+    # wandert er beim ersten Save in workflows_dir(config) und die alte Kopie
+    # bleibt als running-Leiche liegen.
+    wf_dir = str(wf.get("workflow_dir") or "").strip()
+    base = Path(wf_dir) if wf_dir else (workflows_dir(config) / wf["id"])
+    write_json(base / "workflow.json", wf)
 
 
 def event(kind: str, detail: str) -> dict[str, Any]:
