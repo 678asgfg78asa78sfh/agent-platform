@@ -179,7 +179,7 @@ def deepdive_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "quality_gate": bool_param(payload.get("quality_gate"), cfg_bool(config, "quality_gate", True)),
             "quality_auto_repair": bool_param(payload.get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True)),
             "quality_min_score": int_param(payload.get("quality_min_score"), cfg_int(config, "quality_min_score", 78), 0, 100),
-            "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 1), 0, 5),
+            "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5),
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
@@ -276,7 +276,7 @@ def video_from_report(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "quality_gate": bool_param(payload.get("quality_gate"), cfg_bool(config, "quality_gate", True)),
             "quality_auto_repair": bool_param(payload.get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True)),
             "quality_min_score": int_param(payload.get("quality_min_score"), cfg_int(config, "quality_min_score", 78), 0, 100),
-            "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 1), 0, 5),
+            "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5),
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
@@ -441,7 +441,7 @@ def repair_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "quality_gate": bool_param(payload.get("quality_gate"), cfg_bool(config, "quality_gate", True)),
             "quality_auto_repair": bool_param(payload.get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True)),
             "quality_min_score": int_param(payload.get("quality_min_score"), cfg_int(config, "quality_min_score", 78), 0, 100),
-            "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 1), 0, 5),
+            "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5),
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
@@ -728,14 +728,30 @@ def advance_fact_check_assets(wf: dict[str, Any], config: dict[str, Any]) -> Non
         # in dieselbe Reparatur — danach laeuft der Faktencheck erneut.
         quality = quality_state(wf)
         repairs_used = int_param(quality.get("repair_count"), 0, 0, 100)
-        max_repairs = int_param(wf.get("options", {}).get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 1), 0, 5)
+        max_repairs = int_param(wf.get("options", {}).get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5)
         auto_repair = bool_param(wf.get("options", {}).get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True))
         if auto_repair and repairs_used < max_repairs and (report.get("blocking_issues") or report.get("warnings")):
+            report_for_repair = dict(report)
+            if repairs_used >= max_repairs - 1:
+                report_for_repair["repair_directive"] = (
+                    "LETZTER Reparaturversuch. Entferne die Saetze ALLER blocking_issues "
+                    "ERSATZLOS aus voice_script und aus betroffenen Szenen-Texten "
+                    "(bullets/subtitle/say/timeline-Eintraege). Lieber ein kuerzeres "
+                    "Video als ein unbelegter Claim. Keine Umformulierungen mehr."
+                )
+            else:
+                report_for_repair["repair_directive"] = (
+                    "Formuliere jeden blocking_issue-Satz als klar zugeschriebene, "
+                    "UNBESTAETIGTE Aussage um (Muster: 'Ein Bericht von X behauptet — "
+                    "unbestaetigt —, dass ...') ODER entferne ihn ersatzlos, wenn der "
+                    "DeepDive-Kontext ihn nicht eindeutig stuetzt. Kosmetische "
+                    "Wortumstellungen reichen NICHT."
+                )
             wf.setdefault("events", []).append(event(
                 "factcheck_repair",
-                "Faktencheck blockiert (" + factcheck_summary(report) + ") — Auto-Reparatur mit suggested_rewrites gestartet",
+                "Faktencheck blockiert (" + factcheck_summary(report) + ") — Auto-Reparatur " + str(repairs_used + 1) + " gestartet",
             ))
-            start_repair_task(wf, config, assets, report)
+            start_repair_task(wf, config, assets, report_for_repair)
             return
         wf["stage"] = "fact_check_failed"
         save_synthesis(wf, config, status="fact_check_failed", assets=assets)
@@ -891,7 +907,7 @@ def advance_review_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
         return
 
     repairs_used = int_param(quality.get("repair_count"), 0, 0, 100)
-    max_repairs = int_param(wf.get("options", {}).get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 1), 0, 5)
+    max_repairs = int_param(wf.get("options", {}).get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5)
     auto_repair = bool_param(wf.get("options", {}).get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True))
     if auto_repair and repairs_used < max_repairs:
         start_repair_task(wf, config, assets, review)
@@ -1582,8 +1598,10 @@ def repair_prompt(wf: dict[str, Any], assets: dict[str, Any], review: dict[str, 
     artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
     context = read_text_file(artifacts.get("deepdive_context"))
     report = read_text_file(artifacts.get("deepdive_report"))
+    directive = str(review.get("repair_directive") or "").strip()
+    directive_block = f"\nWICHTIGSTE ANWEISUNG (hat Vorrang):\n- {directive}\n" if directive else ""
     return f"""ZIEL: Repariere VIDEO_ASSETS_JSON nach einem Quality-Review, damit es vor TTS/Render erneut geprueft werden kann.
-
+{directive_block}
 Regeln:
 - Behebe ALLE blocking_issues und must_fix. Nutze suggested_rewrite wo vorhanden.
 - Die Szenen-Struktur bleibt UNVERAENDERT: type, stat, bars, people, figures, timeline, quote, compare, route und Reihenfolge 1:1 uebernehmen. Nur voice_script-Saetze und direkt betroffene Szenen-Texte (bullets/subtitle/say/quote.text) anpassen, falls dort der beanstandete Claim steht.
