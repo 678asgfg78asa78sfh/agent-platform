@@ -416,9 +416,9 @@ impl TurnEngine<'_> {
             let raw_message = raw_data
                 .pointer("/choices/0/message")
                 .cloned()
-                .unwrap_or_else(|| {
-                    serde_json::json!({"role": "assistant", "content": serde_json::Value::Null})
-                });
+                .unwrap_or_else(
+                    || serde_json::json!({"role": "assistant", "content": serde_json::Value::Null}),
+                );
             return (
                 RoundOutcome::ToolCalls {
                     calls: parsed_calls,
@@ -489,10 +489,7 @@ where
     F: Fn(usize, &'c ParsedOpenAiCall) -> Fut,
     Fut: Future<Output = (bool, String)>,
 {
-    let parallel = calls.len() > 1
-        && calls
-            .iter()
-            .all(|c| tools::is_parallel_safe_tool(&c.name));
+    let parallel = calls.len() > 1 && calls.iter().all(|c| tools::is_parallel_safe_tool(&c.name));
     if parallel {
         with_activity_heartbeat(
             activity,

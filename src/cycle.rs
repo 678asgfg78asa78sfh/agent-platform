@@ -1,7 +1,7 @@
 use crate::llm::LlmRouter;
 use crate::pipeline::Pipeline;
 use crate::tools;
-use crate::turn::{ActivityMarker, mark_activity, with_activity_heartbeat};
+use crate::turn::{ActivityMarker, mark_activity};
 use crate::types::*;
 use crate::util;
 use std::collections::HashMap;
@@ -176,11 +176,7 @@ fn workflow_root_for_cron_tick(
     if path.is_absolute() {
         return path;
     }
-    pipeline
-        .base
-        .parent()
-        .unwrap_or(&pipeline.base)
-        .join(path)
+    pipeline.base.parent().unwrap_or(&pipeline.base).join(path)
 }
 
 fn workflow_root_has_active_workflows(root: &std::path::Path) -> bool {
@@ -1725,7 +1721,6 @@ async fn exec_llm(
             );
         }
 
-
         match outcome {
             crate::turn::RoundOutcome::ToolCalls {
                 calls: parsed_calls,
@@ -1744,107 +1739,103 @@ async fn exec_llm(
                     |c| c.arguments_json.clone(),
                 ));
 
-                    // Sub-Aufgaben anlegen (eine pro Call), bevor die Ausfuehrung startet.
-                    let mut sub_ids: Vec<String> = Vec::with_capacity(parsed_calls.len());
-                    for call in &parsed_calls {
-                        pipeline.log(
-                            &modul.name,
-                            Some(&aufgabe.id),
-                            LogTyp::Info,
-                            &format!("Tool call: {}({})", call.name, call.params.join(", ")),
-                        );
-                        let mut tool_subtask = Aufgabe::direct(
-                            &call.name,
-                            call.params.clone(),
-                            &aufgabe.modul,
-                            &format!("task:{}", aufgabe.id),
-                            None,
-                            None,
-                        );
-                        tool_subtask.parent_id = Some(aufgabe.id.clone());
-                        tool_subtask.status = AufgabeStatus::Gestartet;
-                        tool_subtask.gestartet = Some(chrono::Utc::now());
-                        sub_ids.push(tool_subtask.id.clone());
-                        let _ = pipeline.speichern(&tool_subtask);
-                    }
+                // Sub-Aufgaben anlegen (eine pro Call), bevor die Ausfuehrung startet.
+                let mut sub_ids: Vec<String> = Vec::with_capacity(parsed_calls.len());
+                for call in &parsed_calls {
+                    pipeline.log(
+                        &modul.name,
+                        Some(&aufgabe.id),
+                        LogTyp::Info,
+                        &format!("Tool call: {}({})", call.name, call.params.join(", ")),
+                    );
+                    let mut tool_subtask = Aufgabe::direct(
+                        &call.name,
+                        call.params.clone(),
+                        &aufgabe.modul,
+                        &format!("task:{}", aufgabe.id),
+                        None,
+                        None,
+                    );
+                    tool_subtask.parent_id = Some(aufgabe.id.clone());
+                    tool_subtask.status = AufgabeStatus::Gestartet;
+                    tool_subtask.gestartet = Some(chrono::Utc::now());
+                    sub_ids.push(tool_subtask.id.clone());
+                    let _ = pipeline.speichern(&tool_subtask);
+                }
 
-                    // Tool-Round im Idempotency-Key: LLM kann dasselbe Tool in einer
-                    // Task mehrfach rufen — nur KOMPLETTE Task-Wiederholungen werden
-                    // dedupliziert. task_id + round + call-index macht den Key pro
-                    // Iteration und pro Call eindeutig.
-                    let task_id_ref: &str = &task_id;
-                    let task_modul_ref: &str = &task_modul_id;
-                    let results = crate::turn::execute_parsed_calls(
-                        &parsed_calls,
-                        &activity,
-                        |idx, call| {
-                            let tool_task_id =
-                                format!("{}#r{}c{}", task_id_ref, tool_round, idx);
-                            async move {
-                                exec_tool(
-                                    &call.name,
-                                    &call.params,
-                                    task_modul_ref,
-                                    Some(&tool_task_id),
-                                    pipeline,
-                                    config,
-                                    llm,
-                                    py_modules,
-                                    py_pool,
-                                )
-                                .await
-                            }
-                        },
-                    )
+                // Tool-Round im Idempotency-Key: LLM kann dasselbe Tool in einer
+                // Task mehrfach rufen — nur KOMPLETTE Task-Wiederholungen werden
+                // dedupliziert. task_id + round + call-index macht den Key pro
+                // Iteration und pro Call eindeutig.
+                let task_id_ref: &str = &task_id;
+                let task_modul_ref: &str = &task_modul_id;
+                let results =
+                    crate::turn::execute_parsed_calls(&parsed_calls, &activity, |idx, call| {
+                        let tool_task_id = format!("{}#r{}c{}", task_id_ref, tool_round, idx);
+                        async move {
+                            exec_tool(
+                                &call.name,
+                                &call.params,
+                                task_modul_ref,
+                                Some(&tool_task_id),
+                                pipeline,
+                                config,
+                                llm,
+                                py_modules,
+                                py_pool,
+                            )
+                            .await
+                        }
+                    })
                     .await;
 
-                    for ((call, sub_id), tool_result) in
-                        parsed_calls.iter().zip(sub_ids.iter()).zip(results.iter())
-                    {
-                        let status = if tool_result.0 { "SUCCESS" } else { "FAILED" };
-                        if let Ok(Some(mut sub)) = pipeline.laden_by_id(sub_id) {
-                            sub.ergebnis = Some(tool_result.1.clone());
-                            let _ = pipeline.verschieben(
-                                &mut sub,
-                                if tool_result.0 {
-                                    AufgabeStatus::Success
-                                } else {
-                                    AufgabeStatus::Failed
-                                },
-                            );
-                        }
-                        pipeline.log(
-                            &modul.name,
-                            Some(&aufgabe.id),
+                for ((call, sub_id), tool_result) in
+                    parsed_calls.iter().zip(sub_ids.iter()).zip(results.iter())
+                {
+                    let status = if tool_result.0 { "SUCCESS" } else { "FAILED" };
+                    if let Ok(Some(mut sub)) = pipeline.laden_by_id(sub_id) {
+                        sub.ergebnis = Some(tool_result.1.clone());
+                        let _ = pipeline.verschieben(
+                            &mut sub,
                             if tool_result.0 {
-                                LogTyp::Success
+                                AufgabeStatus::Success
                             } else {
-                                LogTyp::Failed
+                                AufgabeStatus::Failed
                             },
-                            &format!(
-                                "Tool {}: {} → {}",
-                                call.name,
-                                status,
-                                util::safe_truncate(&tool_result.1, 100)
-                            ),
                         );
                     }
-                    crate::turn::append_tool_results(
-                        &mut messages,
-                        &parsed_calls,
-                        &results,
-                        task_tool_result_for_llm,
+                    pipeline.log(
+                        &modul.name,
+                        Some(&aufgabe.id),
+                        if tool_result.0 {
+                            LogTyp::Success
+                        } else {
+                            LogTyp::Failed
+                        },
+                        &format!(
+                            "Tool {}: {} → {}",
+                            call.name,
+                            status,
+                            util::safe_truncate(&tool_result.1, 100)
+                        ),
                     );
-                    mark_activity(&activity);
+                }
+                crate::turn::append_tool_results(
+                    &mut messages,
+                    &parsed_calls,
+                    &results,
+                    task_tool_result_for_llm,
+                );
+                mark_activity(&activity);
 
-                    // History trimmen: alte Tool-Results kuerzen
-                    crate::turn::trim_old_tool_messages(
-                        &mut messages,
-                        2,
-                        6,
-                        MAX_TASK_OLD_TOOL_RESULT_CHARS,
-                    );
-                    continue;
+                // History trimmen: alte Tool-Results kuerzen
+                crate::turn::trim_old_tool_messages(
+                    &mut messages,
+                    2,
+                    6,
+                    MAX_TASK_OLD_TOOL_RESULT_CHARS,
+                );
+                continue;
             }
             crate::turn::RoundOutcome::Final { text } => {
                 mark_activity(&activity);
@@ -2289,7 +2280,7 @@ mod tests {
     async fn activity_heartbeat_marks_long_running_future() {
         let activity = Some(Arc::new(AtomicI64::new(100)));
         let marker = activity.as_ref().unwrap().clone();
-        let result = with_activity_heartbeat(&activity, async {
+        let result = crate::turn::with_activity_heartbeat(&activity, async {
             tokio::time::sleep(std::time::Duration::from_secs(6)).await;
             42
         })
@@ -2308,9 +2299,9 @@ mod tests {
     async fn spawn_mock_openai(responses: Vec<serde_json::Value>) -> (String, MockRecorder) {
         use axum::{Json, Router, routing::post};
         let received: MockRecorder = Arc::new(tokio::sync::Mutex::new(Vec::new()));
-        let queue = Arc::new(tokio::sync::Mutex::new(
-            std::collections::VecDeque::from(responses),
-        ));
+        let queue = Arc::new(tokio::sync::Mutex::new(std::collections::VecDeque::from(
+            responses,
+        )));
         let rec = received.clone();
         let app = Router::new().route(
             "/v1/chat/completions",
@@ -2504,10 +2495,7 @@ mod tests {
             2,
             "History muss BEIDE Calls enthalten"
         );
-        let tool_msgs: Vec<_> = msgs
-            .iter()
-            .filter(|m| m["role"] == "tool")
-            .collect();
+        let tool_msgs: Vec<_> = msgs.iter().filter(|m| m["role"] == "tool").collect();
         assert_eq!(tool_msgs.len(), 2, "eine role:tool-Antwort pro Call");
         assert_eq!(tool_msgs[0]["tool_call_id"], "call_a");
         assert_eq!(tool_msgs[1]["tool_call_id"], "call_b");

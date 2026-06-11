@@ -3130,11 +3130,29 @@ async fn chat(
         let mut tool_failures: Vec<ChatToolFailure> = vec![];
         let mut messages = messages;
         let modul_id_str = modul_id.as_str();
-        let mut guardrail_retries: u32 = 0;
         let mut malformed_tool_retries: u32 = 0;
         let mut rejected_research_tool_retries: u32 = 0;
-        let mut used_fallback = false;
-        let mut backend_id = backend_id;
+        let model_str_initial = model_for_backend(&config_snapshot, &backend_id);
+        let mut engine = crate::turn::TurnEngine {
+            pipeline: &state.pipeline,
+            llm: &state.llm,
+            cfg_snap: &config_snapshot,
+            gcfg: &gcfg,
+            py_mods_snap: &py_mods_snap,
+            modul: modul_for_tools.as_ref(),
+            log_label: modul_id_str,
+            log_task_id: Some(&main_id),
+            attribution_id: modul_id_str,
+            tokens: &state.tokens,
+            status_tx: Some(tx.clone()),
+            activity: None,
+            tool_calls_disabled: false,
+            backup_id: backup_id.clone(),
+            backend_id,
+            model_str: model_str_initial,
+            guardrail_retries: 0,
+            used_fallback: false,
+        };
         let needs_deepdive = is_deepdive_request(&last_user_msg)
             && !rejects_research_tools(&original_last_user_msg_for_enhancers);
         let mut deepdive_progress = DeepdiveProgress::default();
@@ -3142,18 +3160,17 @@ async fn chat(
 
         loop {
             if let Some(max_tool_rounds) =
-                tool_round_limit_for_backend(&config_snapshot, &backend_id)
+                tool_round_limit_for_backend(&config_snapshot, &engine.backend_id)
             {
                 if tool_rounds >= max_tool_rounds {
                     break;
                 }
             }
 
-            let model_str = model_for_backend(&config_snapshot, &backend_id);
             if let Err(hit) = check_llm_cap(
                 &state.pipeline.store.pool,
                 &config_snapshot,
-                &backend_id,
+                &engine.backend_id,
                 &messages,
                 false,
             )
@@ -3178,215 +3195,32 @@ async fn chat(
                 return;
             }
 
-            while let Some(wait) = state.llm.reserve_rate_slot_or_wait(&backend_id).await {
-                let wait_s = wait.as_secs().max(1);
-                let msg = format!(
-                    "LLM rate-limit aktiv: backend '{}' wartet {}s",
-                    backend_id, wait_s
-                );
-                state
-                    .pipeline
-                    .log(modul_id_str, Some(&main_id), LogTyp::Info, &msg);
-                tx.send(serde_json::json!({"type":"status","message":msg}).to_string())
-                    .await
-                    .ok();
-                tokio::time::sleep(wait).await;
-            }
+            // LLM-Runde via geteilter Turn-Engine (gleiche Logik wie der
+            // Scheduler-Loop in cycle.rs): Rate-Slot, Call mit Backup, Token-
+            // Tracking, Text-Tag-Injektion (vorher liefen Text-Tag-Calls im
+            // Chat am Guardrail VORBEI), Guardrail-Retry/-Fallback, Parsing.
+            let (outcome, _usage) = engine.run_round(&mut messages, &openai_tools).await;
 
-            let result = state
-                .llm
-                .chat_with_tools(&backend_id, backup_id.as_deref(), &messages, &openai_tools)
-                .await;
-
-            match result {
-                Ok((response, raw_data)) => {
-                    // Token-Tracking
-                    track_tokens(
-                        &state.pipeline.store.pool,
-                        &state.tokens,
-                        &config_snapshot,
-                        &backend_id,
-                        &model_str,
-                        modul_id_str,
-                        &raw_data,
-                    )
-                    .await;
-
-                    // ── Guardrail validation ───────────────────────────────
-                    if gcfg.enabled {
-                        let chat_last_user = messages
+            match outcome {
+                crate::turn::RoundOutcome::ToolCalls {
+                    calls: mut parsed_calls,
+                    raw_message,
+                    response_text: response,
+                } => {
+                    // Research-Reject-Gate: greift, wenn IRGENDEIN Call ein
+                    // Recherche-Tool ist und der Nutzer explizit keine Recherche
+                    // wollte — dann wird die ganze Runde verworfen.
+                    let rejected_research_name = if rejects_research_tools(&last_user_msg) {
+                        parsed_calls
                             .iter()
-                            .rev()
-                            .find(|m| m["role"] == "user")
-                            .map(message_plain_text)
-                            .filter(|s| !s.trim().is_empty());
-                        let max_retries_for_backend = gcfg
-                            .per_backend_overrides
-                            .get(&backend_id)
-                            .copied()
-                            .unwrap_or(gcfg.max_retries);
-                        let vctx = crate::guardrail::ValidatorContext {
-                            modul_id: modul_id_str,
-                            cfg: &config_snapshot,
-                            py_modules: &py_mods_snap,
-                            last_user_msg: chat_last_user.as_deref(),
-                            strict_mode: gcfg.strict_mode,
-                        };
-                        match crate::guardrail::validate_response(&raw_data, &vctx) {
-                            Ok(_parsed) => {
-                                let ev = crate::types::GuardrailEvent {
-                                    ts: chrono::Utc::now().timestamp(),
-                                    modul: modul_id.clone(),
-                                    backend: backend_id.clone(),
-                                    model: model_str.clone(),
-                                    tool_name: None,
-                                    passed: true,
-                                    errors: vec![],
-                                    retry_attempt: guardrail_retries,
-                                    final_outcome: if guardrail_retries > 0 {
-                                        "retried".into()
-                                    } else {
-                                        "ok".into()
-                                    },
-                                    similar_suggestion: None,
-                                };
-                                let _ = crate::guardrail::log_event(&state.data_root, &ev).await;
-                                guardrail_retries = 0;
-                            }
-                            Err(errors) => {
-                                let is_last = guardrail_retries >= max_retries_for_backend;
-                                let ev = crate::types::GuardrailEvent {
-                                    ts: chrono::Utc::now().timestamp(),
-                                    modul: modul_id.clone(),
-                                    backend: backend_id.clone(),
-                                    model: model_str.clone(),
-                                    tool_name: None,
-                                    passed: false,
-                                    errors: errors.clone(),
-                                    retry_attempt: guardrail_retries,
-                                    final_outcome: if is_last {
-                                        "hard_fail".into()
-                                    } else {
-                                        "retried".into()
-                                    },
-                                    similar_suggestion: None,
-                                };
-                                let _ = crate::guardrail::log_event(&state.data_root, &ev).await;
-                                if is_last {
-                                    // Check if backup_llm available + fallback flag on
-                                    let mod_cfg =
-                                        config_snapshot.module.iter().find(|m| m.id == modul_id);
-                                    let backup_id = mod_cfg.and_then(|m| m.backup_llm.clone());
-                                    if gcfg.fallback_on_hard_fail
-                                        && backup_id.is_some()
-                                        && !used_fallback
-                                    {
-                                        if let Some(bid) = backup_id {
-                                            if let Some(bb) = config_snapshot
-                                                .llm_backends
-                                                .iter()
-                                                .find(|b| b.id == bid)
-                                                .cloned()
-                                            {
-                                                let codes: Vec<String> =
-                                                    errors.iter().map(|e| e.code.clone()).collect();
-                                                let _ = crate::guardrail::log_fallback_event(
-                                                    &state.data_root,
-                                                    &backend_id,
-                                                    &bid,
-                                                    &modul_id,
-                                                    &codes,
-                                                )
-                                                .await;
-                                                backend_id = bb.id.clone();
-                                                used_fallback = true;
-                                                guardrail_retries = 0;
-                                                continue; // retry with backup
-                                            }
-                                        }
-                                    }
-                                    // Real hard-fail — existing warn + break
-                                    let codes: Vec<String> =
-                                        errors.iter().map(|e| e.code.clone()).collect();
-                                    tracing::warn!(
-                                        "Guardrail hard-fail in chat.{}: {:?}",
-                                        modul_id,
-                                        codes
-                                    );
-                                    tx.send(serde_json::json!({"type":"status","message":format!("Guardrail hard-fail: {}", codes.join(", "))}).to_string()).await.ok();
-                                    break;
-                                } else {
-                                    // Fehlversuch zuerst in die History — das Feedback
-                                    // bezieht sich sonst auf eine fuer das Modell
-                                    // unsichtbare Antwort.
-                                    if !response.trim().is_empty() {
-                                        messages.push(serde_json::json!({
-                                            "role": "assistant", "content": &response
-                                        }));
-                                    }
-                                    let feedback = crate::guardrail::synth_feedback_user_message(
-                                        &errors,
-                                        max_retries_for_backend,
-                                        guardrail_retries,
-                                    );
-                                    messages.push(
-                                        serde_json::json!({"role": "user", "content": feedback}),
-                                    );
-                                    guardrail_retries += 1;
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                    // ── End guardrail ──────────────────────────────────────
-
-                    // Erst OpenAI tool_calls checken (Schema-basierte Param-Order wenn
-                    // Modul bekannt), dann Fallback auf <tool> XML-Tags. Es werden ALLE
-                    // Calls der Runde uebernommen — DeepSeek V4/Grok/Qwen3 senden
-                    // regelmaessig mehrere parallele Calls; nur calls[0] auszufuehren
-                    // hiess: Rest verworfen plus eine Extra-LLM-Runde pro Tool.
-                    let mut parsed_calls: Vec<tools::ParsedOpenAiCall> =
-                        if raw_data != serde_json::Value::Null {
-                            tools::parse_openai_tool_calls_multi(&raw_data, |name| {
-                                modul_for_tools.as_ref().and_then(|m| {
-                                    tools::schema_required_for(name, m, &py_mods_snap)
-                                })
-                            })
-                        } else {
-                            Vec::new()
-                        };
-                    if parsed_calls.is_empty()
-                        && let Some((name, params)) = tools::parse_tool_call(&response)
-                    {
-                        let arguments_json = tool_arguments_json_for_history(
-                            &name,
-                            &params,
-                            modul_for_tools.as_ref(),
-                            &py_mods_snap,
-                        );
-                        parsed_calls.push(tools::ParsedOpenAiCall {
-                            id: "call_fallback_tag".into(),
-                            name,
-                            params,
-                            arguments_json,
-                        });
-                    }
-
-                    if !parsed_calls.is_empty() {
-                        // Research-Reject-Gate: greift, wenn IRGENDEIN Call ein
-                        // Recherche-Tool ist und der Nutzer explizit keine Recherche
-                        // wollte — dann wird die ganze Runde verworfen.
-                        let rejected_research_name = if rejects_research_tools(&last_user_msg) {
-                            parsed_calls
-                                .iter()
-                                .find(|c| is_research_tool_name(&c.name))
-                                .map(|c| c.name.clone())
-                        } else {
-                            None
-                        };
-                        if let Some(tool_name) = rejected_research_name {
-                            rejected_research_tool_retries += 1;
-                            state.pipeline.log(
+                            .find(|c| is_research_tool_name(&c.name))
+                            .map(|c| c.name.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(tool_name) = rejected_research_name {
+                        rejected_research_tool_retries += 1;
+                        state.pipeline.log(
                                 modul_id_str,
                                 Some(&main_id),
                                 LogTyp::Warning,
@@ -3395,241 +3229,190 @@ async fn chat(
                                     tool_name
                                 ),
                             );
-                            if rejected_research_tool_retries > 1 {
-                                let final_text = strip_tool_tags(&response);
-                                let final_text = if final_text.trim().is_empty() {
-                                    "OK".to_string()
-                                } else {
-                                    final_text
-                                };
-                                if let Ok(Some(mut a)) = state.pipeline.laden_by_id(&main_id) {
-                                    a.ergebnis = Some(
-                                        util::safe_truncate(
-                                            &final_text,
-                                            MAX_CHAT_TASK_RESULT_CHARS,
-                                        )
+                        if rejected_research_tool_retries > 1 {
+                            let final_text = strip_tool_tags(&response);
+                            let final_text = if final_text.trim().is_empty() {
+                                "OK".to_string()
+                            } else {
+                                final_text
+                            };
+                            if let Ok(Some(mut a)) = state.pipeline.laden_by_id(&main_id) {
+                                a.ergebnis = Some(
+                                    util::safe_truncate(&final_text, MAX_CHAT_TASK_RESULT_CHARS)
                                         .to_string(),
-                                    );
-                                    let _ =
-                                        state.pipeline.verschieben(&mut a, AufgabeStatus::Success);
-                                }
-                                persist_chat_assistant_result(
-                                    &state.pipeline,
-                                    modul_id_str,
-                                    convo_id_for_persist.as_deref(),
-                                    &seed_messages_for_persist,
-                                    &final_text,
                                 );
-                                for chunk in final_text.chars().collect::<Vec<_>>().chunks(20) {
-                                    let text: String = chunk.iter().collect();
-                                    tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":text},"done":false}).to_string()).await.ok();
-                                }
-                                tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":""},"done":true,"eval_count":final_text.len()}).to_string()).await.ok();
-                                return;
+                                let _ = state.pipeline.verschieben(&mut a, AufgabeStatus::Success);
                             }
-                            messages.push(
-                                serde_json::json!({"role": "assistant", "content": response}),
+                            persist_chat_assistant_result(
+                                &state.pipeline,
+                                modul_id_str,
+                                convo_id_for_persist.as_deref(),
+                                &seed_messages_for_persist,
+                                &final_text,
                             );
-                            messages.push(serde_json::json!({"role": "user", "content":
+                            for chunk in final_text.chars().collect::<Vec<_>>().chunks(20) {
+                                let text: String = chunk.iter().collect();
+                                tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":text},"done":false}).to_string()).await.ok();
+                            }
+                            tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":""},"done":true,"eval_count":final_text.len()}).to_string()).await.ok();
+                            return;
+                        }
+                        messages
+                            .push(serde_json::json!({"role": "assistant", "content": response}));
+                        messages.push(serde_json::json!({"role": "user", "content":
                                 "STOPP — der Nutzer hat ausdrücklich KEINE Recherche/Tools/Websuche gewünscht. \
                                  Ignoriere den Toolcall. Antworte direkt, kurz und ohne Tool."}));
-                            tool_rounds += 1;
-                            continue;
-                        }
-                        // DeepDive-Gates ersetzen gezielt EINEN verfruehten rag.suchen-
-                        // Call; bei Multi-Call-Runden laufen die Calls unveraendert.
-                        if parsed_calls.len() == 1 {
-                            let enough_manual = deepdive_progress.search_ok >= 2
-                                && deepdive_progress.fetch_ok >= 3
-                                && deepdive_progress.source_note_ok >= 2;
-                            let single = &mut parsed_calls[0];
-                            if needs_deepdive
-                                && deepdive_progress.crawl_ok == 0
-                                && deepdive_progress.rss_evidence_ok == 0
-                                && !enough_manual
-                                && single.name == "rag.suchen"
-                            {
-                                let topic = deepdive_topic_hint(&last_user_msg);
-                                let preferred_tool = preferred_deepdive_tool(&last_user_msg);
-                                state.pipeline.log(
-                                    modul_id_str,
-                                    Some(&main_id),
-                                    LogTyp::Warning,
-                                    &format!(
-                                        "DeepDive-Gate ersetzt verfruehtes rag.suchen durch {}({})",
-                                        preferred_tool, topic
-                                    ),
-                                );
-                                single.name = preferred_tool.to_string();
-                                single.params = vec![topic];
-                            } else if needs_deepdive
-                                && single.name == "rag.suchen"
-                                && deepdive_progress.crawl_ok > 0
-                            {
-                                if let Some(crawl_id) = deepdive_progress.crawl_id.as_ref() {
-                                    let current =
-                                        single.params.first().cloned().unwrap_or_default();
-                                    if !current.contains(crawl_id) {
-                                        let topic = if current.trim().is_empty() {
-                                            deepdive_topic_hint(&last_user_msg)
-                                        } else {
-                                            current
-                                        };
-                                        single.params = vec![format!("{} {}", crawl_id, topic)];
-                                    }
-                                }
-                            }
-                        }
                         tool_rounds += 1;
-
-                        // Status: Tools werden ausgefuehrt
-                        for call in &parsed_calls {
-                            tx.send(serde_json::json!({"type":"status","message":format!("Tool: {}({})", call.name, call.params.join(", "))}).to_string()).await.ok();
-                        }
-
-                        let mid = modul_for_tools
-                            .as_ref()
-                            .map(|m| m.id.as_str())
-                            .unwrap_or(modul_id_str);
-
-                        // Assistant-History VOR den Tool-Ergebnissen: Original-Message
-                        // behalten (DeepSeek reasoning_content muss nach Tool-Calls
-                        // zurueckgereicht werden), tool_calls normalisiert auf die
-                        // tatsaechlich ausgefuehrten Calls — jede Call-ID bekommt
-                        // genau eine role:"tool"-Antwort.
-                        let mut assistant_history = raw_data
-                            .pointer("/choices/0/message")
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                serde_json::json!({"role": "assistant", "content": serde_json::Value::Null})
-                            });
-                        if let Some(obj) = assistant_history.as_object_mut() {
-                            obj.insert("role".into(), serde_json::json!("assistant"));
-                            obj.entry("content").or_insert(serde_json::Value::Null);
-                            let calls_json: Vec<serde_json::Value> = parsed_calls
-                                .iter()
-                                .map(|c| {
-                                    serde_json::json!({
-                                        "id": c.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": c.name,
-                                            "arguments": tool_arguments_json_for_history(
-                                                &c.name,
-                                                &c.params,
-                                                modul_for_tools.as_ref(),
-                                                &py_mods_snap,
-                                            )
-                                        }
-                                    })
-                                })
-                                .collect();
-                            obj.insert("tool_calls".into(), serde_json::json!(calls_json));
-                        }
-                        messages.push(assistant_history);
-
-                        // Sub-Aufgaben anlegen (eine pro Call), dann ausfuehren.
-                        let mut call_sub_ids: Vec<String> =
-                            Vec::with_capacity(parsed_calls.len());
-                        for call in &parsed_calls {
-                            let mut sub = Aufgabe::direct(
-                                &call.name,
-                                call.params.clone(),
-                                mid,
-                                &format!("chat:{}", modul_id_str),
-                                None,
-                                None,
-                            );
-                            sub.parent_id = Some(main_id.clone());
-                            sub.zurueck_an = main_route.clone();
-                            sub.status = AufgabeStatus::Gestartet;
-                            sub.gestartet = Some(chrono::Utc::now());
-                            let sub_id = sub.id.clone();
-                            let _ = state.pipeline.speichern(&sub);
-                            sub_aufgaben.push(sub_id.clone());
+                        continue;
+                    }
+                    // DeepDive-Gates ersetzen gezielt EINEN verfruehten rag.suchen-
+                    // Call; bei Multi-Call-Runden laufen die Calls unveraendert.
+                    if parsed_calls.len() == 1 {
+                        let enough_manual = deepdive_progress.search_ok >= 2
+                            && deepdive_progress.fetch_ok >= 3
+                            && deepdive_progress.source_note_ok >= 2;
+                        let single = &mut parsed_calls[0];
+                        if needs_deepdive
+                            && deepdive_progress.crawl_ok == 0
+                            && deepdive_progress.rss_evidence_ok == 0
+                            && !enough_manual
+                            && single.name == "rag.suchen"
+                        {
+                            let topic = deepdive_topic_hint(&last_user_msg);
+                            let preferred_tool = preferred_deepdive_tool(&last_user_msg);
                             state.pipeline.log(
                                 modul_id_str,
                                 Some(&main_id),
-                                LogTyp::Info,
+                                LogTyp::Warning,
                                 &format!(
-                                    "Tool: {}({}) [{}]",
-                                    call.name,
-                                    call.params.join(", "),
-                                    &sub_id[..8]
+                                    "DeepDive-Gate ersetzt verfruehtes rag.suchen durch {}({})",
+                                    preferred_tool, topic
                                 ),
                             );
-                            call_sub_ids.push(sub_id);
-                        }
-
-                        // Read-only Calls (Suchen/Fetches) laufen nebenlaeufig — bei
-                        // Multi-Search-Runden der groesste Latenzgewinn. Alles andere
-                        // strikt sequenziell in Emissions-Reihenfolge.
-                        let parallel = parsed_calls.len() > 1
-                            && parsed_calls
-                                .iter()
-                                .all(|c| tools::is_parallel_safe_tool(&c.name));
-                        let results: Vec<(bool, String)> = if parallel {
-                            let futs = parsed_calls.iter().zip(call_sub_ids.iter()).map(
-                                |(call, sub_id)| {
-                                    exec_tool_inline(
-                                        &state,
-                                        &call.name,
-                                        &call.params,
-                                        mid,
-                                        Some(sub_id),
-                                        &config_snapshot,
-                                    )
-                                },
-                            );
-                            futures_util::future::join_all(futs).await
-                        } else {
-                            let mut seq = Vec::with_capacity(parsed_calls.len());
-                            for (call, sub_id) in parsed_calls.iter().zip(call_sub_ids.iter()) {
-                                seq.push(
-                                    exec_tool_inline(
-                                        &state,
-                                        &call.name,
-                                        &call.params,
-                                        mid,
-                                        Some(sub_id),
-                                        &config_snapshot,
-                                    )
-                                    .await,
-                                );
-                            }
-                            seq
-                        };
-
-                        for ((call, sub_id), tool_result) in parsed_calls
-                            .iter()
-                            .zip(call_sub_ids.iter())
-                            .zip(results.iter())
+                            single.name = preferred_tool.to_string();
+                            single.params = vec![topic];
+                        } else if needs_deepdive
+                            && single.name == "rag.suchen"
+                            && deepdive_progress.crawl_ok > 0
                         {
-                            let ok = tool_result.0;
-                            observe_deepdive_progress(
-                                &mut deepdive_progress,
-                                &call.name,
-                                ok,
-                                tool_rounds,
-                            );
-                            if ok
-                                && (call.name == "deepdive.crawl"
-                                    || call.name == "deepdive.quick")
-                            {
-                                deepdive_progress.crawl_id =
-                                    extract_deepdive_crawl_id(&tool_result.1);
+                            if let Some(crawl_id) = deepdive_progress.crawl_id.as_ref() {
+                                let current = single.params.first().cloned().unwrap_or_default();
+                                if !current.contains(crawl_id) {
+                                    let topic = if current.trim().is_empty() {
+                                        deepdive_topic_hint(&last_user_msg)
+                                    } else {
+                                        current
+                                    };
+                                    single.params = vec![format!("{} {}", crawl_id, topic)];
+                                }
                             }
-                            if ok {
-                                let recovered = tool_failures
-                                    .iter_mut()
-                                    .filter(|failure| !failure.recovered)
-                                    .map(|failure| {
-                                        failure.recovered = true;
-                                        1usize
-                                    })
-                                    .sum::<usize>();
-                                if recovered > 0 {
-                                    state.pipeline.log(
+                        }
+                    }
+                    tool_rounds += 1;
+
+                    // Status: Tools werden ausgefuehrt
+                    for call in &parsed_calls {
+                        tx.send(serde_json::json!({"type":"status","message":format!("Tool: {}({})", call.name, call.params.join(", "))}).to_string()).await.ok();
+                    }
+
+                    let mid = modul_for_tools
+                        .as_ref()
+                        .map(|m| m.id.as_str())
+                        .unwrap_or(modul_id_str);
+
+                    // Assistant-History VOR den Tool-Ergebnissen (provider-
+                    // Felder wie DeepSeek reasoning_content bleiben erhalten,
+                    // jede Call-ID bekommt genau eine role:"tool"-Antwort).
+                    messages.push(crate::turn::build_assistant_history(
+                        &raw_message,
+                        &parsed_calls,
+                        |c| {
+                            tool_arguments_json_for_history(
+                                &c.name,
+                                &c.params,
+                                modul_for_tools.as_ref(),
+                                &py_mods_snap,
+                            )
+                        },
+                    ));
+
+                    // Sub-Aufgaben anlegen (eine pro Call), dann ausfuehren.
+                    let mut call_sub_ids: Vec<String> = Vec::with_capacity(parsed_calls.len());
+                    for call in &parsed_calls {
+                        let mut sub = Aufgabe::direct(
+                            &call.name,
+                            call.params.clone(),
+                            mid,
+                            &format!("chat:{}", modul_id_str),
+                            None,
+                            None,
+                        );
+                        sub.parent_id = Some(main_id.clone());
+                        sub.zurueck_an = main_route.clone();
+                        sub.status = AufgabeStatus::Gestartet;
+                        sub.gestartet = Some(chrono::Utc::now());
+                        let sub_id = sub.id.clone();
+                        let _ = state.pipeline.speichern(&sub);
+                        sub_aufgaben.push(sub_id.clone());
+                        state.pipeline.log(
+                            modul_id_str,
+                            Some(&main_id),
+                            LogTyp::Info,
+                            &format!(
+                                "Tool: {}({}) [{}]",
+                                call.name,
+                                call.params.join(", "),
+                                &sub_id[..8]
+                            ),
+                        );
+                        call_sub_ids.push(sub_id);
+                    }
+
+                    let state_ref = &state;
+                    let config_ref = &config_snapshot;
+                    let results =
+                        crate::turn::execute_parsed_calls(&parsed_calls, &None, |idx, call| {
+                            let sub_id = call_sub_ids[idx].clone();
+                            async move {
+                                exec_tool_inline(
+                                    state_ref,
+                                    &call.name,
+                                    &call.params,
+                                    mid,
+                                    Some(&sub_id),
+                                    config_ref,
+                                )
+                                .await
+                            }
+                        })
+                        .await;
+
+                    for ((call, sub_id), tool_result) in parsed_calls
+                        .iter()
+                        .zip(call_sub_ids.iter())
+                        .zip(results.iter())
+                    {
+                        let ok = tool_result.0;
+                        observe_deepdive_progress(
+                            &mut deepdive_progress,
+                            &call.name,
+                            ok,
+                            tool_rounds,
+                        );
+                        if ok && (call.name == "deepdive.crawl" || call.name == "deepdive.quick") {
+                            deepdive_progress.crawl_id = extract_deepdive_crawl_id(&tool_result.1);
+                        }
+                        if ok {
+                            let recovered = tool_failures
+                                .iter_mut()
+                                .filter(|failure| !failure.recovered)
+                                .map(|failure| {
+                                    failure.recovered = true;
+                                    1usize
+                                })
+                                .sum::<usize>();
+                            if recovered > 0 {
+                                state.pipeline.log(
                                         modul_id_str,
                                         Some(&main_id),
                                         LogTyp::Info,
@@ -3638,75 +3421,58 @@ async fn chat(
                                             recovered
                                         ),
                                     );
-                                }
-                            } else {
-                                tool_failures.push(ChatToolFailure {
-                                    tool_name: call.name.clone(),
-                                    detail: util::safe_truncate(&tool_result.1, 160).to_string(),
-                                    recovered: false,
-                                });
                             }
+                        } else {
+                            tool_failures.push(ChatToolFailure {
+                                tool_name: call.name.clone(),
+                                detail: util::safe_truncate(&tool_result.1, 160).to_string(),
+                                recovered: false,
+                            });
+                        }
 
-                            // Sub-Aufgabe abschliessen
-                            if let Ok(Some(mut a)) = state.pipeline.laden_by_id(sub_id) {
-                                a.ergebnis = Some(tool_result.1.clone());
-                                let _ = state.pipeline.verschieben(
-                                    &mut a,
-                                    if ok {
-                                        AufgabeStatus::Success
-                                    } else {
-                                        AufgabeStatus::Failed
-                                    },
-                                );
-                            }
-
-                            state.pipeline.log(
-                                modul_id_str,
-                                Some(&main_id),
-                                if ok { LogTyp::Success } else { LogTyp::Failed },
-                                &format!(
-                                    "Tool {}: {} → {}",
-                                    call.name,
-                                    if ok { "OK" } else { "FAIL" },
-                                    util::safe_truncate(&tool_result.1, 80)
-                                ),
+                        // Sub-Aufgabe abschliessen
+                        if let Ok(Some(mut a)) = state.pipeline.laden_by_id(sub_id) {
+                            a.ergebnis = Some(tool_result.1.clone());
+                            let _ = state.pipeline.verschieben(
+                                &mut a,
+                                if ok {
+                                    AufgabeStatus::Success
+                                } else {
+                                    AufgabeStatus::Failed
+                                },
                             );
-
-                            // Status: Tool-Ergebnis
-                            tx.send(serde_json::json!({"type":"status","message":format!("{}: {}", if ok {"OK"} else {"FAIL"}, util::safe_truncate(&tool_result.1, 80))}).to_string()).await.ok();
-
-                            messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call.id,
-                                "content": chat_tool_result_for_llm(ok, &tool_result.1)}));
                         }
 
-                        // History trimmen: alte Tool-Results kuerzen um Token-Explosion zu vermeiden
-                        // Behalte nur die letzten 6 Messages (3 Tool-Rounds) vollstaendig
-                        let keep_full = 6;
-                        let system_msgs = 1; // System-Prompt
-                        let user_msgs = user_messages.as_array().map(|a| a.len()).unwrap_or(0);
-                        let fixed = system_msgs + user_msgs; // Diese nie anfassen
-                        if messages.len() > fixed + keep_full + 4 {
-                            // Alte Tool-Results auf 100 chars kuerzen
-                            for i in fixed..(messages.len().saturating_sub(keep_full)) {
-                                if messages[i].get("role").and_then(|v| v.as_str()) == Some("tool")
-                                {
-                                    if let Some(content) =
-                                        messages[i].get("content").and_then(|v| v.as_str())
-                                    {
-                                        if content.len() > 100 {
-                                            let short = format!(
-                                                "{}...[gekuerzt]",
-                                                util::safe_truncate(content, 100)
-                                            );
-                                            messages[i]["content"] = serde_json::json!(short);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        continue;
+                        state.pipeline.log(
+                            modul_id_str,
+                            Some(&main_id),
+                            if ok { LogTyp::Success } else { LogTyp::Failed },
+                            &format!(
+                                "Tool {}: {} → {}",
+                                call.name,
+                                if ok { "OK" } else { "FAIL" },
+                                util::safe_truncate(&tool_result.1, 80)
+                            ),
+                        );
+
+                        // Status: Tool-Ergebnis
+                        tx.send(serde_json::json!({"type":"status","message":format!("{}: {}", if ok {"OK"} else {"FAIL"}, util::safe_truncate(&tool_result.1, 80))}).to_string()).await.ok();
                     }
+                    crate::turn::append_tool_results(
+                        &mut messages,
+                        &parsed_calls,
+                        &results,
+                        chat_tool_result_for_llm,
+                    );
 
+                    // History trimmen: alte Tool-Results kuerzen (Prefix =
+                    // System-Prompt + Seed-User-Messages bleibt unangetastet).
+                    let user_msgs = user_messages.as_array().map(|a| a.len()).unwrap_or(0);
+                    crate::turn::trim_old_tool_messages(&mut messages, 1 + user_msgs, 6, 100);
+                    continue;
+                }
+
+                crate::turn::RoundOutcome::Final { text: response } => {
                     if tools::looks_like_malformed_tool_call(&response) {
                         let detail = util::safe_truncate(&response, 180).to_string();
                         if malformed_tool_retries < MAX_MALFORMED_TOOL_RETRIES {
@@ -3798,7 +3564,7 @@ async fn chat(
                             if deepdive_gate_retries < 4
                                 && can_run_more_tool_rounds(
                                     &config_snapshot,
-                                    &backend_id,
+                                    &engine.backend_id,
                                     tool_rounds,
                                 )
                             {
@@ -3910,14 +3676,14 @@ async fn chat(
                     tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":""},"done":true,"eval_count":final_text.len(),"total_duration":total_dur.as_nanos() as u64}).to_string()).await.ok();
                     return;
                 }
-                Err(e) => {
-                    release_reservation(
-                        &state.pipeline.store.pool,
-                        &state.tokens,
-                        &config_snapshot,
-                        &model_str,
-                    )
-                    .await;
+                crate::turn::RoundOutcome::GuardrailHardFail { codes } => {
+                    tracing::warn!("Guardrail hard-fail in chat.{}: {:?}", modul_id, codes);
+                    tx.send(serde_json::json!({"type":"status","message":format!("Guardrail hard-fail: {}", codes.join(", "))}).to_string()).await.ok();
+                    // break → finale Synthese aus vorhandener Evidenz (wie bisher)
+                    break;
+                }
+                crate::turn::RoundOutcome::LlmError(e) => {
+                    // Reservation wurde bereits in der Engine freigegeben.
                     if !sub_aufgaben.is_empty() {
                         let mut final_text =
                             llm_error_recovery_answer(&e, sub_aufgaben.len(), &messages);
@@ -4009,14 +3775,18 @@ async fn chat(
         );
         tx.send(serde_json::json!({"type":"status","message":"Tool-Limit dieses LLM erreicht; erstelle finale Synthese aus vorhandenen Ergebnissen"}).to_string()).await.ok();
 
-        let model_str = model_for_backend(&config_snapshot, &backend_id);
+        let model_str = model_for_backend(&config_snapshot, &engine.backend_id);
         let final_messages = final_synthesis_messages(
             &last_user_msg,
             &messages,
             needs_deepdive,
             MAX_FINAL_SYNTHESIS_EVIDENCE_CHARS,
         );
-        while let Some(wait) = state.llm.reserve_rate_slot_or_wait(&backend_id).await {
+        while let Some(wait) = state
+            .llm
+            .reserve_rate_slot_or_wait(&engine.backend_id)
+            .await
+        {
             let wait_s = wait.as_secs().max(1);
             let msg = format!("LLM rate-limit aktiv: finale Synthese wartet {}s", wait_s);
             state
@@ -4029,7 +3799,12 @@ async fn chat(
         }
         let final_result = state
             .llm
-            .chat_with_tools(&backend_id, backup_id.as_deref(), &final_messages, &[])
+            .chat_with_tools(
+                &engine.backend_id,
+                backup_id.as_deref(),
+                &final_messages,
+                &[],
+            )
             .await;
         let mut finalizer_ok = false;
         let mut final_text = match final_result {
@@ -4038,7 +3813,7 @@ async fn chat(
                     &state.pipeline.store.pool,
                     &state.tokens,
                     &config_snapshot,
-                    &backend_id,
+                    &engine.backend_id,
                     &model_str,
                     modul_id_str,
                     &raw_data,

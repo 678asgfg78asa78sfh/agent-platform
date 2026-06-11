@@ -269,6 +269,10 @@ pub fn tools_as_openai_json(
 /// war in der path_keys-Liste → Reihenfolge war insertion-order-zufällig und
 /// die Whitelist-Prüfung lief auf dem falsch zugeordneten Parameter. Kimi/Qwen/
 /// GPT-Finding, Run 4.
+/// Produktion laeuft seit dem Multi-Call-Umbau ueber
+/// `parse_openai_tool_calls_multi`; diese Single-Call-Sicht bleibt fuer die
+/// Parser-Tests erhalten (gleiche per-Call-Logik via parse_openai_call_value).
+#[cfg(test)]
 pub fn parse_openai_tool_call(data: &serde_json::Value) -> Option<(String, Vec<String>)> {
     parse_openai_tool_call_with_schema(data, None)
 }
@@ -276,6 +280,7 @@ pub fn parse_openai_tool_call(data: &serde_json::Value) -> Option<(String, Vec<S
 /// Wie `parse_openai_tool_call`, aber mit explizitem Schema. Wenn
 /// `schema_required` Some ist, wird die Reihenfolge der Args daraus abgeleitet
 /// statt aus einer Heuristik.
+#[cfg(test)]
 pub fn parse_openai_tool_call_with_schema(
     data: &serde_json::Value,
     schema_required: Option<&[String]>,
