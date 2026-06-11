@@ -722,6 +722,21 @@ def advance_fact_check_assets(wf: dict[str, Any], config: dict[str, Any]) -> Non
     min_score = int_param(wf.get("options", {}).get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100)
     score = int_param(report.get("score"), 0, 0, 100)
     if not bool(report.get("pass")) or score < min_score:
+        # Faktencheck war bisher eine Sackgasse, obwohl er suggested_rewrites
+        # liefert und die Review-Stage laengst einen Auto-Repair-Loop hat.
+        # Jetzt: blockierte Claims gehen (begrenzt durch quality_max_repairs)
+        # in dieselbe Reparatur — danach laeuft der Faktencheck erneut.
+        quality = quality_state(wf)
+        repairs_used = int_param(quality.get("repair_count"), 0, 0, 100)
+        max_repairs = int_param(wf.get("options", {}).get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 1), 0, 5)
+        auto_repair = bool_param(wf.get("options", {}).get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True))
+        if auto_repair and repairs_used < max_repairs and (report.get("blocking_issues") or report.get("warnings")):
+            wf.setdefault("events", []).append(event(
+                "factcheck_repair",
+                "Faktencheck blockiert (" + factcheck_summary(report) + ") — Auto-Reparatur mit suggested_rewrites gestartet",
+            ))
+            start_repair_task(wf, config, assets, report)
+            return
         wf["stage"] = "fact_check_failed"
         save_synthesis(wf, config, status="fact_check_failed", assets=assets)
         mark_failed(wf, "Faktencheck blockiert TTS/Render: " + factcheck_summary(report))
@@ -1570,7 +1585,8 @@ def repair_prompt(wf: dict[str, Any], assets: dict[str, Any], review: dict[str, 
     return f"""ZIEL: Repariere VIDEO_ASSETS_JSON nach einem Quality-Review, damit es vor TTS/Render erneut geprueft werden kann.
 
 Regeln:
-- Behebe ALLE blocking_issues und must_fix.
+- Behebe ALLE blocking_issues und must_fix. Nutze suggested_rewrite wo vorhanden.
+- Die Szenen-Struktur bleibt UNVERAENDERT: type, stat, bars, people, figures, timeline, quote, compare, route und Reihenfolge 1:1 uebernehmen. Nur voice_script-Saetze und direkt betroffene Szenen-Texte (bullets/subtitle/say/quote.text) anpassen, falls dort der beanstandete Claim steht.
 - Keine neue Recherche und keine Toolcalls.
 - Harte Fakten nur aus DeepDive-Kontext/Quellen; wenn unsicher, abschwaechen oder als Unsicherheit formulieren.
 - Wertende politische Aussagen als Analyse/Quelle kennzeichnen oder neutralisieren.
