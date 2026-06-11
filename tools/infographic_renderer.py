@@ -344,12 +344,16 @@ class Renderer:
         last = self.scenes[-1]
         return last, last.duration_s, None
 
+    _bg_cache: Image.Image | None = None
+
     def background(self, W: int, H: int, t: float) -> Image.Image:
-        col = np.linspace(0, 1, H, dtype=np.float32)[:, None]
-        grad = (np.array(BG_TOP, dtype=np.float32)[None, None, :] * (1 - col[..., None])
-                + np.array(BG_BOTTOM, dtype=np.float32)[None, None, :] * col[..., None])
-        arr = np.repeat(grad, W, axis=1).astype(np.uint8)
-        img = Image.fromarray(arr, "RGB").convert("RGBA")
+        if self._bg_cache is None or self._bg_cache.size != (W, H):
+            col = np.linspace(0, 1, H, dtype=np.float32)[:, None]
+            grad = (np.array(BG_TOP, dtype=np.float32)[None, None, :] * (1 - col[..., None])
+                    + np.array(BG_BOTTOM, dtype=np.float32)[None, None, :] * col[..., None])
+            arr = np.repeat(grad, W, axis=1).astype(np.uint8)
+            self._bg_cache = Image.fromarray(arr, "RGB").convert("RGBA")
+        img = self._bg_cache.copy()
         d = ImageDraw.Draw(img, "RGBA")
         # dezentes Punkt-Raster, langsam driftend (Parallax-Leben)
         step = int(64 * self.ss)
@@ -802,6 +806,8 @@ class Renderer:
         body_top = top + head_r * 2.3
         body_bot = ground - h * 0.30
         body_w = h * 0.27
+        # Arme leicht abgedunkelt, damit sie vor dem gleichfarbigen Torso lesbar sind
+        arm_col = mix(col, (0, 0, 0), 0.22)
         bob = math.sin(t * (7 if walking else 2.0)) * (3 if walking else 1.2) * s
         # Beine
         hip_y = body_bot - h * 0.02 + bob
@@ -824,13 +830,13 @@ class Renderer:
         bx2 = x - facing * math.cos(back_ang - 1.35 + 0.35) * arm_len * 0.4 - facing * math.sin(back_ang) * 0 
         bx2 = x - facing * math.sin(back_ang - 1.0) * arm_len
         by2 = sh_y + math.sin(back_ang) * arm_len
-        d.line([x, sh_y, bx2, by2], fill=col, width=int(h * 0.055))
+        d.line([x, sh_y, bx2, by2], fill=arm_col, width=int(h * 0.055))
         front_idle = 1.35 - sway
         front_ang = front_idle + (0.22 - front_idle) * clamp01(gesture)
         fx = x + facing * math.cos(front_ang) * arm_len
         fy = sh_y + math.sin(front_ang) * arm_len
-        d.line([x, sh_y, fx, fy], fill=col, width=int(h * 0.055))
-        d.ellipse([fx - h * 0.04, fy - h * 0.04, fx + h * 0.04, fy + h * 0.04], fill=col)
+        d.line([x, sh_y, fx, fy], fill=arm_col, width=int(h * 0.055))
+        d.ellipse([fx - h * 0.04, fy - h * 0.04, fx + h * 0.04, fy + h * 0.04], fill=arm_col)
         # Kopf (leichtes Nicken beim Sprechen)
         hy = top + head_r + bob + math.sin(t * 5) * gesture * 1.5 * s
         d.ellipse([x - head_r, hy - head_r, x + head_r, hy + head_r], fill=col)
@@ -868,6 +874,9 @@ class Renderer:
             fps=self.fps,
             codec="libx264",
             quality=None,
+            # macro_block_size=1: sonst skaliert imageio auf 16er-Bloecke
+            # (1080 -> 1088) und das Video ist nicht mehr standardkonform.
+            macro_block_size=1,
             output_params=["-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         )
         writer.send(None)
