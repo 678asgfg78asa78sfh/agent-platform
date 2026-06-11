@@ -1,7 +1,8 @@
-# Harness-Vergleich: agent vs. Hermes / Letta / smolagents (Stand 2026-06-12)
+# Harness-Vergleich: agent vs. Hermes / OpenClaw / Letta / smolagents (Stand 2026-06-12)
 
 Verglichen wurden frische Clones (`~/aistuff/compare/`):
 - **Hermes Agent** (NousResearch, Python, MIT, ~140k Stars) — Always-on-Personal-Agent, TUI + Messenger-Gateway
+- **OpenClaw** (TypeScript/Node, MIT) — Personal Assistant mit Gateway-Architektur, 23 Messaging-Kanäle, Skill-Ökosystem
 - **Letta** (ehem. MemGPT, Python/TS) — Stateful-Agent-Server, Memory-first
 - **smolagents** (HuggingFace, Python) — Minimal-Harness, Code-as-Action
 - **unser `agent/`** (Rust, ~25k LoC) — Multi-Modul-Plattform, Scheduler, Telegram, Web-UI
@@ -69,6 +70,36 @@ unbeaufsichtigte Cron-Agents ein echter Sicherheitsgewinn. **Aufwand: mittel. Nu
 - **Trajectory-Datagen** (Hermes batch_runner/trajectory_compressor) — nur relevant, falls ihr je eigene Modelle tunen wollt.
 - **Terminal-Backends** (Docker/SSH/Modal als austauschbare Ausführungsumgebung) — unser shell.exec läuft immer lokal.
 
+## OpenClaw im Detail (Nachtrag)
+
+OpenClaw ist konzeptionell der nächste Verwandte von Hermes (dort gibt es sogar `hermes claw migrate`),
+aber mit anderem Schwerpunkt: Kanal-Breite und Ökosystem statt Lernschleife.
+
+**Was OpenClaw besonders macht:**
+1. **Commitments-Engine** (`src/commitments/`): extrahiert automatisch Zusagen/Versprechen aus
+   Konversationen ("ich schicke dir morgen X") und ein Heartbeat-Runner fasst selbststaendig nach,
+   wenn sie faellig sind. Das ist echtes proaktives Verhalten statt nur Cron — fuer einen
+   Telegram-Assistenten wie unseren ein sehr passendes Konzept: Task-Board + Heartbeat haben wir,
+   die Extraktions-Schicht fehlt. **Adoptionskandidat, Aufwand mittel.**
+2. **Gateway als Control-Plane**: 23 Kanaele (WhatsApp, Signal, iMessage, Teams, Matrix, …) ueber
+   eine Steuer-Ebene, Geraete als "Nodes" (macOS/iOS/Android mit Voice), dazu ein live
+   renderbares **Canvas**. Fuer uns relevant, falls je mehr als Telegram gewuenscht ist —
+   Architektur-Muster, nicht 1:1-Code.
+3. **Skill-Oekosystem mit Registry**: 58 Bundled-Skills + ClawHub (Community-Registry) +
+   SOUL.md-Persona-Templates (162 Community-Vorlagen). Bestaetigt die Skills-Empfehlung aus dem
+   Hermes-Teil — das Format setzt sich quer durch die Szene durch (agentskills.io-kompatibel).
+4. **clawbench**: Benchmark, der den GESAMTEN Stack bewertet (Harness + Config + Modell, trace-
+   basiert, Reliability-Metriken) statt nur das LLM. Genau die Luecke unseres `benchmark.rs`
+   (misst nur Backend-Antworten). Trace-basierte Harness-Scores waeren der richtige Ausbau.
+5. **ACP-Spawning**: externe Coding-Agents (Claude Code, Codex) werden als Subagents mit
+   gebuendelter MCP/LSP-Runtime gestartet — der Personal-Agent delegiert Coding an Spezialisten.
+6. **Test-Disziplin**: auffaellig viele colocated e2e-/integration-/guardrail-Tests fuer den
+   Harness selbst — dieselbe Richtung, die wir mit den Mock-Server-E2E-Tests eingeschlagen haben.
+
+**Wo wir gegen OpenClaw vorn bleiben:** gleiche Punkte wie gegen Hermes — exactly-once-Tools,
+Kosten-Enforcement, deterministischer Guardrail, Security-Tiefe, Flotten-Konzept, Single-Binary
+(OpenClaw ist ein grosser Node-Monolith mit pnpm-Workspace).
+
 ## Nicht übernehmen
 - Hermes' Installations-/Dependency-Modell (uv+Node+ffmpeg-Bootstrap) — unser Single-Binary ist der Vorteil.
 - Letta's Memory-Block-Schema 1:1 — unsere RAG-Pools + chat_history decken das pragmatischer ab.
@@ -79,5 +110,7 @@ unbeaufsichtigte Cron-Agents ein echter Sicherheitsgewinn. **Aufwand: mittel. Nu
 2. PTC/Code-Mode (größter Latenz-/Kostenhebel für DeepDive & DeepSeek V4)
 3. Memory-Curator-Cron auf RAG-Pools (Lernschleife mit Bordmitteln)
 4. MCP-Client-Modul (Ökosystem), danach MCP-Server-Endpoint
-5. Summarization-Stufe in der Kompaktierung (lokales LLM als Summarizer)
-6. Telegram-Approval-Flow
+5. Commitments-Extraktion + Heartbeat-Nachfassen (OpenClaw-Konzept, passt perfekt zu Telegram)
+6. Summarization-Stufe in der Kompaktierung (lokales LLM als Summarizer)
+7. Telegram-Approval-Flow
+8. clawbench-artiger Trace-Benchmark als Ausbau von benchmark.rs
