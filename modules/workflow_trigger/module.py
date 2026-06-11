@@ -35,6 +35,7 @@ MODULE = {
         "default_render_timeout_s": {"type": "number", "label": "Render Task Timeout", "default": 3600},
         "tick_limit": {"type": "number", "label": "Workflows pro Tick", "default": 12},
         "auto_render": {"type": "bool", "label": "Nach Normalisierung rendern", "default": True},
+        "video_style": {"type": "select", "label": "Video-Renderer", "default": "infographic", "options": ["infographic", "mapled"]},
         "auto_shorts": {"type": "bool", "label": "Nach Render Shorts schneiden", "default": False},
         "fact_check": {"type": "bool", "label": "Vor TTS Faktencheck ausfuehren", "default": True},
         "fact_check_min_score": {"type": "number", "label": "Faktencheck Mindestscore", "default": 72},
@@ -1052,10 +1053,13 @@ def start_render_task(
     if not audio_path and not silent_allowed:
         mark_failed(wf, "Render gestoppt: kein echtes audio_path vorhanden. Silent-Render ist nur fuer Preview/Tests erlaubt.")
         return
+    style = str(wf.get("options", {}).get("video_style") or config.get("video_style") or "infographic").strip().lower()
+    render_tool = "video_pipeline.infographic_video" if style != "mapled" else "video_pipeline.briefing_video"
     params = {
         "title": title,
         "script_path": str(script_path),
         "scenes_json_path": str(scenes_path),
+        "assets_json_path": str(artifacts.get("video_assets") or ""),
         "out_dir": wf.get("options", {}).get("render_out_dir") or str(default_render_output_dir(config) / wf["id"]),
         "preview": bool(wf.get("options", {}).get("preview")),
         "allow_silent_audio": silent_allowed,
@@ -1068,7 +1072,7 @@ def start_render_task(
     render_task = enqueue_direct_task(
         config,
         wf.get("video_modul_id") or wf["target_modul_id"],
-        "video_pipeline.briefing_video",
+        render_tool,
         [json.dumps(params, ensure_ascii=False)],
         created_by="workflow_trigger",
         timeout_s=cfg_int(config, "default_render_timeout_s", 3600, 60, 14400),
@@ -1435,7 +1439,20 @@ Wichtig:
 - Wenn DeepDive-Bausteine thematisch fremde Subcrawls enthalten, ignoriere sie komplett und vermerke sie nur in source_notes als Artefakt.
 - Keine Spekulationsbegriffe als Tatsachen: "NHI", "Alien", "nicht-terrestrisch", "Informationsoperation", "psychologische Akklimatisierung" nur als These/Deutung, wenn die Quelle selbst nur kommentierend ist.
 	- source_notes muessen die Qualitaet jeder Hauptaussage abgrenzen: official_primary, reliable_journalism, commentary, social/unverified, stale_background.
-	- Szenen muessen Worldmap-tauglich sein: jede Szene braucht route mit mindestens zwei Laendern/Regionen. Nutze pro Station genau EINEN Namen, z.B. "USA" oder "United States", "Russia" oder "Russland", "France" oder "Frankreich"; keine Slash-Kombinationen wie "USA/United States". Abstrakte Stationen wie "Global", "Europe", "Asia", "Middle East" sind erlaubt.
+	- Das Video ist eine INFOGRAFIK-SHOW, keine Karten-Diashow. Jede Szene bekommt ein "type" und passende Daten. Verfuegbare Typen:
+	  * hook    — Einstieg/Titelszene (erste Szene, immer).
+	  * stat    — EINE starke Kennzahl: stat:{{value, unit, label, max}}. Nur belegte Zahlen.
+	  * bars    — Vergleich von 2-5 Groessen: bars:[{{label, value, display, color}}].
+	  * people  — Anteils-Piktogramm: people:{{count, highlight, label}} (z.B. 3 von 10).
+	  * figures — zwei Akteure mit Positionen: figures:{{left:{{label, say, color}}, right:{{label, say, color}}}}. say = EIN kurzer Kernsatz pro Seite.
+	  * timeline— 3-6 datierte Stationen: timeline:[{{date, text}}].
+	  * quote   — EIN praegnantes belegtes Zitat: quote:{{text, by}}.
+	  * compare — zwei Strategien/Lager: compare:{{left:{{label, value, points:[]}}, right:{{...}}}}.
+	  * map     — geografische Kausalkette: route mit 2-6 Stationen. NUR fuer wirklich raeumliche Zusammenhaenge.
+	  * list    — 3-4 Kernpunkte als bullets, wenn nichts anderes passt.
+	  * outro   — Schluss-Szene (letzte Szene, immer).
+	- Mische die Typen: maximal EINE map-Szene pro Video, nie zwei gleiche Typen direkt hintereinander. Zahlen in stat/bars/people NUR wenn sie im Report belegt sind — sonst anderen Typ waehlen.
+	- route ist NUR bei type=map Pflicht (2+ Stationen). Pro Station genau EIN Name, z.B. "USA", "Russland", "Frankreich"; keine Slash-Kombinationen. Abstrakte Stationen wie "Global", "Europe", "Asia", "Middle East" sind erlaubt.
 	- Baue das Sprecher-Skript in klaren, in sich geschlossenen Sinnpassagen auf. Jede Szene soll als eigenstaendige Passage funktionieren, damit daraus sauber geschnitten werden kann.
 	- Shorts sind NICHT einfach Ausschnitte. Markiere nur Passagen als Short, die allein verstaendlich sind: starker Hook, ein klarer Gedanke, keine Abhaengigkeit vom vorherigen Absatz, keine langen Quellenlisten.
 	- Fuer jeden Short gib eine source_scene und optional start_offset_s relativ zum Szenenanfang sowie duration_s an. Wenn eine Szene nicht short-faehig ist, erzeuge dafuer keinen Short.
@@ -1451,14 +1468,11 @@ Erwartetes JSON:
   "voice_script": "Hoerbares deutsches Sprecher-Skript als Fliesstext, ca. {words}.",
   "duration_s": {duration},
   "scenes": [
-    {{
-      "title": "Kapitel",
-      "subtitle": "Einordnung",
-      "route": ["USA", "China", "Japan"],
-      "bullets": ["kurzer Punkt", "kurzer Punkt", "kurzer Punkt"],
-      "weight": 1.0,
-      "color": "gold"
-    }}
+    {{"type": "hook", "title": "Videotitel", "subtitle": "Unterzeile", "weight": 0.7, "color": "gold"}},
+    {{"type": "stat", "title": "Kapitel", "subtitle": "Einordnung", "stat": {{"value": 92, "unit": "Prozent", "label": "wofuer die Zahl steht", "max": 100}}, "bullets": ["Kontext"], "weight": 1.0, "color": "gold"}},
+    {{"type": "figures", "title": "Akteure", "figures": {{"left": {{"label": "USA", "say": "Kernposition", "color": "blue"}}, "right": {{"label": "China", "say": "Kernposition", "color": "red"}}}}, "weight": 1.1, "color": "gold"}},
+    {{"type": "map", "title": "Kausalkette", "route": ["USA", "China", "Japan"], "bullets": ["kurzer Punkt"], "weight": 1.0, "color": "gold"}},
+    {{"type": "outro", "title": "Videotitel", "subtitle": "Quellen im Begleittext", "weight": 0.5, "color": "gold"}}
   ],
 	  "shorts": [
 	    {{
@@ -2171,30 +2185,42 @@ def normalize_assets(assets: dict[str, Any], wf: dict[str, Any]) -> dict[str, An
         scenes = []
     normalized_scenes = []
     colors = ["gold", "blue", "teal", "red", "purple", "green"]
+    typed_keys = ("type", "stat", "bars", "people", "figures", "timeline", "quote", "compare", "narration")
     for idx, scene in enumerate(scenes[:18], start=1):
         if not isinstance(scene, dict):
             continue
+        scene_type = str(scene.get("type") or "").strip().lower()
+        has_typed_data = any(scene.get(k) for k in typed_keys[1:])
         route = scene.get("route") or scene.get("countries") or []
         if isinstance(route, str):
             route = [part.strip() for part in re.split(r"[,;>]+", route) if part.strip()]
-        if not isinstance(route, list) or len(route) < 2:
+        if not isinstance(route, list):
+            route = []
+        # Route-Zwang NUR fuer Karten-Szenen. Vorher bekam jede Szene eine
+        # fallback_route verpasst — dadurch wurde ALLES zur Weltkarte und die
+        # Infografik-Typfelder gingen verloren.
+        needs_route = scene_type in {"map", "figures"} or (not scene_type and not has_typed_data)
+        if needs_route and len(route) < 2:
             route = fallback_route(wf.get("query") or "")
-        route = normalize_route_items(route, wf.get("query") or "")
+        if route:
+            route = normalize_route_items(route, wf.get("query") or "")
         bullets = scene.get("bullets") or scene.get("points") or []
         if isinstance(bullets, str):
             bullets = [part.strip() for part in re.split(r"\n+|;\s*", bullets) if part.strip()]
         if not isinstance(bullets, list):
             bullets = []
-        normalized_scenes.append(
-            {
-                "title": str(scene.get("title") or f"Kapitel {idx}")[:80],
-                "subtitle": str(scene.get("subtitle") or scene.get("summary") or "")[:160],
-                "route": route[:8],
-                "bullets": [str(item).strip()[:150] for item in bullets if str(item).strip()][:4],
-                "weight": float_param(scene.get("weight"), 1.0, 0.05, 5.0),
-                "color": str(scene.get("color") or colors[(idx - 1) % len(colors)]),
-            }
-        )
+        normalized: dict[str, Any] = {
+            "title": str(scene.get("title") or f"Kapitel {idx}")[:80],
+            "subtitle": str(scene.get("subtitle") or scene.get("summary") or "")[:160],
+            "route": route[:8],
+            "bullets": [str(item).strip()[:150] for item in bullets if str(item).strip()][:4],
+            "weight": float_param(scene.get("weight"), 1.0, 0.05, 5.0),
+            "color": str(scene.get("color") or colors[(idx - 1) % len(colors)]),
+        }
+        for key in typed_keys:
+            if scene.get(key) is not None:
+                normalized[key] = scene.get(key)
+        normalized_scenes.append(normalized)
     if not normalized_scenes:
         normalized_scenes = [
             {

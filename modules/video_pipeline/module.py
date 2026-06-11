@@ -18,6 +18,7 @@ TOOLS_DIR = ROOT / "tools"
 DEFAULT_DATA_DIR = ROOT / "agent-data" / "video_pipeline"
 WORLDMAP_RENDERER = TOOLS_DIR / "worldmap_renderer.py"
 BRIEFING_RENDERER = TOOLS_DIR / "youtube_briefing_renderer.py"
+INFOGRAPHIC_RENDERER = TOOLS_DIR / "infographic_renderer.py"
 
 
 MODULE = {
@@ -52,6 +53,11 @@ MODULE = {
             "params": ["query_json"],
         },
         {
+            "name": "video_pipeline.infographic_video",
+            "description": "Rendert ein Infografik-Show-Video (animierte Figuren, Stats, Balken, Timeline, Karte als EIN Szenentyp). JSON {title,assets_json_path|scenes,voice_script|script_path,audio_path,preview,duration_s,out_dir}.",
+            "params": ["query_json"],
+        },
+        {
             "name": "video_pipeline.briefing_video",
             "description": "Rendert ein map-led YouTube-Briefing aus Audio/Skript/Szenen. JSON {title,audio_path,script_path,script_text,scenes:[{title,subtitle,route,bullets,weight,color}],scenes_json_path,out_dir,preview,allow_silent_audio,duration_s}.",
             "params": ["query_json"],
@@ -83,6 +89,8 @@ def handle_tool(tool_name: str, params: Any, config: dict[str, Any]) -> dict[str
             return worldmap_clip(params, config)
         if tool_name == "video_pipeline.briefing_video":
             return briefing_video(params, config)
+        if tool_name == "video_pipeline.infographic_video":
+            return infographic_video(params, config)
         if tool_name == "video_pipeline.shorts_from_video":
             return shorts_from_video(params, config)
         if tool_name == "video_pipeline.status":
@@ -225,6 +233,76 @@ def briefing_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def infographic_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
+    payload = parse_payload(params)
+    require_file(INFOGRAPHIC_RENDERER, "Infographic Renderer")
+
+    title = text_value(payload.get("title") or payload.get("project_title"), "Infografik Briefing")
+    out_dir = output_dir(payload, config, "infographic_" + slugify(title))
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Assets: bevorzugt fertige video_assets.json (Workflow-Pfad), sonst aus
+    # Payload-Feldern zusammensetzen (Chat-/Direktaufruf).
+    assets_path = path_value(payload.get("assets_json_path") or payload.get("assets_json") or payload.get("assets"))
+    if assets_path:
+        ensure_input_file(assets_path, "assets_json_path")
+    else:
+        assets: dict[str, Any] = {"title": title}
+        if payload.get("scenes"):
+            assets["scenes"] = normalize_scenes(payload.get("scenes"))
+        elif payload.get("scenes_json_path") or payload.get("scenes_json"):
+            scenes_src = path_value(payload.get("scenes_json_path") or payload.get("scenes_json"))
+            ensure_input_file(scenes_src, "scenes_json_path")
+            scenes_data = read_json(scenes_src)
+            assets["scenes"] = scenes_data.get("scenes") or []
+        script_text = text_value(payload.get("voice_script") or payload.get("script_text"), "")
+        script_path = path_value(payload.get("script_path") or payload.get("script"))
+        if not script_text and script_path and script_path.exists():
+            script_text = script_path.read_text(encoding="utf-8", errors="replace")
+        if script_text:
+            assets["voice_script"] = script_text
+        assets_path = out_dir / "assets_input.json"
+        write_json(assets_path, assets)
+
+    cmd = [python_bin(config), str(INFOGRAPHIC_RENDERER), "--assets", str(assets_path), "--out", str(out_dir), "--title", title]
+    preview = bool_param(payload.get("preview"), False)
+    if preview:
+        cmd.append("--preview")
+
+    audio_path = path_value(payload.get("audio_path") or payload.get("audio"))
+    if audio_path:
+        ensure_input_file(audio_path, "audio_path")
+        cmd.extend(["--audio", str(audio_path)])
+    else:
+        allow_silent = bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False) or preview)
+        if not allow_silent:
+            return fail("audio_path fehlt und allow_silent_audio ist deaktiviert.")
+    duration_s = optional_float(payload.get("duration_s") or payload.get("duration"))
+    if duration_s:
+        cmd.extend(["--duration", str(duration_s)])
+
+    timeout = timeout_param(payload, config)
+    started = time.time()
+    proc = run_cmd(cmd, timeout)
+    final_path = last_stdout_path(proc.stdout) or newest_video(out_dir)
+    storyboard = out_dir / "storyboard_infographic.json"
+    package = out_dir / "youtube_package_infographic.md"
+    return ok(
+        {
+            "type": "infographic_video",
+            "output_dir": str(out_dir),
+            "video": str(final_path) if final_path else "",
+            "storyboard": str(storyboard) if storyboard.exists() else "",
+            "package": str(package) if package.exists() else "",
+            "assets_json": str(assets_path),
+            "audio_path": str(audio_path) if audio_path else "",
+            "preview": preview,
+            "title": title,
+            "elapsed_s": round(time.time() - started, 2),
+        }
+    )
+
+
 def shorts_from_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     payload = parse_payload(params)
     source = path_value(payload.get("source_video") or payload.get("video") or payload.get("input"))
@@ -327,6 +405,7 @@ def status(config: dict[str, Any]) -> dict[str, Any]:
     checks = {
         "worldmap_renderer": WORLDMAP_RENDERER.exists(),
         "briefing_renderer": BRIEFING_RENDERER.exists(),
+        "infographic_renderer": INFOGRAPHIC_RENDERER.exists(),
         "ffmpeg": shutil.which(ffmpeg) or Path(ffmpeg).exists(),
         "ffprobe": ffprobe_available,
         "duration_probe": "ffprobe" if ffprobe_available else "ffmpeg_fallback",
@@ -443,25 +522,40 @@ def normalize_scenes(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not value:
         raise ValueError("scenes muss eine nicht-leere Liste sein.")
     scenes = []
+    typed_keys = ("type", "stat", "bars", "people", "figures", "timeline", "quote", "compare", "narration")
     for idx, scene in enumerate(value, start=1):
         if not isinstance(scene, dict):
             raise ValueError(f"Szene {idx} ist kein Objekt.")
-        route = normalize_route(scene.get("route") or scene.get("countries") or scene.get("actors"))
+        scene_type = str(scene.get("type") or "").strip().lower()
+        has_typed_data = any(scene.get(k) for k in typed_keys[1:])
+        raw_route = scene.get("route") or scene.get("countries") or scene.get("actors")
+        # Route ist nur fuer Karten-Szenen Pflicht; typisierte Infografik-
+        # Szenen (stat/bars/people/...) laufen ohne. Vorher warf jede Szene
+        # ohne 2+ Stationen einen Fehler — Infografik-Storyboards waren
+        # damit gar nicht erst renderbar.
+        if scene_type == "map" or (not scene_type and not has_typed_data and raw_route):
+            route = normalize_route(raw_route)
+        elif raw_route:
+            route = [str(part).strip() for part in (raw_route if isinstance(raw_route, list) else re.split(r"[,>\n;]+", str(raw_route))) if str(part).strip()]
+        else:
+            route = []
         bullets = scene.get("bullets") or scene.get("points") or []
         if isinstance(bullets, str):
             bullets = [part.strip() for part in re.split(r"\n+|;\s*", bullets) if part.strip()]
         if not isinstance(bullets, list):
             bullets = []
-        scenes.append(
-            {
-                "title": text_value(scene.get("title"), f"Kapitel {idx}"),
-                "subtitle": text_value(scene.get("subtitle") or scene.get("summary"), ""),
-                "route": route,
-                "bullets": [str(item).strip() for item in bullets if str(item).strip()][:6],
-                "weight": float_param(scene.get("weight"), 1.0, 0.05, 10.0),
-                "color": scene.get("color") or "gold",
-            }
-        )
+        normalized = {
+            "title": text_value(scene.get("title"), f"Kapitel {idx}"),
+            "subtitle": text_value(scene.get("subtitle") or scene.get("summary"), ""),
+            "route": route,
+            "bullets": [str(item).strip() for item in bullets if str(item).strip()][:6],
+            "weight": float_param(scene.get("weight"), 1.0, 0.05, 10.0),
+            "color": scene.get("color") or "gold",
+        }
+        for key in typed_keys:
+            if scene.get(key) is not None:
+                normalized[key] = scene.get(key)
+        scenes.append(normalized)
     return scenes
 
 
