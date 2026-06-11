@@ -128,6 +128,7 @@ async fn telegram_module_loop(
             &py_mods,
             &py_pool,
             &cfg_snapshot,
+            None,
         )
         .await;
 

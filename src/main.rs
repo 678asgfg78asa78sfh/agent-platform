@@ -291,6 +291,7 @@ async fn main() {
                             &py_mods,
                             &state_clone.py_pool,
                             &cfg_full,
+                            None,
                         )
                         .await;
                         tracing::info!("Guardrail alert → notify ok={} {}", ok, detail);

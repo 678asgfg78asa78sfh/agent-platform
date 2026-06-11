@@ -108,6 +108,11 @@ Two layers:
 - Standard interface: one `module.py` with a `MODULE` dict (description,
   settings schema, tools) and a `handle_tool(name, params, config)` function
 - Communication over stdin/stdout JSON lines
+- Since 2026-06: requests additionally carry `"args"` — the ORIGINAL JSON
+  object the model emitted in its tool call (typed values, original key
+  names). New modules should prefer `req.get("args")` over the positional
+  `params` string list; `params` stays populated for backwards
+  compatibility. Migration path away from positional string params.
 - Process pool keeps Python running (idle timeout); tolerates stdout
   pollution from `print()` during init
 - Discovered at startup via `loader::discover_modules`; the wizard exposes
@@ -116,6 +121,26 @@ Two layers:
 Every side-effect tool call goes through **one** unified dispatcher
 (`exec_tool_unified`) which handles: idempotency gate, audit log, permission
 check, Rust execution, Python fallback.
+
+### Turn engine (`turn.rs`)
+Shared core of one LLM round, used by BOTH the scheduler task loop
+(`cycle::exec_llm`) and the web chat loop: rate-limit wait, LLM call with
+backup fallback, token tracking, `<tool>` text-tag injection, guardrail
+retry/fallback, multi-tool-call parsing. ALL tool calls of a round are
+executed (parallel models like DeepSeek V4/Grok emit several per round);
+read-only calls (`tools::is_parallel_safe_tool`) run concurrently.
+Fix anything round-related HERE, not in the two loops.
+
+Per-backend knobs (config.json `llm_backends[]`):
+- `context_window` (tokens): opt-in token-aware history compaction before
+  each call — whole tool-round groups are dropped oldest-first (pairing
+  stays valid), prefix + last 6 messages untouched. Recommended for the
+  local llama.cpp backends (set it to the server's `-c` value), which
+  otherwise truncate silently.
+- `tool_choice_supported: false`: opt-out if a backend rejects the
+  OpenAI `tool_choice` field. Research/deepdive chat requests force their
+  first round with `tool_choice="required"` (STOPP prompts remain as
+  fallback only).
 
 ### Permission model
 

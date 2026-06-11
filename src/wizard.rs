@@ -1545,6 +1545,7 @@ async fn call_py_tool(
             tool_name,
             &params,
             &serde_json::json!({}),
+            None,
         )
         .await?;
     Ok(serde_json::json!({"success": success, "data": data}))
@@ -2674,8 +2675,8 @@ mod tests {
                 max_tool_rounds: None,
                 call_rate_limit: None,
                 internal: false,
-            tool_choice_supported: None,
-            context_window: None,
+                tool_choice_supported: None,
+                context_window: None,
             },
             allow_code_gen: false,
             max_rounds_per_session: 30,

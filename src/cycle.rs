@@ -1293,6 +1293,7 @@ async fn execute_chain(
             llm,
             py_modules,
             py_pool,
+            None,
         )
         .await;
         last_success = result.0;
@@ -1452,6 +1453,7 @@ async fn exec_direct(
         llm,
         py_modules,
         py_pool,
+        None,
     )
     .await;
 
@@ -1785,6 +1787,7 @@ async fn exec_llm(
                                 llm,
                                 py_modules,
                                 py_pool,
+                                Some(&call.arguments_json),
                             )
                             .await
                         }
@@ -2120,6 +2123,7 @@ fn append_message_to_convo(
     pipeline.convo_save(modul_id, &convo)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn exec_tool(
     tool_name: &str,
     params: &[String],
@@ -2130,6 +2134,7 @@ async fn exec_tool(
     llm: &Arc<LlmRouter>,
     py_modules: &Arc<RwLock<Vec<crate::loader::PyModuleMeta>>>,
     py_pool: &Arc<crate::loader::PyProcessPool>,
+    args_json: Option<&str>,
 ) -> (bool, String) {
     let config_snapshot = config.read().await.clone();
     let py_mods = py_modules.read().await;
@@ -2143,6 +2148,7 @@ async fn exec_tool(
         &py_mods,
         py_pool,
         &config_snapshot,
+        args_json,
     )
     .await
 }

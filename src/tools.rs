@@ -56,7 +56,7 @@ pub fn tools_for_module(modul: &ModulConfig) -> Vec<ToolDef> {
                 params: vec!["notification_id".into()],
             });
             if perms.iter().any(|p| p == "aufgaben") {
-            tools.push(ToolDef {
+                tools.push(ToolDef {
                 name: "aufgaben.erstellen".into(),
                 description: "Erstellt eine Kanban-Aufgabe fuer das eigene Modul oder einen per Agent Link verlinkten Agenten/Modul".into(),
                 params: vec!["modul".into(), "anweisung".into(), "wann".into()],
@@ -1674,6 +1674,7 @@ pub async fn exec_tool_unified(
     py_modules: &[crate::loader::PyModuleMeta],
     py_pool: &crate::loader::PyProcessPool,
     config_snapshot: &AgentConfig,
+    args_json: Option<&str>,
 ) -> (bool, String) {
     // ══════ Idempotency-Gate ══════
     // Nur für Side-Effect-Tools UND nur wenn wir eine task_id haben (Scheduler-
@@ -1751,6 +1752,12 @@ pub async fn exec_tool_unified(
 
     // Eigentliche Tool-Execution in einer inner-fn damit wir am Ende einen
     // einzigen Exit-Punkt haben für idempotency_store.
+    // Original-JSON-Args des Model-Calls (falls vorhanden) — geht 1:1 an
+    // Python-Module als "args" weiter (typisierter Migrationspfad weg von
+    // positionalen String-Params).
+    let args_value: Option<serde_json::Value> = args_json
+        .and_then(|s| serde_json::from_str(s).ok())
+        .filter(|v: &serde_json::Value| v.as_object().is_some_and(|o| !o.is_empty()));
     let result = exec_tool_unified_inner(
         tool_name,
         params,
@@ -1761,6 +1768,7 @@ pub async fn exec_tool_unified(
         py_pool,
         config_snapshot,
         task_id,
+        args_value.as_ref(),
     )
     .await;
 
@@ -1847,6 +1855,7 @@ async fn exec_tool_unified_inner(
     py_pool: &crate::loader::PyProcessPool,
     config_snapshot: &AgentConfig,
     task_id: Option<&str>,
+    args: Option<&serde_json::Value>,
 ) -> (bool, String) {
     // For RAG tools, pre-compute embedding if configured
     if tool_name == "rag.speichern" || tool_name == "rag.suchen" {
@@ -1991,6 +2000,7 @@ async fn exec_tool_unified_inner(
         &instance_config,
         py_pool,
         config_snapshot,
+        args,
     )
     .await
     {
@@ -2008,6 +2018,7 @@ pub async fn execute_python_tool(
     instance_config: &serde_json::Value,
     py_pool: &crate::loader::PyProcessPool,
     config_snapshot: &AgentConfig,
+    args: Option<&serde_json::Value>,
 ) -> Option<ToolResult> {
     for py_mod in py_modules {
         for tool in &py_mod.tools {
@@ -2047,7 +2058,14 @@ pub async fn execute_python_tool(
                 let call_config = platform_config.as_ref().unwrap_or(instance_config);
 
                 match py_pool
-                    .call(&py_mod.path, &py_mod.name, tool_name, params, call_config)
+                    .call(
+                        &py_mod.path,
+                        &py_mod.name,
+                        tool_name,
+                        params,
+                        call_config,
+                        args,
+                    )
                     .await
                 {
                     Ok((success, data)) => {
@@ -2064,6 +2082,7 @@ pub async fn execute_python_tool(
                             tool_name,
                             params,
                             call_config,
+                            args,
                         )
                         .await
                         {
@@ -2824,7 +2843,10 @@ mod tests {
         target.timeout_s = 300;
 
         let mut cfg = crate::types::AgentConfig::default();
-        cfg.llm_backends = vec![backend("main-backend", "Main"), backend("video-backend", "Video Agent")];
+        cfg.llm_backends = vec![
+            backend("main-backend", "Main"),
+            backend("video-backend", "Video Agent"),
+        ];
         cfg.module = vec![caller.clone(), target];
 
         let resolved = resolve_task_target(&cfg, &caller, "video-backend").unwrap();
@@ -2851,7 +2873,10 @@ mod tests {
         chat.llm_backend = "target-backend".into();
 
         let mut cfg = crate::types::AgentConfig::default();
-        cfg.llm_backends = vec![backend("main-backend", "Main"), backend("target-backend", "Target Agent")];
+        cfg.llm_backends = vec![
+            backend("main-backend", "Main"),
+            backend("target-backend", "Target Agent"),
+        ];
         cfg.module = vec![caller.clone(), worker, chat];
 
         let resolved = resolve_task_target(&cfg, &caller, "Target Agent").unwrap();
@@ -2877,7 +2902,10 @@ mod tests {
         target.timeout_s = 300;
 
         let mut cfg = crate::types::AgentConfig::default();
-        cfg.llm_backends = vec![backend("main-backend", "Main"), backend("video-backend", "Video Agent")];
+        cfg.llm_backends = vec![
+            backend("main-backend", "Main"),
+            backend("video-backend", "Video Agent"),
+        ];
         cfg.module = vec![caller.clone(), target];
 
         let params = vec![
@@ -2917,7 +2945,10 @@ mod tests {
         target.llm_backend = "video-backend".into();
 
         let mut cfg = crate::types::AgentConfig::default();
-        cfg.llm_backends = vec![backend("main-backend", "Main"), backend("video-backend", "Video Agent")];
+        cfg.llm_backends = vec![
+            backend("main-backend", "Main"),
+            backend("video-backend", "Video Agent"),
+        ];
         cfg.module = vec![caller.clone(), target];
 
         let params = vec![

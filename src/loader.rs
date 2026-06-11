@@ -111,6 +111,7 @@ impl PyProcessPool {
         tool_name: &str,
         params: &[String],
         config: &serde_json::Value,
+        args: Option<&serde_json::Value>,
     ) -> Result<(bool, String), String> {
         let slot = {
             let mut reg = self.registry.lock().await;
@@ -133,12 +134,7 @@ impl PyProcessPool {
         let proc = guard.as_mut().ok_or("process slot empty after spawn")?;
         proc.last_used = std::time::Instant::now();
 
-        let request = serde_json::json!({
-            "action": "handle_tool",
-            "tool": tool_name,
-            "params": params,
-            "config": config,
-        });
+        let request = build_py_request(tool_name, params, config, args);
         let request_str =
             serde_json::to_string(&request).map_err(|e| format!("serialize request: {e}"))? + "\n";
 
@@ -375,18 +371,36 @@ fn describe_module_sync(module_py: &Path) -> Result<PyModuleMeta, String> {
 }
 
 /// Fuehrt einen Tool-Call in einem Python-Modul aus (async)
-pub async fn call_python_tool(
-    module_py: &Path,
+/// Baut den Request fuer das Python-Modul-Protokoll. `args` ist das
+/// ORIGINAL-JSON-Objekt aus dem Model-Tool-Call — Module koennen damit typisierte
+/// Parameter lesen statt der positionalen String-Liste (`params` bleibt fuer
+/// Rueckwaertskompatibilitaet immer gesetzt; alte Module ignorieren "args").
+fn build_py_request(
     tool_name: &str,
     params: &[String],
     config: &serde_json::Value,
-) -> Result<(bool, String), String> {
-    let request = serde_json::json!({
+    args: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut request = serde_json::json!({
         "action": "handle_tool",
         "tool": tool_name,
         "params": params,
         "config": config,
     });
+    if let Some(args) = args.filter(|v| v.is_object()) {
+        request["args"] = args.clone();
+    }
+    request
+}
+
+pub async fn call_python_tool(
+    module_py: &Path,
+    tool_name: &str,
+    params: &[String],
+    config: &serde_json::Value,
+    args: Option<&serde_json::Value>,
+) -> Result<(bool, String), String> {
+    let request = build_py_request(tool_name, params, config, args);
 
     let request_str =
         serde_json::to_string(&request).map_err(|e| format!("serialize request: {e}"))? + "\n";
@@ -459,6 +473,34 @@ mod tests {
             }],
             path: PathBuf::new(),
         }
+    }
+
+    #[test]
+    fn build_py_request_includes_args_only_for_objects() {
+        let params = vec!["x".to_string()];
+        let config = serde_json::json!({"k": "v"});
+
+        let with_args = build_py_request(
+            "demo.tool",
+            &params,
+            &config,
+            Some(&serde_json::json!({"query": "x", "limit": 5})),
+        );
+        assert_eq!(with_args["action"], "handle_tool");
+        assert_eq!(with_args["params"][0], "x");
+        assert_eq!(with_args["args"]["query"], "x");
+        assert_eq!(with_args["args"]["limit"], 5);
+
+        // Kein args / kein Objekt → Feld fehlt (rueckwaertskompatibel)
+        let without = build_py_request("demo.tool", &params, &config, None);
+        assert!(without.get("args").is_none());
+        let non_obj = build_py_request(
+            "demo.tool",
+            &params,
+            &config,
+            Some(&serde_json::json!("string")),
+        );
+        assert!(non_obj.get("args").is_none());
     }
 
     #[test]

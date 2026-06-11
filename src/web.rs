@@ -3301,6 +3301,12 @@ async fn chat(
                             );
                             single.name = preferred_tool.to_string();
                             single.params = vec![topic];
+                            single.arguments_json = tool_arguments_json_for_history(
+                                &single.name,
+                                &single.params,
+                                modul_for_tools.as_ref(),
+                                &py_mods_snap,
+                            );
                         } else if needs_deepdive
                             && single.name == "rag.suchen"
                             && deepdive_progress.crawl_ok > 0
@@ -3314,6 +3320,12 @@ async fn chat(
                                         current
                                     };
                                     single.params = vec![format!("{} {}", crawl_id, topic)];
+                                    single.arguments_json = tool_arguments_json_for_history(
+                                        &single.name,
+                                        &single.params,
+                                        modul_for_tools.as_ref(),
+                                        &py_mods_snap,
+                                    );
                                 }
                             }
                         }
@@ -3391,6 +3403,7 @@ async fn chat(
                                     mid,
                                     Some(&sub_id),
                                     config_ref,
+                                    Some(&call.arguments_json),
                                 )
                                 .await
                             }
@@ -3953,6 +3966,7 @@ async fn chat(
 /// Tool inline ausfuehren (Rust oder Python). Delegates to the unified dispatcher.
 /// Im Chat-Flow wird die Subtask-ID weitergereicht, damit Side-Effects
 /// idempotent bleiben und aufgaben.erstellen den Chat-Rueckkanal erben kann.
+#[allow(clippy::too_many_arguments)]
 async fn exec_tool_inline(
     s: &Arc<AppState>,
     tool_name: &str,
@@ -3960,6 +3974,7 @@ async fn exec_tool_inline(
     modul_id: &str,
     task_id: Option<&str>,
     config: &AgentConfig,
+    args_json: Option<&str>,
 ) -> (bool, String) {
     let py_mods = s.py_modules.read().await;
     tools::exec_tool_unified(
@@ -3972,6 +3987,7 @@ async fn exec_tool_inline(
         &py_mods,
         &s.py_pool,
         config,
+        args_json,
     )
     .await
 }
