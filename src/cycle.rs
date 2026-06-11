@@ -2644,4 +2644,267 @@ mod tests {
         assert_eq!(result, 42);
         assert!(marker.load(Ordering::Relaxed) > 100);
     }
+
+    // ═══ E2E: Mock-OpenAI-Server gegen den exec_llm Tool-Loop ═══════════════
+    // Treibt den ECHTEN Loop (exec_llm → LlmRouter → HTTP → Parser → exec_tool)
+    // gegen einen in-process Mock-Server. Das ist der Integrationstest, der
+    // vorher fehlte — die Single-Call-/History-Bugs hätten hier sofort geknallt.
+
+    type MockRecorder = Arc<tokio::sync::Mutex<Vec<serde_json::Value>>>;
+
+    async fn spawn_mock_openai(responses: Vec<serde_json::Value>) -> (String, MockRecorder) {
+        use axum::{Json, Router, routing::post};
+        let received: MockRecorder = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let queue = Arc::new(tokio::sync::Mutex::new(
+            std::collections::VecDeque::from(responses),
+        ));
+        let rec = received.clone();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let rec = rec.clone();
+                let queue = queue.clone();
+                async move {
+                    rec.lock().await.push(body);
+                    let next = queue.lock().await.pop_front().unwrap_or_else(|| {
+                        serde_json::json!({
+                            "choices": [{"message": {"role": "assistant", "content": "FERTIG"}}],
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                        })
+                    });
+                    Json(next)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{}", addr), received)
+    }
+
+    fn e2e_backend(url: &str) -> crate::types::LlmBackend {
+        crate::types::LlmBackend {
+            id: "mock".into(),
+            name: "mock".into(),
+            typ: crate::types::LlmTyp::OpenAICompat,
+            url: url.to_string(),
+            api_key: Some("test".into()),
+            model: "mock-1".into(),
+            timeout_s: 5,
+            identity: Default::default(),
+            max_tokens: None,
+            reasoning: None,
+            cost_cap: None,
+            max_tool_rounds: None,
+            call_rate_limit: None,
+            internal: false,
+        }
+    }
+
+    fn e2e_modul(id: &str) -> ModulConfig {
+        ModulConfig {
+            id: id.into(),
+            typ: "filesystem".into(),
+            name: id.into(),
+            display_name: id.into(),
+            llm_backend: "mock".into(),
+            backup_llm: None,
+            berechtigungen: vec![],
+            timeout_s: 30,
+            retry: 0,
+            settings: Default::default(),
+            identity: Default::default(),
+            rag_pool: None,
+            linked_modules: vec![],
+            input_enhancers: vec![],
+            output_enhancers: vec![],
+            combined_enhancers: vec![],
+            persistent: true,
+            spawned_by: None,
+            spawn_ttl_s: None,
+            created_at: None,
+            scheduler_interval_ms: None,
+            max_concurrent_tasks: None,
+            token_budget: None,
+            token_budget_warning: None,
+        }
+    }
+
+    struct E2eEnv {
+        _dir: tempfile::TempDir,
+        pipeline: Arc<Pipeline>,
+        config: Arc<RwLock<AgentConfig>>,
+        llm: Arc<LlmRouter>,
+        py_modules: Arc<RwLock<Vec<crate::loader::PyModuleMeta>>>,
+        py_pool: Arc<crate::loader::PyProcessPool>,
+        tokens: crate::web::TokenTracker,
+    }
+
+    fn e2e_env(mock_url: &str, modul_id: &str) -> E2eEnv {
+        let dir = tempfile::tempdir().unwrap();
+        let pipeline = Arc::new(Pipeline::new(dir.path()).unwrap());
+        let mut cfg = AgentConfig::default();
+        cfg.llm_backends.push(e2e_backend(mock_url));
+        cfg.module.push(e2e_modul(modul_id));
+        // Guardrail bewusst aus — hier wird der nackte Loop getestet.
+        cfg.guardrail = Some(crate::types::GuardrailConfig {
+            enabled: false,
+            ..Default::default()
+        });
+        let config = Arc::new(RwLock::new(cfg));
+        let llm = Arc::new(LlmRouter::new(config.clone()));
+        E2eEnv {
+            _dir: dir,
+            pipeline,
+            config,
+            llm,
+            py_modules: Arc::new(RwLock::new(vec![])),
+            py_pool: crate::loader::PyProcessPool::new(60),
+            tokens: Arc::new(RwLock::new(Default::default())),
+        }
+    }
+
+    fn tool_call_json(id: &str, name: &str, args: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "type": "function",
+            "function": {"name": name, "arguments": args.to_string()}
+        })
+    }
+
+    async fn run_exec_llm(env: &E2eEnv, modul_id: &str, anweisung: &str) -> Aufgabe {
+        let mut aufgabe = Aufgabe::neu(modul_id, anweisung, "sofort", "e2e-test");
+        aufgabe.status = AufgabeStatus::Gestartet;
+        aufgabe.gestartet = Some(chrono::Utc::now());
+        env.pipeline.speichern(&aufgabe).unwrap();
+        exec_llm(
+            &mut aufgabe,
+            &env.pipeline,
+            &env.config,
+            &env.llm,
+            &env.py_modules,
+            &env.py_pool,
+            &env.tokens,
+            None,
+        )
+        .await;
+        aufgabe
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn e2e_multi_tool_calls_all_executed_and_answered() {
+        // Runde 1: Modell sendet ZWEI parallele files.write-Calls.
+        // Runde 2: finale Antwort. Beide Dateien muessen existieren, und der
+        // zweite Request muss pro Call genau eine role:"tool"-Antwort tragen.
+        // Env zuerst (wegen der absoluten Home-Pfade in den Mock-Responses),
+        // Mock-URL danach in die Config geschrieben.
+        let env = e2e_env("http://127.0.0.1:1", "fs.e2e");
+        let home = env.pipeline.home_dir("fs.e2e");
+        let path_a = home.join("a.txt").to_string_lossy().to_string();
+        let path_b = home.join("b.txt").to_string_lossy().to_string();
+
+        let round1 = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "",
+                "tool_calls": [
+                    tool_call_json("call_a", "files.write",
+                        serde_json::json!({"path": path_a, "content": "INHALT-A"})),
+                    tool_call_json("call_b", "files.write",
+                        serde_json::json!({"path": path_b, "content": "INHALT-B"})),
+                ]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+        let round2 = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "Beide Dateien geschrieben."}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 5}
+        });
+        let (url, received3) = spawn_mock_openai(vec![round1, round2]).await;
+        env.config.write().await.llm_backends[0].url = url;
+
+        let aufgabe = run_exec_llm(&env, "fs.e2e", "Schreibe zwei Dateien").await;
+
+        assert_eq!(aufgabe.status, AufgabeStatus::Success);
+        assert_eq!(
+            aufgabe.ergebnis.as_deref(),
+            Some("Beide Dateien geschrieben.")
+        );
+        // Beide Tool-Calls wurden wirklich ausgefuehrt:
+        assert_eq!(
+            std::fs::read_to_string(home.join("a.txt")).unwrap(),
+            "INHALT-A"
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("b.txt")).unwrap(),
+            "INHALT-B"
+        );
+
+        let reqs = received3.lock().await;
+        assert_eq!(reqs.len(), 2, "genau zwei LLM-Runden erwartet");
+        let msgs = reqs[1]["messages"].as_array().unwrap();
+        let assistant_with_calls = msgs
+            .iter()
+            .find(|m| m["tool_calls"].is_array())
+            .expect("assistant-Message mit tool_calls in Runde 2");
+        assert_eq!(
+            assistant_with_calls["tool_calls"].as_array().unwrap().len(),
+            2,
+            "History muss BEIDE Calls enthalten"
+        );
+        let tool_msgs: Vec<_> = msgs
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .collect();
+        assert_eq!(tool_msgs.len(), 2, "eine role:tool-Antwort pro Call");
+        assert_eq!(tool_msgs[0]["tool_call_id"], "call_a");
+        assert_eq!(tool_msgs[1]["tool_call_id"], "call_b");
+        assert!(
+            tool_msgs[0]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("SUCCESS:")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn e2e_final_answer_without_tools() {
+        let round = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "Direkte Antwort ohne Tools."}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 5}
+        });
+        let (url, received) = spawn_mock_openai(vec![round]).await;
+        let env = e2e_env(&url, "fs.e2e2");
+        let aufgabe = run_exec_llm(&env, "fs.e2e2", "Sag was").await;
+        assert_eq!(aufgabe.status, AufgabeStatus::Success);
+        assert_eq!(
+            aufgabe.ergebnis.as_deref(),
+            Some("Direkte Antwort ohne Tools.")
+        );
+        assert_eq!(received.lock().await.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn e2e_tool_round_limit_fails_task() {
+        // Modell will in jeder Runde ein Tool — Limit 1 muss den Task nach der
+        // ersten Runde mit klarer Fehlermeldung beenden.
+        let make_round = |id: &str| {
+            serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "",
+                    "tool_calls": [tool_call_json(id, "files.list", serde_json::json!({"path": "."}))]}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5}
+            })
+        };
+        let (url, _received) = spawn_mock_openai(vec![make_round("c1"), make_round("c2")]).await;
+        let env = e2e_env(&url, "fs.e2e3");
+        env.config.write().await.llm_backends[0].max_tool_rounds = Some(1);
+        let aufgabe = run_exec_llm(&env, "fs.e2e3", "Liste Dateien endlos").await;
+        assert_eq!(aufgabe.status, AufgabeStatus::Failed);
+        assert!(
+            aufgabe
+                .ergebnis
+                .as_deref()
+                .unwrap_or("")
+                .contains("tool rounds limit")
+        );
+    }
 }
