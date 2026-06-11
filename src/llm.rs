@@ -62,6 +62,9 @@ fn apply_tool_choice(
         }
         // Ollama /api/chat kennt kein tool_choice.
         LlmTyp::Ollama | LlmTyp::Embedding => {}
+        // DeepSeek: Thinking-Mode lehnt tool_choice mit HTTP 400 ab
+        // ("Thinking mode does not support this tool_choice").
+        LlmTyp::DeepSeek if deepseek_thinking_enabled(backend) => {}
         _ => {
             body["tool_choice"] = serde_json::json!(choice);
         }
@@ -299,6 +302,22 @@ fn deepseek_reasoning_effort(effort: Option<&str>) -> Option<&'static str> {
         Some("minimal") | Some("low") | Some("medium") | Some("high") => Some("high"),
         _ => None,
     }
+}
+
+/// True wenn der DeepSeek-Request im Thinking-Mode laeuft. Der Thinking-Mode
+/// lehnt u.a. tool_choice hart mit HTTP 400 ab ("Thinking mode does not
+/// support this tool_choice").
+fn deepseek_thinking_enabled(backend: &LlmBackend) -> bool {
+    let Some(reasoning) = backend.reasoning.as_ref() else {
+        return false;
+    };
+    let normalized_effort = normalized_reasoning_effort(reasoning.effort.as_deref());
+    if reasoning.enabled == Some(false) || normalized_effort == Some("none") {
+        return false;
+    }
+    reasoning.enabled == Some(true)
+        || reasoning.max_tokens.filter(|v| *v > 0).is_some()
+        || normalized_effort.is_some()
 }
 
 fn apply_deepseek_reasoning_config(body: &mut serde_json::Value, backend: &LlmBackend) {
@@ -1260,6 +1279,29 @@ mod tests {
         let mut body = serde_json::json!({});
         apply_tool_choice(&mut body, &backend, true, &opts);
         assert!(body.get("tool_choice").is_none());
+
+        // DeepSeek MIT Thinking (effort gesetzt): kein tool_choice (HTTP-400-Schutz)
+        backend.typ = LlmTyp::DeepSeek;
+        backend.reasoning = Some(crate::types::LlmReasoningConfig {
+            enabled: None,
+            effort: Some("xhigh".into()),
+            max_tokens: None,
+            exclude: Some(true),
+        });
+        let mut body = serde_json::json!({});
+        apply_tool_choice(&mut body, &backend, true, &opts);
+        assert!(body.get("tool_choice").is_none());
+
+        // DeepSeek OHNE Thinking: tool_choice erlaubt
+        backend.reasoning = Some(crate::types::LlmReasoningConfig {
+            enabled: Some(false),
+            effort: None,
+            max_tokens: None,
+            exclude: None,
+        });
+        let mut body = serde_json::json!({});
+        apply_tool_choice(&mut body, &backend, true, &opts);
+        assert_eq!(body["tool_choice"], "required");
     }
 
     #[tokio::test]
