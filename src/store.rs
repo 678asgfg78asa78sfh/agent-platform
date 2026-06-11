@@ -336,19 +336,164 @@ pub fn claim_one_for_modul(pool: &SqlitePool, modul: &str) -> StoreResult<Option
 }
 
 /// Parse "wann"-Feld einer Aufgabe zu Unix-Timestamp. "sofort" → 0 (immer fällig).
-/// Unbekannte Formate → 0 (konservativ: lieber sofort als nie — aber
-/// ist_faellig() auf dem Cycle-Level fängt invalide Formate vor der Execution).
-/// Gültige ISO-8601 → entsprechender Timestamp. Nutze im Aufruf zu task_upsert
-/// damit claim_one_for_modul per SQL filtern kann.
+/// Gültige Formate:
+/// - RFC3339/ISO-8601: 2026-05-12T18:05:00Z
+/// - relative Kurzform: +60s, +10m, +2h, +1d
+/// - natürliche Kurzform: in 1 minute, in einer minute, in 10 minuten
+///
+/// Unbekannte Formate → 0 für Rückwärtskompatibilität mit alten Tasks. Neue
+/// Tool-Aufrufe validieren vorher via parse_faellig_ab_checked().
 pub fn parse_faellig_ab(wann: &str) -> i64 {
-    match wann {
-        "sofort" => 0,
-        w if w.starts_with("20") => w
-            .parse::<chrono::DateTime<chrono::Utc>>()
-            .map(|dt| dt.timestamp())
-            .unwrap_or(0),
-        _ => 0,
+    parse_faellig_ab_checked(wann).unwrap_or(0)
+}
+
+pub fn parse_faellig_ab_checked(wann: &str) -> Option<i64> {
+    let w = wann.trim();
+    if w.is_empty() || is_immediate_wann(w) {
+        return Some(0);
     }
+    if let Some(ts) = parse_absolute_wann(w) {
+        return Some(ts);
+    }
+    if let Some(delay_s) = parse_relative_delay_seconds(w) {
+        return Some(chrono::Utc::now().timestamp() + delay_s.max(1));
+    }
+    None
+}
+
+fn is_immediate_wann(wann: &str) -> bool {
+    matches!(
+        normalize_time_text(wann).as_str(),
+        "sofort" | "jetzt" | "now" | "immediately" | "direkt"
+    )
+}
+
+fn parse_absolute_wann(wann: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(wann)
+        .map(|dt| dt.timestamp())
+        .ok()
+        .or_else(|| {
+            wann.parse::<chrono::DateTime<chrono::Utc>>()
+                .map(|dt| dt.timestamp())
+                .ok()
+        })
+        .or_else(|| {
+            for fmt in [
+                "%Y-%m-%d %H:%M:%S UTC",
+                "%Y-%m-%d %H:%M UTC",
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+            ] {
+                if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(wann, fmt) {
+                    return Some(dt.and_utc().timestamp());
+                }
+            }
+            None
+        })
+}
+
+fn parse_relative_delay_seconds(wann: &str) -> Option<i64> {
+    let text = normalize_time_text(wann);
+    if matches!(text.as_str(), "morgen" | "tomorrow") {
+        return Some(86_400);
+    }
+    if matches!(text.as_str(), "uebermorgen" | "ubermorgen") {
+        return Some(172_800);
+    }
+
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut total = 0_i64;
+    let mut found = false;
+    let mut i = 0_usize;
+    while i < tokens.len() {
+        let token = tokens[i].trim_start_matches('+');
+        if let Some(seconds) = parse_compact_duration(token) {
+            total += seconds;
+            found = true;
+            i += 1;
+            continue;
+        }
+        if let Some(n) = parse_time_number(token) {
+            if let Some(unit) = tokens.get(i + 1).and_then(|u| unit_seconds(u)) {
+                total += n * unit;
+                found = true;
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    if found && total > 0 {
+        Some(total)
+    } else {
+        None
+    }
+}
+
+fn normalize_time_text(input: &str) -> String {
+    let mut out = input.trim().to_lowercase();
+    for (from, to) in [
+        ("ä", "ae"),
+        ("ö", "oe"),
+        ("ü", "ue"),
+        ("ß", "ss"),
+        (",", " "),
+        (".", " "),
+        (";", " "),
+        (":", " "),
+        ("(", " "),
+        (")", " "),
+    ] {
+        out = out.replace(from, to);
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn parse_time_number(token: &str) -> Option<i64> {
+    token.parse::<i64>().ok().or_else(|| match token {
+        "ein" | "eine" | "einer" | "einem" | "einen" | "one" => Some(1),
+        "zwei" | "two" => Some(2),
+        "drei" | "three" => Some(3),
+        "vier" | "four" => Some(4),
+        "fuenf" | "funf" | "five" => Some(5),
+        "sechs" | "six" => Some(6),
+        "sieben" | "seven" => Some(7),
+        "acht" | "eight" => Some(8),
+        "neun" | "nine" => Some(9),
+        "zehn" | "ten" => Some(10),
+        "elf" | "eleven" => Some(11),
+        "zwoelf" | "zwolf" | "twelve" => Some(12),
+        _ => None,
+    })
+}
+
+fn unit_seconds(unit: &str) -> Option<i64> {
+    match unit {
+        "s" | "sec" | "secs" | "sek" | "sekunde" | "sekunden" | "second" | "seconds" => Some(1),
+        "m" | "min" | "mins" | "minute" | "minuten" | "minutes" => Some(60),
+        "h" | "std" | "stunde" | "stunden" | "hour" | "hours" => Some(3_600),
+        "d" | "tag" | "tage" | "day" | "days" => Some(86_400),
+        "w" | "woche" | "wochen" | "week" | "weeks" => Some(604_800),
+        _ => None,
+    }
+}
+
+fn parse_compact_duration(token: &str) -> Option<i64> {
+    let split_at = token
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map(|(idx, _)| idx)?;
+    if split_at == 0 {
+        return None;
+    }
+    let (num, unit) = token.split_at(split_at);
+    let n = num.parse::<i64>().ok()?;
+    unit_seconds(unit).map(|u| n * u)
 }
 
 /// State-Transition mit Timestamp-Update + Payload-Ersetzung. Atomar: sollte
@@ -584,6 +729,34 @@ pub fn audit_filtered(
         .collect::<Result<Vec<_>, _>>()
         .map_err(e("collect"))?;
     Ok(rows)
+}
+
+pub fn audit_count_action_detail_like(
+    pool: &SqlitePool,
+    action: &str,
+    detail_like: &str,
+) -> StoreResult<u64> {
+    let conn = pool.get().map_err(e("pool"))?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE action = ?1 AND detail LIKE ?2",
+            params![action, detail_like],
+            |r| r.get(0),
+        )
+        .map_err(e("audit count"))?;
+    Ok(count.max(0) as u64)
+}
+
+pub fn token_calls_count_by_backend(pool: &SqlitePool, backend: &str) -> StoreResult<u64> {
+    let conn = pool.get().map_err(e("pool"))?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM token_calls WHERE backend = ?1",
+            params![backend],
+            |r| r.get(0),
+        )
+        .map_err(e("token call count"))?;
+    Ok(count.max(0) as u64)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1314,6 +1487,37 @@ mod tests {
         }
         let total: i64 = handles.into_iter().map(|h| h.join().unwrap()).sum();
         assert_eq!(total, 50, "genau 50 claims insgesamt, keine doppelten");
+    }
+
+    #[test]
+    fn parse_faellig_ab_accepts_relative_german_and_compact() {
+        let now = chrono::Utc::now().timestamp();
+        for input in ["in einer minute", "in 1 minute", "+60s", "+1m", "1 min"] {
+            let ts = parse_faellig_ab_checked(input).unwrap();
+            assert!(
+                (now + 55..=now + 65).contains(&ts),
+                "{} parsed to {} outside expected range around {}",
+                input,
+                ts,
+                now + 60
+            );
+        }
+    }
+
+    #[test]
+    fn parse_faellig_ab_accepts_hours_days_and_iso() {
+        let now = chrono::Utc::now().timestamp();
+        let in_two_hours = parse_faellig_ab_checked("in 2 stunden").unwrap();
+        assert!((now + 7_190..=now + 7_210).contains(&in_two_hours));
+
+        let iso = parse_faellig_ab_checked("2026-05-12T18:05:00Z").unwrap();
+        assert_eq!(iso, 1778609100);
+    }
+
+    #[test]
+    fn parse_faellig_ab_checked_rejects_unknown_text() {
+        assert!(parse_faellig_ab_checked("irgendwann bald").is_none());
+        assert_eq!(parse_faellig_ab("irgendwann bald"), 0);
     }
 
     #[test]

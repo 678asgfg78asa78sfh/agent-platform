@@ -6,7 +6,12 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::{Mutex, RwLock};
 
-const OPENAI_COMPAT_EMPTY_BODY_RETRIES: usize = 3;
+/// Max Versuche pro Request fuer transiente Fehler (leerer Body, HTTP 408/429/5xx).
+const OPENAI_COMPAT_TRANSIENT_RETRIES: usize = 3;
+
+fn is_transient_http_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
+}
 
 pub fn openai_compat_endpoint(base_url: &str, path: &str) -> String {
     let base = base_url.trim_end_matches('/');
@@ -102,16 +107,24 @@ fn provider_safe_tools(
                 .and_then(|function| function.as_object_mut())
             {
                 obj.insert("name".into(), serde_json::json!(alias));
-                let desc = obj
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if !desc.contains(&name) {
-                    obj.insert(
-                        "description".into(),
-                        serde_json::json!(format!("{} Internal tool id: {}", desc, name).trim()),
-                    );
+                // Hinweis auf den kanonischen Namen nur, wenn das Aliasing den
+                // Namen tatsaechlich veraendert hat — sonst ist es reiner
+                // Prompt-Bloat auf jedem Call (zaehlt bei lokalen Modellen doppelt:
+                // Tokens + Prompt-Cache-Invalidierung).
+                if alias != name {
+                    let desc = obj
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !desc.contains(&name) {
+                        obj.insert(
+                            "description".into(),
+                            serde_json::json!(
+                                format!("{} Internal tool id: {}", desc, name).trim()
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -155,6 +168,71 @@ fn provider_safe_messages(
             msg
         })
         .collect()
+}
+
+/// Konvertiert OpenAI-Format-History in Anthropic /v1/messages-Format.
+/// Noetig fuer Multi-Turn-Tool-Calling: OpenAI nutzt role:"tool" + assistant.tool_calls,
+/// Anthropic erwartet tool_result-Blocks in user-Turns und tool_use-Blocks in
+/// assistant-Turns. Vorher wurden die Messages 1:1 durchgereicht — der zweite
+/// Tool-Round gegen ein Anthropic-Backend schlug damit immer mit HTTP 400 fehl.
+fn openai_messages_to_anthropic(messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for m in messages {
+        match m.get("role").and_then(|v| v.as_str()).unwrap_or("user") {
+            "system" => continue, // wird separat als top-level "system" gesendet
+            "tool" => {
+                let block = serde_json::json!({
+                    "type": "tool_result",
+                    "tool_use_id": m.get("tool_call_id").and_then(|v| v.as_str()).unwrap_or("call_0"),
+                    "content": m.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                });
+                // Aufeinanderfolgende tool_results in EINEM user-Turn buendeln
+                // (Anthropic verlangt alle Results eines assistant-Turns im
+                // direkt folgenden user-Turn).
+                if let Some(last) = out.last_mut() {
+                    if last["role"] == "user" && last["content"].is_array() {
+                        if let Some(arr) = last["content"].as_array_mut() {
+                            arr.push(block);
+                            continue;
+                        }
+                    }
+                }
+                out.push(serde_json::json!({"role": "user", "content": [block]}));
+            }
+            "assistant" => {
+                let mut blocks: Vec<serde_json::Value> = Vec::new();
+                if let Some(text) = m.get("content").and_then(|v| v.as_str()) {
+                    if !text.trim().is_empty() {
+                        blocks.push(serde_json::json!({"type": "text", "text": text}));
+                    }
+                }
+                if let Some(calls) = m.get("tool_calls").and_then(|v| v.as_array()) {
+                    for c in calls {
+                        let input: serde_json::Value = match &c["function"]["arguments"] {
+                            serde_json::Value::String(s) => {
+                                serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({}))
+                            }
+                            v if v.is_object() => v.clone(),
+                            _ => serde_json::json!({}),
+                        };
+                        blocks.push(serde_json::json!({
+                            "type": "tool_use",
+                            "id": c.get("id").and_then(|v| v.as_str()).unwrap_or("call_0"),
+                            "name": c["function"]["name"].as_str().unwrap_or(""),
+                            "input": input,
+                        }));
+                    }
+                }
+                // Leere assistant-Messages (kein Text, keine Calls) ueberspringen —
+                // Anthropic lehnt leere content-Blocks ab.
+                if !blocks.is_empty() {
+                    out.push(serde_json::json!({"role": "assistant", "content": blocks}));
+                }
+            }
+            _ => out.push(m.clone()),
+        }
+    }
+    out
 }
 
 fn apply_reasoning_config(body: &mut serde_json::Value, backend: &LlmBackend) {
@@ -288,7 +366,9 @@ impl LlmRouter {
 
     async fn backend(&self, id: &str) -> Option<LlmBackend> {
         let cfg = self.config.read().await;
-        cfg.llm_backends.iter().find(|b| b.id == id).cloned()
+        let mut backend = cfg.llm_backends.iter().find(|b| b.id == id).cloned()?;
+        crate::util::resolve_llm_backend_api_alias(&mut backend, &cfg);
+        Some(backend)
     }
 
     /// Reserves one API-call slot for a backend. If the configured per-LLM rate
@@ -362,9 +442,12 @@ impl LlmRouter {
 
         match backend.typ {
             LlmTyp::Ollama => {
-                let body = serde_json::json!({"model": backend.model, "messages": messages, "stream": true});
+                let mut body = serde_json::json!({"model": backend.model, "messages": messages, "stream": true});
+                if let Some(max_tokens) = backend.max_tokens {
+                    body["options"] = serde_json::json!({"num_predict": max_tokens});
+                }
                 let resp = client
-                    .post(format!("{}/api/chat", backend.url))
+                    .post(format!("{}/api/chat", backend.url.trim_end_matches('/')))
                     .json(&body)
                     .send()
                     .await
@@ -432,11 +515,14 @@ impl LlmRouter {
                     .iter()
                     .find(|m| m["role"] == "system")
                     .and_then(|m| m["content"].as_str());
-                let non_sys: Vec<_> = messages
+                let non_sys_raw: Vec<_> = messages
                     .iter()
                     .filter(|m| m["role"] != "system")
                     .cloned()
                     .collect();
+                // History kann role:"tool"/tool_calls aus frueheren Runden enthalten —
+                // muss auch im Streaming-Pfad ins Anthropic-Format konvertiert werden.
+                let non_sys = openai_messages_to_anthropic(&non_sys_raw);
                 let max_tokens = backend.max_tokens.unwrap_or(4096);
                 let mut body = serde_json::json!({
                     "model": backend.model,
@@ -520,8 +606,14 @@ impl LlmRouter {
                 if !tools.is_empty() {
                     body["tools"] = serde_json::json!(tools);
                 }
+                // Ollama ignoriert OpenAI-Style "max_tokens" auf /api/chat —
+                // das Limit heisst dort options.num_predict. Vorher wurde
+                // backend.max_tokens fuer Ollama stillschweigend verworfen.
+                if let Some(max_tokens) = backend.max_tokens {
+                    body["options"] = serde_json::json!({"num_predict": max_tokens});
+                }
                 let resp = client
-                    .post(format!("{}/api/chat", backend.url))
+                    .post(format!("{}/api/chat", backend.url.trim_end_matches('/')))
                     .json(&body)
                     .send()
                     .await
@@ -573,7 +665,7 @@ impl LlmRouter {
                     LlmTyp::DeepSeek => deepseek_endpoint(&backend.url, "chat/completions"),
                     _ => openai_compat_endpoint(&backend.url, "chat/completions"),
                 };
-                for attempt in 1..=OPENAI_COMPAT_EMPTY_BODY_RETRIES {
+                for attempt in 1..=OPENAI_COMPAT_TRANSIENT_RETRIES {
                     let resp = client
                         .post(&endpoint)
                         .header("Authorization", format!("Bearer {key}"))
@@ -584,6 +676,26 @@ impl LlmRouter {
                     let status = resp.status();
                     let body_text = resp.text().await.unwrap_or_default();
                     if !status.is_success() {
+                        // 408/429/5xx sind bei OpenRouter/DeepSeek/lokalen Servern
+                        // meist transient (Ueberlast, Slot busy, Gateway-Hiccup) —
+                        // kurzer Backoff-Retry statt sofort den ganzen Task-Retry/
+                        // Backup-Fallback anzuwerfen. 4xx-Clientfehler failen sofort.
+                        if is_transient_http_status(status)
+                            && attempt < OPENAI_COMPAT_TRANSIENT_RETRIES
+                        {
+                            tracing::warn!(
+                                "LLM backend '{}' HTTP {} (attempt {}/{}) — retry",
+                                backend.id,
+                                status,
+                                attempt,
+                                OPENAI_COMPAT_TRANSIENT_RETRIES
+                            );
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                500 * attempt as u64,
+                            ))
+                            .await;
+                            continue;
+                        }
                         return Err(format!(
                             "API HTTP {}: {}",
                             status,
@@ -591,13 +703,13 @@ impl LlmRouter {
                         ));
                     }
                     if body_text.trim().is_empty() {
-                        if attempt < OPENAI_COMPAT_EMPTY_BODY_RETRIES {
+                        if attempt < OPENAI_COMPAT_TRANSIENT_RETRIES {
                             tracing::warn!(
                                 "LLM backend '{}' returned HTTP {} with empty body (attempt {}/{})",
                                 backend.id,
                                 status,
                                 attempt,
-                                OPENAI_COMPAT_EMPTY_BODY_RETRIES
+                                OPENAI_COMPAT_TRANSIENT_RETRIES
                             );
                             tokio::time::sleep(std::time::Duration::from_millis(
                                 250 * attempt as u64,
@@ -607,7 +719,7 @@ impl LlmRouter {
                         }
                         return Err(format!(
                             "API HTTP {}: empty response body after {} attempts",
-                            status, OPENAI_COMPAT_EMPTY_BODY_RETRIES
+                            status, OPENAI_COMPAT_TRANSIENT_RETRIES
                         ));
                     }
                     let data: serde_json::Value =
@@ -637,7 +749,8 @@ impl LlmRouter {
                     .filter(|m| m["role"] != "system")
                     .cloned()
                     .collect();
-                let non_sys = provider_safe_messages(&non_sys_raw, &canonical_to_alias);
+                let aliased = provider_safe_messages(&non_sys_raw, &canonical_to_alias);
+                let non_sys = openai_messages_to_anthropic(&aliased);
                 let max_tokens = backend.max_tokens.unwrap_or(4096);
                 let mut body = serde_json::json!({"model": backend.model, "max_tokens": max_tokens, "messages": non_sys});
 
@@ -770,7 +883,7 @@ impl LlmRouter {
                 // Ollama: POST /api/embeddings (older) or /api/embed (newer)
                 let body = serde_json::json!({"model": backend.model, "prompt": text});
                 let resp = client
-                    .post(format!("{}/api/embeddings", backend.url))
+                    .post(format!("{}/api/embeddings", backend.url.trim_end_matches('/')))
                     .json(&body)
                     .send()
                     .await
@@ -902,6 +1015,7 @@ mod tests {
             cost_cap: None,
             max_tool_rounds: None,
             call_rate_limit: None,
+            internal: false,
         };
         apply_provider_reasoning_config(&mut body, &backend);
         assert_eq!(body["thinking"]["type"], "enabled");
@@ -989,6 +1103,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_openai_messages_to_anthropic_converts_tool_history() {
+        let messages = vec![
+            serde_json::json!({"role": "system", "content": "sys"}),
+            serde_json::json!({"role": "user", "content": "frage"}),
+            serde_json::json!({"role": "assistant", "content": "ich suche", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "web_search", "arguments": "{\"query\":\"x\"}"}},
+                {"id": "call_2", "type": "function",
+                 "function": {"name": "rag_suchen", "arguments": "{\"query\":\"y\"}"}}
+            ]}),
+            serde_json::json!({"role": "tool", "tool_call_id": "call_1", "content": "resultat 1"}),
+            serde_json::json!({"role": "tool", "tool_call_id": "call_2", "content": "resultat 2"}),
+            serde_json::json!({"role": "assistant", "content": ""}),
+        ];
+        let out = openai_messages_to_anthropic(&messages);
+        // system raus, leere assistant-Message raus → user, assistant, user(tool_results)
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0]["role"], "user");
+        assert_eq!(out[1]["role"], "assistant");
+        let blocks = out[1]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["id"], "call_1");
+        assert_eq!(blocks[1]["input"]["query"], "x");
+        assert_eq!(blocks[2]["type"], "tool_use");
+        // Beide tool_results landen gebuendelt im EINEN folgenden user-Turn
+        assert_eq!(out[2]["role"], "user");
+        let results = out[2]["content"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["type"], "tool_result");
+        assert_eq!(results[0]["tool_use_id"], "call_1");
+        assert_eq!(results[1]["tool_use_id"], "call_2");
+    }
+
     #[tokio::test]
     async fn test_adhoc_returns_err_on_unreachable_backend() {
         use crate::types::{LlmBackend, LlmTyp, ModulIdentity};
@@ -1008,6 +1157,7 @@ mod tests {
             cost_cap: None,
             max_tool_rounds: None,
             call_rate_limit: None,
+            internal: false,
         };
         let r = router.chat_with_tools_adhoc(&backend, &[], &[]).await;
         assert!(

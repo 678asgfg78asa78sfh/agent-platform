@@ -800,6 +800,7 @@ mod tests {
             cost_cap: None,
             max_tool_rounds: None,
             call_rate_limit: None,
+            internal: false,
         });
         cfg.module.push(ModulConfig {
             id: "chat.bob".into(),
@@ -820,6 +821,9 @@ mod tests {
             },
             rag_pool: None,
             linked_modules: vec![],
+            input_enhancers: vec![],
+            output_enhancers: vec![],
+            combined_enhancers: vec![],
             persistent: true,
             spawned_by: None,
             spawn_ttl_s: None,

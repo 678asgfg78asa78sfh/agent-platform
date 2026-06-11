@@ -104,24 +104,25 @@ pub async fn search(settings: &ModulSettings, query: &str) -> ToolResult {
     }
 
     let engine = settings.search_engine.as_deref().unwrap_or("duckduckgo");
-    let _max_results = settings.max_results.unwrap_or(8) as usize;
+    let max_results = settings.max_results.unwrap_or(8).clamp(1, 20) as usize;
 
     let result = match engine {
-        "brave" => search_brave(settings, query).await,
-        "serper" => search_serper(settings, query).await,
-        "google" => search_google(settings, query).await,
-        "grok" => search_grok(settings, query).await,
-        _ => search_duckduckgo(query).await,
+        "brave" => search_brave(settings, query, max_results).await,
+        "serper" => search_serper(settings, query, max_results).await,
+        "google" => search_google(settings, query, max_results).await,
+        "grok" => search_grok(settings, query, max_results).await,
+        _ => search_duckduckgo(query, max_results).await,
     };
 
     // Fallback to DuckDuckGo if primary fails
     match &result {
         r if !r.success && engine != "duckduckgo" => {
             tracing::warn!(
-                "Search engine '{}' failed, falling back to DuckDuckGo",
-                engine
+                "Search engine '{}' failed ({}), falling back to DuckDuckGo",
+                engine,
+                crate::util::safe_truncate(&r.data, 200)
             );
-            search_duckduckgo(query).await
+            search_duckduckgo(query, max_results).await
         }
         _ => result,
     }
@@ -129,7 +130,7 @@ pub async fn search(settings: &ModulSettings, query: &str) -> ToolResult {
 
 // ─── DuckDuckGo (free, no API key) ────────────────
 
-async fn search_duckduckgo(query: &str) -> ToolResult {
+async fn search_duckduckgo(query: &str, max_results: usize) -> ToolResult {
     let client = build_client(10);
     let url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencod(query));
 
@@ -222,7 +223,7 @@ async fn search_duckduckgo(query: &str) -> ToolResult {
             }
         }
         pos = abs + 20;
-        if results.len() >= 8 {
+        if results.len() >= max_results {
             break;
         }
     }
@@ -240,7 +241,7 @@ async fn search_duckduckgo(query: &str) -> ToolResult {
 
 // ─── Brave Search (free tier: 2000/month) ─────────
 
-async fn search_brave(settings: &ModulSettings, query: &str) -> ToolResult {
+async fn search_brave(settings: &ModulSettings, query: &str, max_results: usize) -> ToolResult {
     let api_key = match settings.brave_api_key.as_deref() {
         Some(k) if !k.is_empty() => k,
         _ => return ToolResult::fail("Brave Search: brave_api_key nicht konfiguriert".into()),
@@ -248,8 +249,9 @@ async fn search_brave(settings: &ModulSettings, query: &str) -> ToolResult {
 
     let client = build_client(10);
     let url = format!(
-        "https://api.search.brave.com/res/v1/web/search?q={}&count=8",
-        urlencod(query)
+        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+        urlencod(query),
+        max_results.clamp(1, 20)
     );
 
     let resp = match client
@@ -272,7 +274,7 @@ async fn search_brave(settings: &ModulSettings, query: &str) -> ToolResult {
         .as_array()
         .map(|arr| {
             arr.iter()
-                .take(8)
+                .take(max_results)
                 .map(|r| {
                     format!(
                         "{}\n  {}\n  {}",
@@ -298,14 +300,14 @@ async fn search_brave(settings: &ModulSettings, query: &str) -> ToolResult {
 
 // ─── Serper.dev (Google results, free: 2500/month) ─
 
-async fn search_serper(settings: &ModulSettings, query: &str) -> ToolResult {
+async fn search_serper(settings: &ModulSettings, query: &str, max_results: usize) -> ToolResult {
     let api_key = match settings.serper_api_key.as_deref() {
         Some(k) if !k.is_empty() => k,
         _ => return ToolResult::fail("Serper: serper_api_key nicht konfiguriert".into()),
     };
 
     let client = build_client(10);
-    let body = serde_json::json!({"q": query, "num": 8});
+    let body = serde_json::json!({"q": query, "num": max_results.clamp(1, 20)});
 
     let resp = match client
         .post("https://google.serper.dev/search")
@@ -328,7 +330,7 @@ async fn search_serper(settings: &ModulSettings, query: &str) -> ToolResult {
         .as_array()
         .map(|arr| {
             arr.iter()
-                .take(8)
+                .take(max_results)
                 .map(|r| {
                     format!(
                         "{}\n  {}\n  {}",
@@ -354,7 +356,7 @@ async fn search_serper(settings: &ModulSettings, query: &str) -> ToolResult {
 
 // ─── Google Custom Search (free: 100/day) ──────────
 
-async fn search_google(settings: &ModulSettings, query: &str) -> ToolResult {
+async fn search_google(settings: &ModulSettings, query: &str, max_results: usize) -> ToolResult {
     let api_key = match settings.google_api_key.as_deref() {
         Some(k) if !k.is_empty() => k,
         _ => return ToolResult::fail("Google: google_api_key nicht konfiguriert".into()),
@@ -369,11 +371,13 @@ async fn search_google(settings: &ModulSettings, query: &str) -> ToolResult {
     };
 
     let client = build_client(10);
+    // Google Custom Search erlaubt maximal num=10
     let url = format!(
-        "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num=8",
+        "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num={}",
         api_key,
         cx,
-        urlencod(query)
+        urlencod(query),
+        max_results.clamp(1, 10)
     );
 
     let resp = match client.get(&url).send().await {
@@ -390,7 +394,7 @@ async fn search_google(settings: &ModulSettings, query: &str) -> ToolResult {
         .as_array()
         .map(|arr| {
             arr.iter()
-                .take(8)
+                .take(max_results)
                 .map(|r| {
                     format!(
                         "{}\n  {}\n  {}",
@@ -416,7 +420,7 @@ async fn search_google(settings: &ModulSettings, query: &str) -> ToolResult {
 
 // ─── Grok / xAI (uses Grok's web search capability) ─
 
-async fn search_grok(settings: &ModulSettings, query: &str) -> ToolResult {
+async fn search_grok(settings: &ModulSettings, query: &str, max_results: usize) -> ToolResult {
     let api_key = match settings.grok_api_key.as_deref() {
         Some(k) if !k.is_empty() => k,
         _ => return ToolResult::fail("Grok: grok_api_key nicht konfiguriert".into()),
@@ -433,7 +437,10 @@ async fn search_grok(settings: &ModulSettings, query: &str) -> ToolResult {
         "input": [
             {
                 "role": "system",
-                "content": "Du bist ein Web-Recherche-Assistent. Nutze Web Search und gib die wichtigsten Ergebnisse als strukturierte Liste zurueck. Pro Ergebnis: Titel, URL, kurze Beschreibung."
+                "content": format!(
+                    "Du bist ein Web-Recherche-Assistent. Nutze Web Search und gib die {} wichtigsten Ergebnisse als strukturierte Liste zurueck. Pro Ergebnis: Titel, URL, kurze Beschreibung.",
+                    max_results
+                )
             },
             {
                 "role": "user",

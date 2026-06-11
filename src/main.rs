@@ -7,6 +7,7 @@ mod modules;
 mod pipeline;
 mod security;
 pub mod store;
+mod telegram_bridge;
 mod tools;
 mod types;
 pub mod util;
@@ -319,6 +320,24 @@ async fn main() {
                     tracing::error!("Chat '{}' Port {} belegt: {}", mid, cp, e);
                 }
             }
+        });
+    }
+
+    {
+        let state_config = config.clone();
+        let state_pipeline = pipeline.clone();
+        let state_llm = llm.clone();
+        let state_py_modules = py_modules.clone();
+        let state_py_pool = py_pool.clone();
+        tokio::spawn(async move {
+            telegram_bridge::run(
+                state_config,
+                state_pipeline,
+                state_llm,
+                state_py_modules,
+                state_py_pool,
+            )
+            .await;
         });
     }
 

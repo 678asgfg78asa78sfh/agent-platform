@@ -1,0 +1,13 @@
+{
+  "yt_dlp_bin": "",
+  "preferred_languages": "de,en,auto",
+  "request_timeout_s": 25,
+  "max_output_chars": 50000,
+  "max_rag_chars": 90000,
+  "enable_stt_fallback": false,
+  "xai_api_key": "api.xai",
+  "xai_stt_url": "https://api.x.ai/v1/stt",
+  "stt_language": "auto",
+  "max_audio_duration_s": 3600,
+  "keep_audio_files": false
+}

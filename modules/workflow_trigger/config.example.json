@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "python_timeout_s": 60,
+  "default_target_modul_id": "chat.deepseekdeepseekv4flash",
+  "default_video_modul_id": "video_pipeline.default",
+  "default_output_dir": "agent-data/workflows",
+  "default_render_output_dir": "agent-data/video_pipeline",
+  "default_task_timeout_s": 900,
+  "default_render_timeout_s": 1800,
+  "tick_limit": 12,
+  "auto_render": true,
+  "auto_shorts": false,
+  "default_shorts_count": 30,
+  "default_shorts_duration_s": 45,
+  "preview": false
+}

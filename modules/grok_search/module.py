@@ -25,6 +25,7 @@ MODULE = {
         "api_base": {"type": "string", "label": "xAI API Base", "default": "https://api.x.ai"},
         "model": {"type": "string", "label": "Grok Model", "default": "grok-4.3"},
         "request_timeout_s": {"type": "number", "label": "HTTP Timeout Sekunden", "default": 60},
+        "python_timeout_s": {"type": "number", "label": "Python Timeout Sekunden", "default": 120},
         "max_output_chars": {"type": "number", "label": "Max Ausgabezeichen", "default": 24000},
         "enable_image_understanding": {"type": "bool", "label": "Bilder in Search verstehen", "default": False},
         "enable_video_understanding": {"type": "bool", "label": "Videos in X Search verstehen", "default": False},

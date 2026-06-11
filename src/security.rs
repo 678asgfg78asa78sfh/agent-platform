@@ -221,6 +221,13 @@ const REDACTED: &str = "***REDACTED***";
 
 const SECRET_KEYS: &[&str] = &[
     "api_key",
+    "secret",
+    "client_secret",
+    "client_id",
+    "access_token",
+    "bearer_token",
+    "bot_token",
+    "admin_api_token",
     "password",
     "auth_token",
     "notify_token",
@@ -229,9 +236,68 @@ const SECRET_KEYS: &[&str] = &[
     "google_api_key",
     "grok_api_key",
     "grok_search_api_key",
+    "tavily_api_key",
     "xai_api_key",
+    "minimax_api_key",
     "api_auth_token",
 ];
+
+fn looks_like_api_vault_alias(value: &str) -> bool {
+    let mut s = value.trim();
+    if let Some(inner) = s.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+        s = inner.trim();
+    }
+    let Some(id) = s.strip_prefix("api.") else {
+        return false;
+    };
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+fn looks_like_credential_vault_alias(value: &str) -> bool {
+    let mut s = value.trim();
+    if let Some(inner) = s.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+        s = inner.trim();
+    }
+    let Some(alias) = s.strip_prefix("cred.") else {
+        return false;
+    };
+    let Some((vault, field)) = alias.rsplit_once('.') else {
+        return false;
+    };
+    !vault.is_empty()
+        && !field.is_empty()
+        && alias
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+}
+
+fn redact_credential_vault(value: &mut serde_json::Value) {
+    let Some(entries) = value.as_array_mut() else {
+        return;
+    };
+    for entry in entries {
+        let Some(fields) = entry.get_mut("fields").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for field in fields {
+            let is_secret = field
+                .get("secret")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !is_secret {
+                continue;
+            }
+            if let Some(value) = field.get_mut("value").and_then(|v| v.as_str()) {
+                if !value.is_empty() {
+                    field["value"] = serde_json::Value::String(REDACTED.into());
+                }
+            }
+        }
+    }
+}
 
 /// Walk a JSON value and replace any field whose name is in SECRET_KEYS with REDACTED
 /// (only if the original value is a non-empty string).
@@ -239,9 +305,15 @@ pub fn redact_secrets(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(map) => {
             for (k, v) in map.iter_mut() {
-                if SECRET_KEYS.contains(&k.as_str()) {
+                if k == "credential_vault" {
+                    redact_credential_vault(v);
+                } else if SECRET_KEYS.contains(&k.as_str()) {
                     if let serde_json::Value::String(s) = v {
-                        if !s.is_empty() {
+                        if !s.is_empty()
+                            && (k == "secret"
+                                || (!looks_like_api_vault_alias(s.as_str())
+                                    && !looks_like_credential_vault_alias(s.as_str())))
+                        {
                             *v = serde_json::Value::String(REDACTED.into());
                         }
                     }
@@ -264,6 +336,24 @@ pub fn redact_secrets(value: &mut serde_json::Value) {
 pub fn restore_redacted(incoming: &mut serde_json::Value, existing: &serde_json::Value) {
     match (incoming, existing) {
         (serde_json::Value::Object(in_map), serde_json::Value::Object(ex_map)) => {
+            if in_map
+                .get("secret")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                let needs_restore = in_map
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == REDACTED || s.is_empty())
+                    .unwrap_or(false);
+                if needs_restore {
+                    if let Some(real) = ex_map.get("value").and_then(|v| v.as_str()) {
+                        if !real.is_empty() {
+                            in_map.insert("value".into(), serde_json::Value::String(real.into()));
+                        }
+                    }
+                }
+            }
             for (k, v) in in_map.iter_mut() {
                 if SECRET_KEYS.contains(&k.as_str()) {
                     if let serde_json::Value::String(s) = v {
@@ -292,6 +382,13 @@ pub fn restore_redacted(incoming: &mut serde_json::Value, existing: &serde_json:
                     ex_arr
                         .iter()
                         .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
+                } else if let (Some(key), true) = (
+                    in_item.get("key").and_then(|v| v.as_str()),
+                    in_item.is_object(),
+                ) {
+                    ex_arr
+                        .iter()
+                        .find(|e| e.get("key").and_then(|v| v.as_str()) == Some(key))
                 } else {
                     ex_arr.get(i)
                 };
@@ -578,5 +675,47 @@ mod tests {
         let mut incoming = serde_json::json!({"api_key": ""});
         restore_redacted(&mut incoming, &existing);
         assert_eq!(incoming["api_key"], "");
+    }
+
+    #[test]
+    fn credential_vault_redacts_secret_fields_and_restores_by_key() {
+        let existing = serde_json::json!({
+            "credential_vault": [{
+                "id": "mail.private",
+                "fields": [
+                    {"key": "host", "value": "imap.example.test", "secret": false},
+                    {"key": "password", "value": "real-password", "secret": true}
+                ]
+            }]
+        });
+        let mut redacted = existing.clone();
+        redact_secrets(&mut redacted);
+        assert_eq!(
+            redacted["credential_vault"][0]["fields"][0]["value"],
+            "imap.example.test"
+        );
+        assert_eq!(
+            redacted["credential_vault"][0]["fields"][1]["value"],
+            REDACTED
+        );
+
+        let mut incoming = serde_json::json!({
+            "credential_vault": [{
+                "id": "mail.private",
+                "fields": [
+                    {"key": "password", "value": REDACTED, "secret": true},
+                    {"key": "host", "value": "imap2.example.test", "secret": false}
+                ]
+            }]
+        });
+        restore_redacted(&mut incoming, &existing);
+        assert_eq!(
+            incoming["credential_vault"][0]["fields"][0]["value"],
+            "real-password"
+        );
+        assert_eq!(
+            incoming["credential_vault"][0]["fields"][1]["value"],
+            "imap2.example.test"
+        );
     }
 }

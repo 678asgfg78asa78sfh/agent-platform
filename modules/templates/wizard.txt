@@ -39,6 +39,9 @@ Flat:
 - scheduler_interval_ms (u64 — default: 2000 for chat, 60000 for cron), max_concurrent_tasks (u32 — default: 1)
 - berechtigungen: list of strings (auto-derived from linked_modules)
 - linked_modules: list of module IDs
+- input_enhancers: list of typ=enhancer module IDs, run AFTER user input and BEFORE processing
+- output_enhancers: list of typ=enhancer module IDs, run AFTER processing and BEFORE output
+- combined_enhancers: list of typ=enhancer module IDs, run in the output phase with input+output context
 
 Identity (DraftIdentity — NOT `greeting`, that does not exist here):
 - identity.bot_name (string)
@@ -52,6 +55,13 @@ Settings (type-specific — pass as settings.<key>):
 - For filesystem: settings.allowed_paths (IMPORTANT: keep tight, only real working directories)
 - For shell: settings.allowed_commands (read-only metrics by default: df, free, uptime; no rm/mv/kill)
 - For chat: settings.port (only if a separate port is wanted)
+- For enhancer: llm_backend is optional until the user explicitly picks the
+  enhancer worker/backend. Enhancer slots are pipeline middleware, not the
+  main chat LLM. Settings: settings.enhancer_mode (observe/filter/rewrite/translate/quality/gateway),
+  settings.enhancer_prompt, settings.enhancer_fail_policy (fail_open/fail_closed),
+  settings.enhancer_store_rag (bool), settings.enhancer_rag_pool,
+  settings.enhancer_inject_context (bool), settings.enhancer_max_output_chars,
+  settings.enhancer_timeout_s
 
 ## Permissions — what an agent CAN DO (explain to the user BEFORE proposing)
 

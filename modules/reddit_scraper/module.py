@@ -23,14 +23,26 @@ except Exception:  # pragma: no cover - runtime dependency guard
     BeautifulSoup = None
 
 try:
+    import requests
+except Exception:  # pragma: no cover - optional runtime dependency
+    requests = None
+
+try:
     import job_history_common as job_history
 except Exception:  # pragma: no cover
     job_history = None
 
 
+DEFAULT_BOT_UA = "aistuff-reddit-research/1.0 public-html-reader"
+DEFAULT_BROWSER_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 MODULE = {
     "name": "reddit_scraper",
-    "description": "Sucht Reddit-Themen/Threads und zieht oeffentliche Kommentare via old.reddit.com + BeautifulSoup.",
+    "description": "Sucht Reddit-Themen/Threads und zieht oeffentliche Kommentare via Reddit JSON/RSS/old.reddit Fallbacks.",
     "version": "1.0",
     "settings": {
         "max_results": {"type": "number", "label": "Max Suchtreffer", "default": 15},
@@ -43,8 +55,10 @@ MODULE = {
         "user_agent": {
             "type": "string",
             "label": "User-Agent",
-            "default": "aistuff-reddit-research/1.0 public-html-reader",
+            "default": DEFAULT_BOT_UA,
         },
+        "use_browser_headers": {"type": "bool", "label": "Browser-kompatible Header fuer Public Reddit", "default": True},
+        "search_backends": {"type": "string", "label": "Such-Backends", "default": "json,rss,old_html"},
         "max_output_chars": {"type": "number", "label": "Max Ausgabezeichen", "default": 24000},
     },
     "tools": [
@@ -121,13 +135,11 @@ def _search(params, config):
         return fail('Kein Query. Beispiel: reddit_scraper.search({"query":"black hole","limit":10})')
 
     limit = cfg_int(payload.get("limit", config.get("max_results", 15)), 15, 1, 100)
-    url = build_search_url(query, payload, config)
-    ok_fetch, body, err = fetch_url(url, config)
+    ok_fetch, url, results, err, backend = fetch_search_results(query, payload, config, limit)
     if not ok_fetch:
-        record_history("reddit_scraper", "reddit_scraper.search", query, payload, "failed", config, [], err, {"url": url})
-        return fail(f"REDDIT_SEARCH_FAILED\nquery: {query}\nurl: {url}\nerror: {err}")
+        record_history("reddit_scraper", "reddit_scraper.search", query, payload, "failed", config, [], err, {"url": url, "backend": backend})
+        return fail(f"REDDIT_SEARCH_FAILED\nquery: {query}\nurl: {url}\nbackend: {backend}\nerror: {err}")
 
-    results = parse_search_html(body, limit, cfg_bool(payload.get("include_subreddits"), False))
     record_history(
         "reddit_scraper",
         "reddit_scraper.search",
@@ -137,9 +149,9 @@ def _search(params, config):
         config,
         sources_from_search(results),
         "",
-        {"url": url, "results": len(results)},
+        {"url": url, "results": len(results), "backend": backend},
     )
-    text = format_search(query, url, results, payload)
+    text = format_search(query, url, results, payload, backend=backend)
     return ok(limit_output(text, config))
 
 
@@ -155,15 +167,14 @@ def _thread(params, config):
         return fail("url oder {subreddit, thread_id} fehlt.")
 
     target = build_thread_url(url, payload)
-    ok_fetch, body, err = fetch_url(target, config)
+    comment_limit = cfg_int(payload.get("comment_limit", payload.get("comments", config.get("max_comments", 30))), 30, 0, 500)
+    max_depth = cfg_int(payload.get("max_depth", config.get("max_comment_depth", 4)), 4, 0, 20)
+    min_score = cfg_int(payload.get("min_score", -10_000), -10_000, -1000000, 1000000)
+    ok_fetch, parsed, err, backend = fetch_thread_parsed(target, payload, config, comment_limit, max_depth, min_score)
     if not ok_fetch:
         record_history("reddit_scraper", "reddit_scraper.thread", url, payload, "failed", config, [], err, {"url": target})
         return fail(f"REDDIT_THREAD_FAILED\nurl: {target}\nerror: {err}")
 
-    comment_limit = cfg_int(payload.get("comment_limit", payload.get("comments", config.get("max_comments", 30))), 30, 0, 500)
-    max_depth = cfg_int(payload.get("max_depth", config.get("max_comment_depth", 4)), 4, 0, 20)
-    min_score = cfg_int(payload.get("min_score", -10_000), -10_000, -1000000, 1000000)
-    parsed = parse_thread_html(body, target, comment_limit, max_depth, min_score)
     record_history(
         "reddit_scraper",
         "reddit_scraper.thread",
@@ -173,7 +184,7 @@ def _thread(params, config):
         config,
         sources_from_threads([parsed]),
         "",
-        {"url": target, "comments_returned": len(parsed.get("comments") or [])},
+        {"url": target, "comments_returned": len(parsed.get("comments") or []), "backend": backend},
     )
     return ok(limit_output(format_thread(parsed), config))
 
@@ -195,13 +206,11 @@ def _pull(params, config):
     max_depth = cfg_int(payload.get("max_depth", config.get("max_comment_depth", 4)), 4, 0, 20)
     min_score = cfg_int(payload.get("min_score", -10_000), -10_000, -1000000, 1000000)
 
-    search_url = build_search_url(query, payload, config)
-    ok_fetch, body, err = fetch_url(search_url, config)
+    ok_fetch, search_url, results, err, backend = fetch_search_results(query, payload, config, search_limit)
     if not ok_fetch:
-        record_history("reddit_scraper", "reddit_scraper.pull", query, payload, "failed", config, [], err, {"url": search_url})
-        return fail(f"REDDIT_PULL_FAILED\nquery: {query}\nurl: {search_url}\nerror: {err}")
+        record_history("reddit_scraper", "reddit_scraper.pull", query, payload, "failed", config, [], err, {"url": search_url, "backend": backend})
+        return fail(f"REDDIT_PULL_FAILED\nquery: {query}\nurl: {search_url}\nbackend: {backend}\nerror: {err}")
 
-    results = parse_search_html(body, search_limit, False)
     threads = []
     errors = []
     delay = cfg_int(config.get("request_delay_ms", 800), 800, 0, 10000) / 1000.0
@@ -209,11 +218,12 @@ def _pull(params, config):
         if delay and threads:
             time.sleep(delay)
         target = build_thread_url(item.get("url", ""), payload)
-        ok_thread, thread_body, thread_err = fetch_url(target, config)
+        ok_thread, parsed, thread_err, thread_backend = fetch_thread_parsed(target, payload, config, comments_per_thread, max_depth, min_score)
         if not ok_thread:
             errors.append(f"{item.get('id','')}: {thread_err}")
             continue
-        threads.append(parse_thread_html(thread_body, target, comments_per_thread, max_depth, min_score))
+        parsed["backend"] = thread_backend
+        threads.append(parsed)
 
     record_history(
         "reddit_scraper",
@@ -229,9 +239,10 @@ def _pull(params, config):
             "search_results": len(results),
             "threads_fetched": len(threads),
             "errors": len(errors),
+            "backend": backend,
         },
     )
-    text = format_pull(query, search_url, results, threads, errors, payload)
+    text = format_pull(query, search_url, results, threads, errors, payload, backend=backend)
     return ok(limit_output(text, config))
 
 
@@ -252,18 +263,67 @@ def _parse_html_tool(params, config):
     return ok(limit_output(format_thread(parsed), config))
 
 
+def fetch_search_results(query, payload, config, limit):
+    errors = []
+    include_subreddits = cfg_bool(payload.get("include_subreddits"), False)
+    for backend, url in build_search_candidates(query, payload, config):
+        ok_fetch, body, err = fetch_url(url, config)
+        if not ok_fetch:
+            errors.append(f"{backend}: {err}")
+            continue
+        if backend == "json":
+            results = parse_search_json(body, limit, include_subreddits)
+        elif backend == "rss":
+            results = parse_search_rss(body, limit, include_subreddits)
+        else:
+            results = parse_search_html(body, limit, include_subreddits)
+        if results or backend == "old_html":
+            return True, url, results, "", backend
+        errors.append(f"{backend}: keine parsebaren Treffer")
+    fallback_url = build_search_url(query, payload, config)
+    return False, fallback_url, [], "; ".join(errors) or "Keine Reddit-Suche erfolgreich.", "none"
+
+
+def fetch_thread_parsed(url, payload, config, comment_limit, max_depth, min_score):
+    errors = []
+    for backend, target in build_thread_candidates(url, payload):
+        ok_fetch, body, err = fetch_url(target, config)
+        if not ok_fetch:
+            errors.append(f"{backend}: {err}")
+            continue
+        if backend == "json":
+            parsed = parse_thread_json(body, target, comment_limit, max_depth, min_score)
+        else:
+            parsed = parse_thread_html(body, target, comment_limit, max_depth, min_score)
+        parsed["backend"] = backend
+        return True, parsed, "", backend
+    return False, {}, "; ".join(errors) or "Thread konnte nicht geladen werden.", "none"
+
+
 def fetch_url(url, config):
+    headers = request_headers(config)
+    timeout = cfg_int(config.get("request_timeout_s"), 20, 5, 60)
+    if requests is not None:
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            body = resp.text or ""
+            if resp.status_code in {401, 403, 429}:
+                return False, "", f"HTTP {resp.status_code}: Reddit blockt oder rate-limitiert den Abruf."
+            if resp.status_code >= 400:
+                return False, "", f"HTTP {resp.status_code}: {truncate(strip_tags(body), 500)}"
+            if looks_blocked(body):
+                return False, "", "Reddit lieferte Verification/Login/Block-Seite. Kein Bypass im Modul."
+            return True, body, ""
+        except Exception:
+            pass
+
     req = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": str(config.get("user_agent") or MODULE["settings"]["user_agent"]["default"]),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.8,de;q=0.6",
-        },
+        headers=headers,
         method="GET",
     )
     try:
-        with urllib.request.urlopen(req, timeout=cfg_int(config.get("request_timeout_s"), 20, 5, 60)) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             if looks_blocked(body):
                 return False, "", "Reddit lieferte Verification/Login/Block-Seite. Kein Bypass im Modul."
@@ -277,15 +337,40 @@ def fetch_url(url, config):
         return False, "", f"HTTP Fehler: {exc}"
 
 
-def build_search_url(query, payload, config):
-    subreddit = clean_subreddit(first_text(payload, "subreddit", "sr"))
-    sort = normalize_choice(payload.get("sort"), SEARCH_SORTS, "relevance")
-    time_filter = normalize_choice(payload.get("time") or payload.get("t"), TIME_FILTERS, "all")
-    search_query = query
-    include_nsfw = cfg_bool(payload.get("include_nsfw", config.get("include_nsfw")), False)
-    if not include_nsfw and "nsfw:" not in search_query.lower():
-        search_query = f"{search_query} nsfw:no"
+def request_headers(config):
+    configured = str(config.get("user_agent") or "").strip()
+    use_browser = cfg_bool(config.get("use_browser_headers"), True)
+    user_agent = DEFAULT_BROWSER_UA if use_browser and (not configured or configured == DEFAULT_BOT_UA) else (configured or DEFAULT_BOT_UA)
+    return {
+        "User-Agent": user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json,application/rss+xml;q=0.8,*/*;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9,de;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
+        "DNT": "1",
+    }
 
+
+def build_search_candidates(query, payload, config):
+    backends = [item.strip().lower() for item in str(config.get("search_backends") or "json,rss,old_html").split(",")]
+    candidates = []
+    for backend in backends:
+        if backend in {"json", "reddit_json", "search_json"}:
+            candidates.append(("json", build_search_json_url(query, payload, config)))
+        elif backend in {"rss", "atom"}:
+            candidates.append(("rss", build_search_rss_url(query, payload, config)))
+        elif backend in {"old", "old_html", "html"}:
+            candidates.append(("old_html", build_search_url(query, payload, config)))
+    if not candidates:
+        candidates.append(("json", build_search_json_url(query, payload, config)))
+        candidates.append(("rss", build_search_rss_url(query, payload, config)))
+        candidates.append(("old_html", build_search_url(query, payload, config)))
+    return candidates
+
+
+def build_search_url(query, payload, config):
+    search_query, sort, time_filter, subreddit = search_parts(query, payload, config)
     params = {"q": search_query, "sort": sort, "t": time_filter}
     if subreddit:
         params["restrict_sr"] = "on"
@@ -293,6 +378,40 @@ def build_search_url(query, payload, config):
     else:
         path = "/search/"
     return OLD_BASE + path + "?" + urllib.parse.urlencode(params)
+
+
+def build_search_json_url(query, payload, config):
+    search_query, sort, time_filter, subreddit = search_parts(query, payload, config)
+    limit = cfg_int(payload.get("limit", config.get("max_results", 15)), 15, 1, 100)
+    params = {"q": search_query, "sort": sort, "t": time_filter, "limit": limit, "raw_json": 1}
+    if subreddit:
+        params["restrict_sr"] = "on"
+        path = f"/r/{subreddit}/search.json"
+    else:
+        path = "/search.json"
+    return "https://www.reddit.com" + path + "?" + urllib.parse.urlencode(params)
+
+
+def build_search_rss_url(query, payload, config):
+    search_query, sort, time_filter, subreddit = search_parts(query, payload, config)
+    params = {"q": search_query, "sort": sort, "t": time_filter}
+    if subreddit:
+        params["restrict_sr"] = "on"
+        path = f"/r/{subreddit}/search.rss"
+    else:
+        path = "/search.rss"
+    return "https://www.reddit.com" + path + "?" + urllib.parse.urlencode(params)
+
+
+def search_parts(query, payload, config):
+    subreddit = clean_subreddit(first_text(payload, "subreddit", "sr"))
+    sort = normalize_choice(payload.get("sort"), SEARCH_SORTS, "relevance")
+    time_filter = normalize_choice(payload.get("time") or payload.get("t"), TIME_FILTERS, "all")
+    search_query = query
+    include_nsfw = cfg_bool(payload.get("include_nsfw", config.get("include_nsfw")), False)
+    if not include_nsfw and "nsfw:" not in search_query.lower():
+        search_query = f"{search_query} nsfw:no"
+    return search_query, sort, time_filter, subreddit
 
 
 def build_thread_url(url, payload):
@@ -310,6 +429,33 @@ def build_thread_url(url, payload):
         query["sort"] = sort
     query.setdefault("limit", "500")
     return urllib.parse.urlunparse((parsed.scheme or "https", netloc, parsed.path, "", urllib.parse.urlencode(query), ""))
+
+
+def build_thread_json_url(url, payload):
+    if not url:
+        return ""
+    url = html.unescape(url.strip())
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.netloc:
+        url = urllib.parse.urljoin("https://www.reddit.com", url)
+        parsed = urllib.parse.urlparse(url)
+    path = parsed.path
+    if not path.endswith(".json"):
+        path = path.rstrip("/") + ".json"
+    query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+    sort = normalize_choice(payload.get("comment_sort") or payload.get("comments_sort") or payload.get("sort_comments"), COMMENT_SORTS, "")
+    if sort:
+        query["sort"] = sort
+    query.setdefault("limit", "500")
+    query.setdefault("raw_json", "1")
+    return urllib.parse.urlunparse(("https", "www.reddit.com", path, "", urllib.parse.urlencode(query), ""))
+
+
+def build_thread_candidates(url, payload):
+    return [
+        ("json", build_thread_json_url(url, payload)),
+        ("old_html", build_thread_url(url, payload)),
+    ]
 
 
 def parse_search_html(body, limit, include_subreddits=False):
@@ -350,6 +496,83 @@ def parse_search_html(body, limit, include_subreddits=False):
     return out
 
 
+def parse_search_json(body, limit, include_subreddits=False):
+    try:
+        data = json.loads(body)
+    except Exception:
+        return []
+    children = (((data or {}).get("data") or {}).get("children") or [])
+    out = []
+    for child in children:
+        item = child.get("data") if isinstance(child, dict) else None
+        if not isinstance(item, dict):
+            continue
+        kind = child.get("kind") or item.get("subreddit_type") or "t3"
+        is_subreddit = kind in {"t5", "subreddit"}
+        if is_subreddit and not include_subreddits:
+            continue
+        permalink = item.get("permalink") or item.get("url") or ""
+        url = normalize_reddit_url(permalink)
+        title = clean_text(item.get("title") or item.get("display_name_prefixed") or item.get("name") or "")
+        if not title:
+            continue
+        subreddit = item.get("subreddit_name_prefixed") or (f"r/{item.get('subreddit')}" if item.get("subreddit") else "")
+        out.append(
+            {
+                "id": item.get("name") or item.get("id") or "",
+                "kind": "subreddit" if is_subreddit else "thread",
+                "title": title,
+                "url": url,
+                "subreddit": subreddit,
+                "author": item.get("author") or "",
+                "score": item.get("score") if item.get("score") is not None else item.get("ups"),
+                "comments": item.get("num_comments"),
+                "age": age_from_utc(item.get("created_utc")),
+                "flair": clean_text(item.get("link_flair_text") or ""),
+                "snippet": clean_text(item.get("selftext") or item.get("public_description") or ""),
+                "meta": "json",
+            }
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def parse_search_rss(body, limit, include_subreddits=False):
+    soup = BeautifulSoup(body, "html.parser")
+    out = []
+    for entry in soup.find_all("entry"):
+        title = clean_text((entry.find("title") or {}).get_text(" ", strip=True) if entry.find("title") else "")
+        link_node = entry.find("link")
+        href = link_node.get("href", "") if link_node else ""
+        if not title or "/comments/" not in href:
+            continue
+        content = clean_text((entry.find("content") or {}).get_text(" ", strip=True) if entry.find("content") else "")
+        author_node = entry.find("author")
+        author = clean_text(author_node.get_text(" ", strip=True) if author_node else "")
+        updated = clean_text((entry.find("updated") or {}).get_text(" ", strip=True) if entry.find("updated") else "")
+        url = normalize_reddit_url(href)
+        out.append(
+            {
+                "id": clean_text((entry.find("id") or {}).get_text(" ", strip=True) if entry.find("id") else ""),
+                "kind": "thread",
+                "title": title,
+                "url": url,
+                "subreddit": parse_subreddit("", url),
+                "author": author.replace("/u/", "").replace("u/", ""),
+                "score": None,
+                "comments": None,
+                "age": updated,
+                "flair": "",
+                "snippet": truncate(content, 800),
+                "meta": "rss",
+            }
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
 def parse_thread_html(body, url, comment_limit, max_depth, min_score):
     soup = BeautifulSoup(body, "html.parser")
     link = soup.select_one("div.thing.link") or soup.select_one("div.link")
@@ -370,6 +593,83 @@ def parse_thread_html(body, url, comment_limit, max_depth, min_score):
     post["comments_returned"] = len(comments)
     post["more_comments_markers"] = len(soup.select(".morecomments"))
     return {"url": url, "post": post, "comments": comments}
+
+
+def parse_thread_json(body, url, comment_limit, max_depth, min_score):
+    try:
+        data = json.loads(body)
+    except Exception:
+        return {"url": url, "post": {"url": url, "title": "", "selftext": ""}, "comments": []}
+    if not isinstance(data, list) or not data:
+        return {"url": url, "post": {"url": url, "title": "", "selftext": ""}, "comments": []}
+    post_item = None
+    try:
+        post_item = data[0]["data"]["children"][0]["data"]
+    except Exception:
+        post_item = {}
+    post = {
+        "id": post_item.get("name") or post_item.get("id") or "",
+        "title": clean_text(post_item.get("title") or ""),
+        "url": normalize_reddit_url(post_item.get("permalink") or url),
+        "external_url": post_item.get("url_overridden_by_dest") or post_item.get("url") or "",
+        "subreddit": post_item.get("subreddit_name_prefixed") or (f"r/{post_item.get('subreddit')}" if post_item.get("subreddit") else ""),
+        "author": post_item.get("author") or "",
+        "score": post_item.get("score") if post_item.get("score") is not None else post_item.get("ups"),
+        "comments": post_item.get("num_comments"),
+        "selftext": clean_text(post_item.get("selftext") or ""),
+        "nsfw": bool(post_item.get("over_18")),
+    }
+    comments = []
+    try:
+        children = data[1]["data"]["children"]
+    except Exception:
+        children = []
+    collect_json_comments(children, comments, comment_limit, max_depth, min_score, 0)
+    post["comments_returned"] = len(comments)
+    post["more_comments_markers"] = count_more_json(children)
+    return {"url": url, "post": post, "comments": comments}
+
+
+def collect_json_comments(children, out, limit, max_depth, min_score, depth):
+    if len(out) >= limit or depth > max_depth:
+        return
+    for child in children or []:
+        if len(out) >= limit:
+            return
+        if not isinstance(child, dict) or child.get("kind") != "t1":
+            continue
+        data = child.get("data") or {}
+        text = clean_text(data.get("body") or "")
+        score = data.get("score") if data.get("score") is not None else data.get("ups")
+        if text and (not isinstance(score, int) or score >= min_score):
+            out.append(
+                {
+                    "id": data.get("name") or data.get("id") or "",
+                    "author": data.get("author") or "",
+                    "score": score,
+                    "depth": depth,
+                    "age": age_from_utc(data.get("created_utc")),
+                    "permalink": normalize_reddit_url(data.get("permalink") or ""),
+                    "text": text,
+                }
+            )
+        replies = data.get("replies")
+        if isinstance(replies, dict):
+            collect_json_comments((((replies.get("data") or {}).get("children")) or []), out, limit, max_depth, min_score, depth + 1)
+
+
+def count_more_json(children):
+    count = 0
+    for child in children or []:
+        if not isinstance(child, dict):
+            continue
+        if child.get("kind") == "more":
+            count += 1
+        data = child.get("data") or {}
+        replies = data.get("replies")
+        if isinstance(replies, dict):
+            count += count_more_json(((replies.get("data") or {}).get("children")) or [])
+    return count
 
 
 def parse_post(node, fallback_url):
@@ -408,11 +708,12 @@ def parse_comment(node):
     }
 
 
-def format_search(query, url, results, payload):
+def format_search(query, url, results, payload, backend="old_html"):
     lines = [
         "REDDIT_SEARCH",
         f"query: {query}",
         f"url: {url}",
+        f"backend: {backend}",
         f"results: {len(results)}",
         f"sort: {payload.get('sort', 'relevance')} time: {payload.get('time', payload.get('t', 'all'))}",
         "",
@@ -463,11 +764,12 @@ def format_thread(parsed):
     return "\n".join(lines)
 
 
-def format_pull(query, search_url, search_results, threads, errors, payload):
+def format_pull(query, search_url, search_results, threads, errors, payload, backend="old_html"):
     lines = [
         "REDDIT_PULL",
         f"query: {query}",
         f"search_url: {search_url}",
+        f"search_backend: {backend}",
         f"search_results: {len(search_results)}",
         f"threads_fetched: {len(threads)}",
         f"sort: {payload.get('sort', 'relevance')} time: {payload.get('time', payload.get('t', 'all'))}",
@@ -636,6 +938,23 @@ def parse_age(meta):
         return match.group(1).strip()
     match = re.search(r"(\d+\s+(?:minute|hour|day|month|year)s?\s+ago)", meta)
     return match.group(1) if match else ""
+
+
+def age_from_utc(value):
+    try:
+        ts = float(value)
+    except Exception:
+        return ""
+    delta = max(0, time.time() - ts)
+    if delta < 3600:
+        return f"{int(delta // 60)} minutes ago"
+    if delta < 86400:
+        return f"{int(delta // 3600)} hours ago"
+    if delta < 86400 * 30:
+        return f"{int(delta // 86400)} days ago"
+    if delta < 86400 * 365:
+        return f"{int(delta // (86400 * 30))} months ago"
+    return f"{int(delta // (86400 * 365))} years ago"
 
 
 def parse_score(text):

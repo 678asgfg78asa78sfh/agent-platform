@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "python_timeout_s": 1800,
+  "default_render_timeout_s": 1800,
+  "python_bin": "",
+  "ffmpeg_bin": "",
+  "ffprobe_bin": "",
+  "default_output_dir": "agent-data/video_pipeline",
+  "default_worldmap_fps": 25,
+  "default_worldmap_duration_s": 28,
+  "default_shorts_count": 30,
+  "default_shorts_duration_s": 45,
+  "max_shorts_count": 30,
+  "shorts_mode": "blur",
+  "allow_silent_audio": true,
+  "speech_words_per_second": 2.35
+}

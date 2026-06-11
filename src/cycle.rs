@@ -101,33 +101,38 @@ fn cron_matches_now(expression: &str) -> bool {
         (
             parts[0],
             now.format("%M").to_string().parse::<u32>().unwrap_or(0),
-            59,
         ),
         (
             parts[1],
             now.format("%H").to_string().parse::<u32>().unwrap_or(0),
-            23,
         ),
         (
             parts[2],
             now.format("%d").to_string().parse::<u32>().unwrap_or(0),
-            31,
         ),
         (
             parts[3],
             now.format("%m").to_string().parse::<u32>().unwrap_or(0),
-            12,
         ),
-        (
-            parts[4],
-            now.format("%u").to_string().parse::<u32>().unwrap_or(0),
-            7,
-        ), // 1=Mon, 7=Sun
     ];
 
-    checks
+    if !checks
         .iter()
-        .all(|(pattern, current, _max)| cron_field_matches(pattern, *current))
+        .all(|(pattern, current)| cron_field_matches(pattern, *current))
+    {
+        return false;
+    }
+
+    let dow_iso = now.format("%u").to_string().parse::<u32>().unwrap_or(1); // 1=Mo..7=So
+    cron_dow_matches(parts[4], dow_iso)
+}
+
+/// Day-of-week-Match mit beiden Konventionen: Standard-Cron (0-6, 0=Sonntag)
+/// UND ISO (1-7, 7=Sonntag). Vorher wurde nur %u (1-7) geprueft — ein Standard-
+/// Cron-Ausdruck wie "0 9 * * 0" (sonntags 9:00) feuerte dadurch NIE.
+fn cron_dow_matches(pattern: &str, dow_iso: u32) -> bool {
+    let dow_std = dow_iso % 7; // 0=So..6=Sa
+    cron_field_matches(pattern, dow_iso) || cron_field_matches(pattern, dow_std)
 }
 
 fn cron_field_matches(pattern: &str, value: u32) -> bool {
@@ -161,6 +166,88 @@ fn cron_field_matches(pattern: &str, value: u32) -> bool {
         return value == exact;
     }
     false
+}
+
+fn workflow_tick_params_target_specific(params: &[String]) -> bool {
+    params.iter().any(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed == "{}" {
+            return false;
+        }
+        match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(value) => value
+                .as_object()
+                .map(|obj| {
+                    obj.get("workflow_id")
+                        .or_else(|| obj.get("id"))
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|s| !s.trim().is_empty())
+                })
+                .unwrap_or(true),
+            Err(_) => true,
+        }
+    })
+}
+
+fn workflow_root_for_cron_tick(
+    pipeline: &Pipeline,
+    cfg: &AgentConfig,
+    target_modul: &str,
+) -> std::path::PathBuf {
+    let raw = cfg
+        .module
+        .iter()
+        .find(|m| m.id == target_modul || m.name == target_modul)
+        .and_then(|m| m.settings.extra.get("default_output_dir"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("agent-data/workflows");
+    let path = std::path::PathBuf::from(raw);
+    if path.is_absolute() {
+        return path;
+    }
+    pipeline
+        .base
+        .parent()
+        .unwrap_or(&pipeline.base)
+        .join(path)
+}
+
+fn workflow_root_has_active_workflows(root: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let path = entry.path().join("workflow.json");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return false;
+        };
+        value
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(|s| matches!(s.to_ascii_lowercase().as_str(), "running" | "waiting"))
+            .unwrap_or(false)
+    })
+}
+
+fn should_skip_empty_workflow_tick(
+    pipeline: &Pipeline,
+    cfg: &AgentConfig,
+    modul: &ModulConfig,
+) -> bool {
+    if modul.settings.cron_tool.as_deref() != Some("workflow_trigger.tick") {
+        return false;
+    }
+    let params = modul.settings.cron_params.clone().unwrap_or_default();
+    if workflow_tick_params_target_specific(&params) {
+        return false;
+    }
+    let target = modul.settings.target_modul.as_deref().unwrap_or(&modul.id);
+    let root = workflow_root_for_cron_tick(pipeline, cfg, target);
+    !workflow_root_has_active_workflows(&root)
 }
 
 /// RAII-Guard der busy/handles-Einträge garantiert aufräumt — auch bei Panic
@@ -310,7 +397,12 @@ impl Orchestrator {
 
             // 1. Config lesen, Modul-IDs sammeln
             let cfg = self.config.read().await;
-            let modul_ids: Vec<String> = cfg.module.iter().map(|m| m.id.clone()).collect();
+            let modul_ids: Vec<String> = cfg
+                .module
+                .iter()
+                .filter(|m| m.typ != "enhancer")
+                .map(|m| m.id.clone())
+                .collect();
             let cleanup_cfg = cfg.cleanup.clone();
             drop(cfg);
 
@@ -460,6 +552,10 @@ impl Orchestrator {
                 continue;
             };
             if !cron_matches_now(schedule) {
+                continue;
+            }
+
+            if should_skip_empty_workflow_tick(&self.pipeline, &cfg, modul) {
                 continue;
             }
 
@@ -1477,10 +1573,20 @@ async fn exec_llm(
     };
     let system_with_date = identity.system_prompt.replace("{date}", &date_str);
     let full_system = format!("{}{}", system_with_date, home_info);
+    let tool_calls_disabled = modul
+        .settings
+        .extra
+        .get("disable_tool_calls")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     // OpenAI Function Calling Tools
     let (openai_tools, py_mods_snap) = {
         let py_mods = py_modules.read().await;
-        let tools = tools::tools_as_openai_json(&modul, &py_mods);
+        let tools = if tool_calls_disabled {
+            Vec::new()
+        } else {
+            tools::tools_as_openai_json(&modul, &py_mods)
+        };
         let snap = py_mods.clone();
         (tools, snap)
     };
@@ -1852,6 +1958,14 @@ async fn exec_llm(
                                 return;
                             } else {
                                 mark_activity(&activity);
+                                // Den Fehlversuch in die History legen, BEVOR das
+                                // Feedback kommt — sonst referenziert das Feedback
+                                // eine Antwort, die das Modell nie gesehen hat.
+                                if !response.trim().is_empty() {
+                                    messages.push(serde_json::json!({
+                                        "role": "assistant", "content": &response
+                                    }));
+                                }
                                 let feedback = crate::guardrail::synth_feedback_user_message(
                                     &errors,
                                     max_retries_for_backend,
@@ -1868,110 +1982,194 @@ async fn exec_llm(
                 // ── End guardrail ──────────────────────────────────────────
 
                 // Tool-Call-Extraktion mit Schema-basiertem Parameter-Ordering:
-                // wir holen zuerst den Namen, dann das required[]-Array des passenden
-                // Tools, und geben das an parse_openai_tool_call_with_schema. Das
-                // schließt den path_keys-Heuristik-Bypass (ein LLM hätte sonst durch
-                // Nicht-Standard-Keys wie "inhalt"/"ziel" die Reihenfolge manipulieren
-                // können — die Whitelist-Prüfung lief dann auf dem falsch zugeordneten
-                // Parameter).
-                let tool_call = if raw_data != serde_json::Value::Null {
-                    // Namen zuerst ohne Schema ziehen, dann Schema lookup, dann richtig parsen
-                    let tmp_name = tools::parse_openai_tool_call(&raw_data).map(|(n, _)| n);
-                    match tmp_name {
-                        Some(name) => {
-                            let schema = tools::schema_required_for(&name, &modul, &py_mods_snap);
-                            tools::parse_openai_tool_call_with_schema(&raw_data, schema.as_deref())
-                        }
-                        None => None,
-                    }
+                // pro Call wird das required[]-Array des passenden Tools aufgeloest
+                // und an den Parser gegeben (schließt den path_keys-Heuristik-Bypass).
+                // Es werden ALLE Calls der Runde uebernommen — DeepSeek V4/Grok/Qwen3
+                // senden regelmaessig mehrere parallele Calls; nur calls[0] auszufuehren
+                // hiess: Rest stillschweigend verworfen plus eine teure Extra-LLM-Runde
+                // pro uebrigem Tool.
+                let mut parsed_calls: Vec<tools::ParsedOpenAiCall> = if tool_calls_disabled {
+                    Vec::new()
+                } else if raw_data != serde_json::Value::Null {
+                    tools::parse_openai_tool_calls_multi(&raw_data, |name| {
+                        tools::schema_required_for(name, &modul, &py_mods_snap)
+                    })
                 } else {
-                    None
+                    Vec::new()
+                };
+                // Text-Tag-Fallback (<tool>name(...)</tool>) nur wenn Tool-Calls fuer
+                // dieses Modul erlaubt sind. Vorher hing der Fallback HINTER dem
+                // disable_tool_calls-Check und hebelte das Setting aus: ein Modul mit
+                // disable_tool_calls=true fuehrte Text-Tag-Calls trotzdem aus.
+                if parsed_calls.is_empty()
+                    && !tool_calls_disabled
+                    && let Some((name, params)) = tools::parse_tool_call(&response)
+                {
+                    let arguments_json = raw_data
+                        .pointer("/choices/0/message/tool_calls/0/function/arguments")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("{}")
+                        .to_string();
+                    parsed_calls.push(tools::ParsedOpenAiCall {
+                        id: "call_fallback_tag".into(),
+                        name,
+                        params,
+                        arguments_json,
+                    });
                 }
-                .or_else(|| tools::parse_tool_call(&response));
 
-                if let Some((tool_name, params)) = tool_call {
+                if !parsed_calls.is_empty() {
                     mark_activity(&activity);
                     tool_round += 1;
-                    pipeline.log(
-                        &modul.name,
-                        Some(&aufgabe.id),
-                        LogTyp::Info,
-                        &format!("Tool call: {}({})", tool_name, params.join(", ")),
-                    );
+
+                    // Assistant-History VOR den Tool-Ergebnissen: vollstaendige
+                    // Original-Message behalten (DeepSeek reasoning_content muss nach
+                    // einem Tool-Call zurueckgereicht werden), tool_calls normalisiert
+                    // auf die geparsten Calls, damit jede Call-ID exakt eine
+                    // role:"tool"-Antwort bekommt.
+                    let mut assistant_history = raw_data
+                        .pointer("/choices/0/message")
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            serde_json::json!({"role": "assistant", "content": serde_json::Value::Null})
+                        });
+                    if let Some(obj) = assistant_history.as_object_mut() {
+                        obj.insert("role".into(), serde_json::json!("assistant"));
+                        obj.entry("content").or_insert(serde_json::Value::Null);
+                        let calls_json: Vec<serde_json::Value> = parsed_calls
+                            .iter()
+                            .map(|c| {
+                                serde_json::json!({
+                                    "id": c.id,
+                                    "type": "function",
+                                    "function": {"name": c.name, "arguments": c.arguments_json}
+                                })
+                            })
+                            .collect();
+                        obj.insert("tool_calls".into(), serde_json::json!(calls_json));
+                    }
+                    messages.push(assistant_history);
+
+                    // Sub-Aufgaben anlegen (eine pro Call), bevor die Ausfuehrung startet.
+                    let mut sub_ids: Vec<String> = Vec::with_capacity(parsed_calls.len());
+                    for call in &parsed_calls {
+                        pipeline.log(
+                            &modul.name,
+                            Some(&aufgabe.id),
+                            LogTyp::Info,
+                            &format!("Tool call: {}({})", call.name, call.params.join(", ")),
+                        );
+                        let mut tool_subtask = Aufgabe::direct(
+                            &call.name,
+                            call.params.clone(),
+                            &aufgabe.modul,
+                            &format!("task:{}", aufgabe.id),
+                            None,
+                            None,
+                        );
+                        tool_subtask.parent_id = Some(aufgabe.id.clone());
+                        tool_subtask.status = AufgabeStatus::Gestartet;
+                        tool_subtask.gestartet = Some(chrono::Utc::now());
+                        sub_ids.push(tool_subtask.id.clone());
+                        let _ = pipeline.speichern(&tool_subtask);
+                    }
 
                     // Tool-Round im Idempotency-Key: LLM kann dasselbe Tool in einer
-                    // Task mehrfach rufen (unterschiedliche Intent-Iterationen) — wir
-                    // dürfen nur KOMPLETTE Task-Wiederholungen deduplicaten, nicht
-                    // jeden Tool-Round. task_id + round macht den Key eindeutig pro
-                    // Iteration.
-                    let tool_task_id = format!("{}#r{}", aufgabe.id, tool_round);
-                    let mut tool_subtask = Aufgabe::direct(
-                        &tool_name,
-                        params.clone(),
-                        &aufgabe.modul,
-                        &format!("task:{}", aufgabe.id),
-                        None,
-                        None,
-                    );
-                    tool_subtask.parent_id = Some(aufgabe.id.clone());
-                    tool_subtask.status = AufgabeStatus::Gestartet;
-                    tool_subtask.gestartet = Some(chrono::Utc::now());
-                    let tool_subtask_id = tool_subtask.id.clone();
-                    let _ = pipeline.speichern(&tool_subtask);
+                    // Task mehrfach rufen — nur KOMPLETTE Task-Wiederholungen werden
+                    // dedupliziert. task_id + round + call-index macht den Key pro
+                    // Iteration und pro Call eindeutig.
+                    //
+                    // Read-only Calls (Suchen/Fetches) laufen nebenlaeufig — bei
+                    // Multi-Search-Runden der groesste Latenzgewinn. Alles andere
+                    // strikt sequenziell in Emissions-Reihenfolge, weil Seiteneffekt-
+                    // Reihenfolge zaehlen kann.
+                    let parallel = parsed_calls.len() > 1
+                        && parsed_calls
+                            .iter()
+                            .all(|c| tools::is_parallel_safe_tool(&c.name));
+                    let task_id_for_calls = aufgabe.id.clone();
+                    let task_modul = aufgabe.modul.clone();
+                    let results: Vec<(bool, String)> = if parallel {
+                        let task_id_ref = &task_id_for_calls;
+                        let task_modul_ref = &task_modul;
+                        let futs = parsed_calls.iter().enumerate().map(|(idx, call)| {
+                            let tool_task_id =
+                                format!("{}#r{}c{}", task_id_ref, tool_round, idx);
+                            async move {
+                                exec_tool(
+                                    &call.name,
+                                    &call.params,
+                                    task_modul_ref,
+                                    Some(&tool_task_id),
+                                    pipeline,
+                                    config,
+                                    llm,
+                                    py_modules,
+                                    py_pool,
+                                )
+                                .await
+                            }
+                        });
+                        with_activity_heartbeat(&activity, futures_util::future::join_all(futs))
+                            .await
+                    } else {
+                        let mut seq = Vec::with_capacity(parsed_calls.len());
+                        for (idx, call) in parsed_calls.iter().enumerate() {
+                            let tool_task_id = format!("{}#r{}c{}", aufgabe.id, tool_round, idx);
+                            let r = with_activity_heartbeat(
+                                &activity,
+                                exec_tool(
+                                    &call.name,
+                                    &call.params,
+                                    &aufgabe.modul,
+                                    Some(&tool_task_id),
+                                    pipeline,
+                                    config,
+                                    llm,
+                                    py_modules,
+                                    py_pool,
+                                ),
+                            )
+                            .await;
+                            seq.push(r);
+                        }
+                        seq
+                    };
 
-                    let tool_result = with_activity_heartbeat(
-                        &activity,
-                        exec_tool(
-                            &tool_name,
-                            &params,
-                            &aufgabe.modul,
-                            Some(&tool_task_id),
-                            pipeline,
-                            config,
-                            llm,
-                            py_modules,
-                            py_pool,
-                        ),
-                    )
-                    .await;
-                    let status = if tool_result.0 { "SUCCESS" } else { "FAILED" };
-                    if let Ok(Some(mut sub)) = pipeline.laden_by_id(&tool_subtask_id) {
-                        sub.ergebnis = Some(tool_result.1.clone());
-                        let _ = pipeline.verschieben(
-                            &mut sub,
+                    for ((call, sub_id), tool_result) in
+                        parsed_calls.iter().zip(sub_ids.iter()).zip(results.iter())
+                    {
+                        let status = if tool_result.0 { "SUCCESS" } else { "FAILED" };
+                        if let Ok(Some(mut sub)) = pipeline.laden_by_id(sub_id) {
+                            sub.ergebnis = Some(tool_result.1.clone());
+                            let _ = pipeline.verschieben(
+                                &mut sub,
+                                if tool_result.0 {
+                                    AufgabeStatus::Success
+                                } else {
+                                    AufgabeStatus::Failed
+                                },
+                            );
+                        }
+                        pipeline.log(
+                            &modul.name,
+                            Some(&aufgabe.id),
                             if tool_result.0 {
-                                AufgabeStatus::Success
+                                LogTyp::Success
                             } else {
-                                AufgabeStatus::Failed
+                                LogTyp::Failed
                             },
+                            &format!(
+                                "Tool {}: {} → {}",
+                                call.name,
+                                status,
+                                util::safe_truncate(&tool_result.1, 100)
+                            ),
                         );
+                        messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call.id,
+                            "content": task_tool_result_for_llm(tool_result.0, &tool_result.1)}));
                     }
-                    pipeline.log(
-                        &modul.name,
-                        Some(&aufgabe.id),
-                        if tool_result.0 {
-                            LogTyp::Success
-                        } else {
-                            LogTyp::Failed
-                        },
-                        &format!(
-                            "Tool {}: {} → {}",
-                            tool_name,
-                            status,
-                            util::safe_truncate(&tool_result.1, 100)
-                        ),
-                    );
                     mark_activity(&activity);
-
-                    let call_id = raw_data
-                        .pointer("/choices/0/message/tool_calls/0/id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("call_0")
-                        .to_string();
-                    messages.push(serde_json::json!({"role": "assistant", "content": serde_json::Value::Null,
-                        "tool_calls": [{"id": &call_id, "type": "function", "function": {"name": &tool_name, "arguments": "{}"}}]}));
-                    messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call_id,
-                        "content": task_tool_result_for_llm(tool_result.0, &tool_result.1)}));
 
                     // History trimmen: alte Tool-Results kuerzen
                     let keep_full = 6;
@@ -2125,6 +2323,7 @@ fn route_ergebnis(aufgabe: &Aufgabe, pipeline: &Pipeline, config: &AgentConfig) 
         if let Some(cid) = convo_id.as_deref() {
             match append_message_to_convo(pipeline, &target, cid, "assistant", &payload) {
                 Ok(_) => {
+                    enqueue_telegram_route_if_needed(aufgabe, pipeline, config, cid, ergebnis);
                     let source = format!("task:{}", aufgabe.id);
                     let _ = pipeline.notification_add(
                         &target,
@@ -2182,6 +2381,60 @@ fn route_ergebnis(aufgabe: &Aufgabe, pipeline: &Pipeline, config: &AgentConfig) 
             target
         ),
     );
+}
+
+fn enqueue_telegram_route_if_needed(
+    aufgabe: &Aufgabe,
+    pipeline: &Pipeline,
+    config: &AgentConfig,
+    convo_id: &str,
+    text: &str,
+) {
+    let Some(chat_id) = convo_id.strip_prefix("telegram_") else {
+        return;
+    };
+    if chat_id.trim().is_empty() || text.trim().is_empty() {
+        return;
+    }
+    let Some(telegram_module) = config
+        .module
+        .iter()
+        .find(|m| m.typ == "telegram_bot" || m.id.starts_with("telegram_bot."))
+    else {
+        pipeline.log(
+            "routing",
+            Some(&aufgabe.id),
+            LogTyp::Warning,
+            "Telegram Conversation erkannt, aber kein telegram_bot Modul gefunden",
+        );
+        return;
+    };
+    let send = Aufgabe::direct(
+        "telegram_bot.send",
+        vec![chat_id.to_string(), text.to_string()],
+        &telegram_module.id,
+        &aufgabe.modul,
+        None,
+        None,
+    )
+    .with_timeout_s(telegram_module.timeout_s);
+    match pipeline.speichern(&send) {
+        Ok(_) => pipeline.log(
+            "routing",
+            Some(&aufgabe.id),
+            LogTyp::Info,
+            &format!(
+                "Telegram Send-Task {} fuer Conversation {} erstellt",
+                send.id, convo_id
+            ),
+        ),
+        Err(e) => pipeline.log(
+            "routing",
+            Some(&aufgabe.id),
+            LogTyp::Warning,
+            &format!("Telegram Send-Task konnte nicht erstellt werden: {}", e),
+        ),
+    }
 }
 
 fn append_message_to_convo(
@@ -2286,6 +2539,22 @@ mod tests {
         assert!(cron_field_matches("1,3,5", 1));
         assert!(cron_field_matches("1,3,5", 3));
         assert!(!cron_field_matches("1,3,5", 2));
+    }
+
+    #[test]
+    fn test_cron_dow_accepts_both_sunday_conventions() {
+        // ISO-Sonntag (%u = 7) muss sowohl "0" (Standard-Cron) als auch "7" (ISO) matchen
+        assert!(cron_dow_matches("0", 7));
+        assert!(cron_dow_matches("7", 7));
+        assert!(cron_dow_matches("*", 7));
+        // Montag (%u = 1) matcht "1", aber weder "0" noch "7"
+        assert!(cron_dow_matches("1", 1));
+        assert!(!cron_dow_matches("0", 1));
+        assert!(!cron_dow_matches("7", 1));
+        // Listen und Ranges funktionieren in beiden Konventionen
+        assert!(cron_dow_matches("0,3", 7));
+        assert!(cron_dow_matches("5-7", 6));
+        assert!(!cron_dow_matches("2-4", 7));
     }
 
     #[test]

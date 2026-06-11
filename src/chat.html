@@ -747,13 +747,30 @@ ge('files-delete-all').addEventListener('click', function() {
 
 function deleteFile(path) {
   if (!confirm('Datei loeschen: ' + path + '?')) return;
-  apiFetch('/api/home/' + modulId + '/' + path, {method: 'DELETE'})
+  apiFetch(homeFileUrl(path), {method: 'DELETE'})
     .then(function(r) { return r.json(); })
     .then(function(res) { if (res.ok) loadFileTree(); });
 }
 
+function homeFileUrl(path) {
+  return '/api/home/' + modulId + '/' + encodeURIComponent(path);
+}
+
+function downloadFile(path) {
+  apiFetch(homeFileUrl(path)).then(function(r) { return r.blob(); }).then(function(blob) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = path.split('/').pop();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function() { URL.revokeObjectURL(url); }, 30000);
+  });
+}
+
 function openFile(path) {
-  var url = '/api/home/' + modulId + '/' + path;
+  var url = homeFileUrl(path);
   // Text-Dateien im Modal anzeigen, Rest im neuen Tab
   var ext = path.split('.').pop().toLowerCase();
   var textTypes = ['txt','md','html','htm','css','js','json','log','py','rs','toml','yaml','yml','sh','csv','xml'];
@@ -764,7 +781,7 @@ function openFile(path) {
         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">'
         + '<span style="color:var(--cyan);font-size:11px;">' + esc(path) + '</span>'
         + '<div style="display:flex;gap:4px;">'
-        + '<a href="' + url + '" download="' + esc(path.split('/').pop()) + '" style="background:none;border:1px solid var(--cyan);color:var(--cyan);cursor:pointer;border-radius:4px;padding:2px 8px;font-size:10px;text-decoration:none;font-family:var(--font);">Download</a>'
+        + '<button onclick="downloadFile(\'' + esc(path).replace(/'/g, "\\'") + '\')" style="background:none;border:1px solid var(--cyan);color:var(--cyan);cursor:pointer;border-radius:4px;padding:2px 8px;font-size:10px;text-decoration:none;font-family:var(--font);">Download</button>'
         + '<a href="' + url + '" target="_blank" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:4px;padding:2px 8px;font-size:10px;text-decoration:none;font-family:var(--font);">Oeffnen</a>'
         + '<button onclick="this.closest(\'div[style*=fixed]\').remove()" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:4px;padding:2px 8px;font-size:10px;font-family:var(--font);">X</button>'
         + '</div></div>'
@@ -772,7 +789,7 @@ function openFile(path) {
       document.body.insertAdjacentHTML('beforeend', pre);
     });
   } else {
-    window.open(url, '_blank');
+    downloadFile(path);
   }
 }
 

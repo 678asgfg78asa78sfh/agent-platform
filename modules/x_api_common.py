@@ -60,8 +60,7 @@ def fail(data):
 
 
 def load_runtime_config(config, module_dir):
-    merged = dict(config or {})
-
+    merged = {}
     local_path = os.path.join(module_dir, "config.json")
     if os.path.exists(local_path):
         try:
@@ -73,6 +72,12 @@ def load_runtime_config(config, module_dir):
                         merged[key] = value
         except Exception:
             pass
+
+    # Runtime config has already passed Rust-side vault alias resolution, so it
+    # must override local fallback files that may still contain aliases.
+    for key, value in dict(config or {}).items():
+        if value not in ("", None, [], {}):
+            merged[key] = value
 
     env_token = os.environ.get("X_BEARER_TOKEN") or os.environ.get("TWITTER_BEARER_TOKEN")
     if env_token:

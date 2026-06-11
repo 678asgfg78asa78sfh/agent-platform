@@ -9,3 +9,5 @@ modules/*/config.json
 modules/*/*.env
 modules/*/*.local*
 modules/*/*.backup
+/agent.out
+*.out

@@ -1,6 +1,6 @@
 // src/util.rs — Shared utilities used across modules
 
-use crate::types::{AgentConfig, ModulConfig, ModulIdentity};
+use crate::types::{AgentConfig, LlmBackend, ModulConfig, ModulIdentity};
 use std::path::Path;
 
 /// Globaler Counter für Temp-Dateinamen in atomic_write — macht jedes Temp
@@ -97,10 +97,12 @@ pub fn normalize_same_llm_links(config: &mut AgentConfig) -> bool {
             continue;
         }
 
-        for sibling in modules
-            .iter()
-            .filter(|m| m.id != module.id && m.persistent && m.llm_backend == module.llm_backend)
-        {
+        for sibling in modules.iter().filter(|m| {
+            m.id != module.id
+                && m.persistent
+                && m.llm_backend == module.llm_backend
+                && m.typ != "telegram_bot"
+        }) {
             if !module.linked_modules.iter().any(|id| id == &sibling.id) {
                 module.linked_modules.push(sibling.id.clone());
                 changed = true;
@@ -116,6 +118,279 @@ pub fn normalize_same_llm_links(config: &mut AgentConfig) -> bool {
     }
 
     changed
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiVaultUse {
+    pub id: String,
+    pub alias: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialVaultUse {
+    pub id: String,
+    pub field: String,
+    pub alias: String,
+    pub path: String,
+}
+
+pub fn api_key_vault_alias(id: &str) -> String {
+    let clean = id.trim().strip_prefix("api.").unwrap_or(id.trim());
+    format!("api.{}", clean)
+}
+
+pub fn api_key_vault_alias_id(value: &str) -> Option<String> {
+    let mut s = value.trim();
+    if let Some(inner) = s.strip_prefix("${").and_then(|v| v.strip_suffix('}')) {
+        s = inner.trim();
+    }
+    let id = s.strip_prefix("api.")?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+pub fn is_secret_like_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    k == "secret"
+        || k.contains("api_key")
+        || k.contains("apikey")
+        || k.contains("token")
+        || k.contains("password")
+        || k.contains("secret")
+        || k.contains("bearer")
+        || k == "client_id"
+        || k == "client_secret"
+}
+
+pub fn resolve_api_key_alias_string(
+    value: &str,
+    config: &AgentConfig,
+) -> Option<(String, ApiVaultUse)> {
+    let id = api_key_vault_alias_id(value)?;
+    let secret = config
+        .api_key_vault
+        .iter()
+        .find(|entry| entry.id == id)
+        .and_then(|entry| entry.secret.as_deref())
+        .map(str::trim)
+        .filter(|secret| !secret.is_empty())?;
+    Some((
+        secret.to_string(),
+        ApiVaultUse {
+            alias: api_key_vault_alias(&id),
+            id,
+            path: String::new(),
+        },
+    ))
+}
+
+pub fn credential_vault_alias(id: &str, field: &str) -> String {
+    format!("cred.{}.{}", id.trim(), field.trim())
+}
+
+pub fn credential_vault_bare_alias(id: &str, field: &str) -> String {
+    format!("{}.{}", id.trim(), field.trim())
+}
+
+fn credential_alias_matches(value: &str, id: &str, field: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let inner = trimmed
+        .strip_prefix("${")
+        .and_then(|v| v.strip_suffix('}'))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+    let canonical = credential_vault_alias(id, field);
+    let bare = credential_vault_bare_alias(id, field);
+    if inner == canonical {
+        Some(canonical)
+    } else if inner == bare {
+        Some(bare)
+    } else {
+        None
+    }
+}
+
+pub fn resolve_credential_alias_string(
+    value: &str,
+    config: &AgentConfig,
+) -> Option<(String, CredentialVaultUse)> {
+    for entry in &config.credential_vault {
+        for field in &entry.fields {
+            let Some(alias) = credential_alias_matches(value, &entry.id, &field.key) else {
+                continue;
+            };
+            let resolved = field
+                .value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())?;
+            return Some((
+                resolved.to_string(),
+                CredentialVaultUse {
+                    id: entry.id.clone(),
+                    field: field.key.clone(),
+                    alias,
+                    path: String::new(),
+                },
+            ));
+        }
+    }
+    None
+}
+
+pub fn resolve_llm_backend_api_alias(
+    backend: &mut LlmBackend,
+    config: &AgentConfig,
+) -> Vec<ApiVaultUse> {
+    let Some(current) = backend.api_key.as_deref() else {
+        return Vec::new();
+    };
+    let Some((secret, mut used)) = resolve_api_key_alias_string(current, config) else {
+        return Vec::new();
+    };
+    backend.api_key = Some(secret);
+    used.path = format!("llm_backends.{}.api_key", backend.id);
+    vec![used]
+}
+
+pub fn resolve_modul_config_api_aliases(
+    modul: &mut ModulConfig,
+    config: &AgentConfig,
+) -> Vec<ApiVaultUse> {
+    let mut value = match serde_json::to_value(&modul.settings) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut uses = resolve_api_key_aliases_in_json(&mut value, config);
+    if uses.is_empty() {
+        return uses;
+    }
+    for used in &mut uses {
+        if used.path.is_empty() {
+            used.path = format!("module.{}.settings", modul.id);
+        } else {
+            used.path = format!("module.{}.settings.{}", modul.id, used.path);
+        }
+    }
+    if let Ok(settings) = serde_json::from_value(value) {
+        modul.settings = settings;
+    }
+    uses
+}
+
+pub fn resolve_api_key_aliases_in_json(
+    value: &mut serde_json::Value,
+    config: &AgentConfig,
+) -> Vec<ApiVaultUse> {
+    let mut uses = Vec::new();
+    resolve_api_key_aliases_in_json_inner(value, config, "", None, &mut uses);
+    uses
+}
+
+pub fn resolve_credential_aliases_in_json(
+    value: &mut serde_json::Value,
+    config: &AgentConfig,
+) -> Vec<CredentialVaultUse> {
+    let mut uses = Vec::new();
+    resolve_credential_aliases_in_json_inner(value, config, "", &mut uses);
+    uses
+}
+
+fn resolve_credential_aliases_in_json_inner(
+    value: &mut serde_json::Value,
+    config: &AgentConfig,
+    path: &str,
+    uses: &mut Vec<CredentialVaultUse>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                resolve_credential_aliases_in_json_inner(child, config, &child_path, uses);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for (idx, child) in arr.iter_mut().enumerate() {
+                let child_path = if path.is_empty() {
+                    idx.to_string()
+                } else {
+                    format!("{}.{}", path, idx)
+                };
+                resolve_credential_aliases_in_json_inner(child, config, &child_path, uses);
+            }
+        }
+        serde_json::Value::String(s) => {
+            let Some((resolved, mut used)) = resolve_credential_alias_string(s, config) else {
+                return;
+            };
+            *s = resolved;
+            used.path = path.to_string();
+            uses.push(used);
+        }
+        _ => {}
+    }
+}
+
+fn resolve_api_key_aliases_in_json_inner(
+    value: &mut serde_json::Value,
+    config: &AgentConfig,
+    path: &str,
+    key_name: Option<&str>,
+    uses: &mut Vec<ApiVaultUse>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                resolve_api_key_aliases_in_json_inner(
+                    child,
+                    config,
+                    &child_path,
+                    Some(key.as_str()),
+                    uses,
+                );
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for (idx, child) in arr.iter_mut().enumerate() {
+                let child_path = if path.is_empty() {
+                    idx.to_string()
+                } else {
+                    format!("{}.{}", path, idx)
+                };
+                resolve_api_key_aliases_in_json_inner(child, config, &child_path, key_name, uses);
+            }
+        }
+        serde_json::Value::String(s) => {
+            if !key_name.map(is_secret_like_key).unwrap_or(false) {
+                return;
+            }
+            let Some((secret, mut used)) = resolve_api_key_alias_string(s, config) else {
+                return;
+            };
+            *s = secret;
+            used.path = path.to_string();
+            uses.push(used);
+        }
+        _ => {}
+    }
 }
 
 /// UTF-8-safe truncation returning a string slice. Never cuts mid-character.
@@ -280,6 +555,7 @@ mod tests {
             cost_cap: None,
             max_tool_rounds: None,
             call_rate_limit: None,
+            internal: false,
         });
         cfg.module.push(crate::types::ModulConfig {
             id: "chat.local".into(),
@@ -295,6 +571,9 @@ mod tests {
             identity: Default::default(),
             rag_pool: None,
             linked_modules: vec![],
+            input_enhancers: vec![],
+            output_enhancers: vec![],
+            combined_enhancers: vec![],
             persistent: true,
             spawned_by: None,
             spawn_ttl_s: None,
@@ -318,6 +597,35 @@ mod tests {
             identity: Default::default(),
             rag_pool: None,
             linked_modules: vec![],
+            input_enhancers: vec![],
+            output_enhancers: vec![],
+            combined_enhancers: vec![],
+            persistent: true,
+            spawned_by: None,
+            spawn_ttl_s: None,
+            created_at: None,
+            scheduler_interval_ms: None,
+            max_concurrent_tasks: None,
+            token_budget: None,
+            token_budget_warning: None,
+        });
+        cfg.module.push(crate::types::ModulConfig {
+            id: "telegram_bot.default".into(),
+            typ: "telegram_bot".into(),
+            name: "telegram_bot.default".into(),
+            display_name: "Telegram".into(),
+            llm_backend: "local".into(),
+            backup_llm: None,
+            berechtigungen: vec![],
+            timeout_s: 30,
+            retry: 0,
+            settings: Default::default(),
+            identity: Default::default(),
+            rag_pool: None,
+            linked_modules: vec!["chat.local".into()],
+            input_enhancers: vec![],
+            output_enhancers: vec![],
+            combined_enhancers: vec![],
             persistent: true,
             spawned_by: None,
             spawn_ttl_s: None,
@@ -331,6 +639,12 @@ mod tests {
         assert!(normalize_same_llm_links(&mut cfg));
         let chat = cfg.module.iter().find(|m| m.id == "chat.local").unwrap();
         assert!(chat.linked_modules.iter().any(|id| id == "tavily.default"));
+        assert!(
+            !chat
+                .linked_modules
+                .iter()
+                .any(|id| id == "telegram_bot.default")
+        );
         assert!(chat.berechtigungen.iter().any(|p| p == "aufgaben"));
     }
 
@@ -345,5 +659,71 @@ mod tests {
             Some(("chat.local".into(), Some("abc123".into())))
         );
         assert!(parse_chat_route("chat:../bad:abc123").is_none());
+    }
+
+    #[test]
+    fn api_vault_resolves_only_secret_like_json_fields() {
+        let mut cfg = AgentConfig::default();
+        cfg.api_key_vault.push(crate::types::ApiKeyVaultEntry {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            provider: Some("deepseek".into()),
+            secret: Some("real-secret".into()),
+            notes: None,
+            created_at: None,
+            updated_at: None,
+        });
+        let mut value = serde_json::json!({
+            "api_key": "api.deepseek",
+            "label": "api.deepseek"
+        });
+
+        let uses = resolve_api_key_aliases_in_json(&mut value, &cfg);
+
+        assert_eq!(value["api_key"], "real-secret");
+        assert_eq!(value["label"], "api.deepseek");
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].alias, "api.deepseek");
+        assert_eq!(uses[0].path, "api_key");
+    }
+
+    #[test]
+    fn credential_vault_resolves_group_fields_anywhere() {
+        let mut cfg = AgentConfig::default();
+        cfg.credential_vault
+            .push(crate::types::CredentialVaultEntry {
+                id: "mail.private".into(),
+                name: "Private Mail".into(),
+                kind: Some("mail".into()),
+                fields: vec![
+                    crate::types::CredentialVaultField {
+                        key: "host".into(),
+                        value: Some("imap.example.test".into()),
+                        secret: false,
+                    },
+                    crate::types::CredentialVaultField {
+                        key: "password".into(),
+                        value: Some("real-password".into()),
+                        secret: true,
+                    },
+                ],
+                notes: None,
+                created_at: None,
+                updated_at: None,
+            });
+        let mut value = serde_json::json!({
+            "host": "mail.private.host",
+            "password": "${cred.mail.private.password}",
+            "label": "mail.private.unknown"
+        });
+
+        let uses = resolve_credential_aliases_in_json(&mut value, &cfg);
+
+        assert_eq!(value["host"], "imap.example.test");
+        assert_eq!(value["password"], "real-password");
+        assert_eq!(value["label"], "mail.private.unknown");
+        assert_eq!(uses.len(), 2);
+        assert_eq!(uses[0].path, "host");
+        assert_eq!(uses[1].alias, "cred.mail.private.password");
     }
 }

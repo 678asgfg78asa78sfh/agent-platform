@@ -50,7 +50,7 @@ fn python_timeout_s(config: &serde_json::Value) -> u64 {
         .get("python_timeout_s")
         .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|n| n as u64)))
         .unwrap_or(30)
-        .clamp(5, 180)
+        .clamp(5, 3600)
 }
 
 impl PyProcessPool {

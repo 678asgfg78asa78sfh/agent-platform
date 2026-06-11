@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from uuid import uuid4
@@ -27,20 +28,38 @@ MODUL_DIR = os.path.dirname(os.path.abspath(__file__))
 _RSS_MODULE = None
 _REDDIT_MODULE = None
 _GROK_SEARCH_MODULE = None
+_YOUTUBE_TRANSCRIPT_MODULE = None
 
 MODULE = {
     "name": "deepdive",
     "description": "Crawler fuer mehrstufige Recherche: Web suchen, Quellen abrufen, Datum/Text/Links extrahieren und RAG-Notizen speichern.",
-    "version": "2.0",
+    "version": "2.2",
     "settings": {
         "max_sources": {"type": "number", "label": "Seed-Quellen pro Crawl", "default": 8},
-        "max_search_queries": {"type": "number", "label": "Suchvarianten", "default": 6},
+        "max_search_queries": {"type": "number", "label": "Suchvarianten", "default": 8},
+        "enable_impact_language_plan": {"type": "bool", "label": "Impact-Sprachen im DeepDive", "default": True},
+        "enable_branching_causality_plan": {"type": "bool", "label": "Causal Branching im DeepDive", "default": True},
+        "max_branch_queries": {"type": "number", "label": "DeepDive Branch-Suchen", "default": 8},
+        "min_branch_sources": {"type": "number", "label": "DeepDive Mindest-Branch-Quellen", "default": 6},
+        "enable_subcrawls": {"type": "bool", "label": "DeepDive Subcrawls", "default": True},
+        "max_subcrawls": {"type": "number", "label": "DeepDive Subcrawls Anzahl", "default": 4},
+        "subcrawl_sources_per_topic": {"type": "number", "label": "Quellen je Subcrawl", "default": 2},
+        "subcrawl_min_score": {"type": "number", "label": "Subcrawl Mindestscore", "default": 6},
+        "deep_full_auto_reddit_sources": {"type": "bool", "label": "DeepDive: Reddit automatisch", "default": True},
+        "deep_full_auto_grok_search_sources": {"type": "bool", "label": "DeepDive: Grok Search automatisch", "default": True},
+        "enable_youtube_transcripts": {"type": "bool", "label": "YouTube-Transkripte als Quelle", "default": True},
+        "parallel_search_workers": {"type": "number", "label": "Parallele Seed-Suchen", "default": 6},
+        "parallel_fetch_workers": {"type": "number", "label": "Parallele Seitenabrufe", "default": 4},
+        "quick_max_sources": {"type": "number", "label": "Quick: Seed-Quellen", "default": 4},
+        "quick_max_search_queries": {"type": "number", "label": "Quick: Suchvarianten", "default": 3},
+        "quick_max_total_pages": {"type": "number", "label": "Quick: Max Seiten", "default": 6},
+        "quick_python_timeout_s": {"type": "number", "label": "Quick: Python Timeout", "default": 75},
         "max_total_pages": {"type": "number", "label": "Max Seiten inkl. Follow-ups", "default": 20},
         "max_follow_links_per_source": {"type": "number", "label": "Follow-up Links je Quelle", "default": 3},
         "max_depth": {"type": "number", "label": "Crawl-Tiefe", "default": 2},
         "max_derived_queries": {"type": "number", "label": "Abgeleitete Nachsuchen", "default": 4},
         "timeout_s": {"type": "number", "label": "Timeout je Request", "default": 6},
-        "python_timeout_s": {"type": "number", "label": "Python Tool Timeout", "default": 120},
+        "python_timeout_s": {"type": "number", "label": "Python Tool Timeout", "default": 300},
         "max_chars_per_source": {"type": "number", "label": "Max Textzeichen je Quelle", "default": 6000},
         "search_provider": {"type": "select", "label": "Websuche", "default": "auto", "options": ["auto", "tavily", "duckduckgo"]},
         "tavily_api_key": {"type": "password", "label": "Tavily API Key", "default": ""},
@@ -62,6 +81,21 @@ MODULE = {
             "params": ["query"],
         },
         {
+            "name": "deepdive.quick",
+            "description": "Schneller Recherche-Fanout fuer normale/kurze Fragen: weniger Quellen, harte Budgets, RAG-Speicherung mit Crawl-ID.",
+            "params": ["query"],
+        },
+        {
+            "name": "deepdive.pack",
+            "description": "Liest ein kompaktes Ergebnispaket zu einer DeepDive crawl_id oder Query aus dem DeepDive-RAG, ohne breit im ganzen RAG zu suchen.",
+            "params": ["crawl_id_or_query"],
+        },
+        {
+            "name": "deepdive.blocks",
+            "description": "Bereitet aus einer crawl_id getrennte Research-Bausteine vor: Quellenblock, Timeline, Claims, Kausalitaeten, Branching-Kontext, Kontraste und offene Leads fuer die finale Synthese.",
+            "params": ["crawl_id_or_query"],
+        },
+        {
             "name": "deepdive.workflow",
             "description": "Gibt den Deepdive-Ablauf fuer ein Thema aus: Suche, Quellen oeffnen, bewerten, in RAG speichern, synthetisieren.",
             "params": ["query"],
@@ -76,16 +110,18 @@ MODULE = {
 
 
 WORKFLOW = """Deepdive-Ablauf:
-1. Bei breiten Web-/News-/Personen-Recherchen zuerst deepdive.crawl(query) nutzen. Das Tool sucht aktuelle Varianten, oeffnet Seed-Quellen, verfolgt relevante Links daraus und legt alles mit Crawl-ID im RAG ab.
-2. Such-Snippets sind nur Wegweiser, keine Belege. Inhalte erst behaupten, nachdem die Quelle geoeffnet oder per deepdive.crawl verarbeitet wurde.
-3. Quellen nicht isoliert lesen: aus Titel/Text/Links neue Hinweise ableiten, passende Follow-up-Quellen oeffnen, Datum/Stand und Widersprueche vergleichen.
-4. Jede Quelle bewerten: URL, Titel, Datum/Stand, Abrufzeit, Autor/Outlet, primaer/sekundaer, Relevanz, Zuverlaessigkeit, Bias/Risiko, Kernaussagen, offene Unsicherheiten.
-5. Jede verwertbare Beobachtung sofort mit deepdive.source_note als einzelne RAG-Notiz speichern, wenn sie nicht schon durch deepdive.crawl gespeichert wurde.
-6. Bei aktuellen Personen/Politik/News aktiv nach dem aktuellen Stand suchen. Alte Rollen wie "Kanzlerkandidat" duerfen nicht als aktueller Stand stehen bleiben, wenn spaetere Quellen "Kanzler", "ehemalig" oder andere Rollen zeigen.
-7. Nicht nach der ersten Notiz stoppen: mehrere unabhaengige Quellen vergleichen, vor allem bei Zeitbezug oder widerspruechlichen Rollen.
-8. Vor der Synthese rag.suchen mit der crawl_id und dem Thema ausfuehren, damit das Lagebild aus frisch gespeicherten Beobachtungen entsteht.
-9. Ergebnis liefern: aktueller Stand, Timeline, gesicherte Punkte, Widersprueche, Quellenliste mit Herkunft/Alter, naechste sinnvolle Rechercheschritte.
-Regeln: Ein Toolcall pro Antwort. Bei Toolfehlern anders versuchen. Die Finalantwort ist nie ein rohes SUCCESS/Tool-Ergebnis."""
+1. Bei normalen kurzen Web-/News-/Preis-/Meinungs-Recherchen zuerst deepdive.quick(query) nutzen. Bei ausdruecklichem "DeepDive", "ausfuehrlich" oder komplexen Widerspruechen deepdive.crawl(query) nutzen.
+2. DeepDive ist ein Causal-Investigator: Nicht "die besten Quellen" sammeln, sondern Ereignisse, Akteure, Claims, Leads, Analogien, Kausalitaeten, Widersprueche und offene Fragen herausarbeiten.
+3. Branching planen: vom Startthema bewusst zu Nachbarbegriffen, Akteursnetzwerk, Wettbewerbern, betroffenen Laendern, historischen Analogien und moeglichen Missing Links suchen. Beispiel UFO: UAP, Aliens, Disclosure, Militaer/Sensorik, Whistleblower, internationale Akten. Beispiel Ford: GM/Toyota/Tesla/Stellantis/BYD, EV-Markt, Gewerkschaften, Lieferketten.
+4. Impact-Sprachen planen: Suche nicht nur in der Nutzersprache. Waehle Sprachen/Regionen nach betroffenen Akteuren und Impact. Beispiel Japan: Japanisch, Chinesisch, Koreanisch, Englisch/Taiwan; Costa Rica nur bei konkretem Bezug.
+5. Such-Snippets sind nur Wegweiser, keine Belege. Inhalte erst behaupten, nachdem die Quelle geoeffnet oder per deepdive.crawl verarbeitet wurde.
+6. Quellen und Kommentare nicht isoliert lesen: Hinweise wie "vergleichbar mit XY", "laut XX" oder Links als Leads behandeln, nachziehen und als Lead/Claim speichern, nicht als Wahrheit.
+7. Jede Quelle bewerten: URL, Titel, Sprache/Land/Perspektive, Datum/Stand, Autor/Outlet, primaer/sekundaer, Relevanz, Zuverlaessigkeit, Bias/Risiko, Kernaussagen, offene Unsicherheiten.
+8. Jede verwertbare Beobachtung sofort mit deepdive.source_note als einzelne RAG-Notiz speichern, wenn sie nicht schon durch deepdive.crawl gespeichert wurde.
+9. Nicht nach der ersten Notiz stoppen: mehrere unabhaengige Perspektiven vergleichen, vor allem bei Zeitbezug, geopolitischem Framing, sozialer Meinung oder widerspruechlichen Rollen.
+10. Vor der Synthese deepdive.pack(crawl_id) ausfuehren, danach zwingend deepdive.blocks(crawl_id), damit Quellen/Timeline/Claims/Kausalitaeten als Bausteine vorbereitet sind. rag.suchen nur nutzen, wenn das Pack fehlt oder eine konkrete alte Notiz gesucht wird.
+11. Ergebnis aus den vorbereiteten Blocks liefern: aktueller Stand, Timeline, Akteure, Kausalketten/Mechanismen, Perspektivenkontrast, gesicherte Punkte, Widersprueche, Unsicherheiten, Quellenliste mit Herkunft/Alter, offene Leads.
+Regeln: Ein Toolcall pro Antwort. Bei Toolfehlern anders versuchen. Die Finalantwort ist nie ein rohes SUCCESS/Tool-Ergebnis und bildet keine eigene Meinung, sondern legt Informationslage und Kausalitaetsbehauptungen offen."""
 
 
 class ReadableHtmlParser(HTMLParser):
@@ -195,7 +231,7 @@ class ReadableHtmlParser(HTMLParser):
     def readable(self):
         title = _collapse_ws(" ".join(self.title_parts))
         text = _normalize_text("\n".join(self.text_parts))
-        dates = _unique(self.date_candidates + _extract_dates(text))[:14]
+        dates = [value for value in _unique(self.date_candidates + _extract_dates(text)) if not _looks_like_tracking_id(value)][:14]
         links = []
         seen = set()
         for link in self.links:
@@ -222,6 +258,24 @@ def handle_tool(tool_name, params, config):
             return {"success": False, "data": "Kein Thema angegeben."}
         return _crawl(query, config if isinstance(config, dict) else {})
 
+    if tool_name == "deepdive.quick":
+        query = _first_param(params, "query")
+        if not query:
+            return {"success": False, "data": "Kein Thema angegeben."}
+        return _crawl(query, _quick_config(config if isinstance(config, dict) else {}))
+
+    if tool_name == "deepdive.pack":
+        needle = _first_param(params, "crawl_id_or_query") or _first_param(params, "query")
+        if not needle:
+            return {"success": False, "data": "Keine crawl_id/Query angegeben."}
+        return _pack(needle, config if isinstance(config, dict) else {})
+
+    if tool_name == "deepdive.blocks":
+        needle = _first_param(params, "crawl_id_or_query") or _first_param(params, "query")
+        if not needle:
+            return {"success": False, "data": "Keine crawl_id/Query angegeben."}
+        return _blocks(needle, config if isinstance(config, dict) else {})
+
     if tool_name == "deepdive.workflow":
         query = _first_param(params, "query") or "(kein Thema angegeben)"
         return {"success": True, "data": f"Thema: {query}\n\n{WORKFLOW}"}
@@ -244,24 +298,59 @@ def handle_tool(tool_name, params, config):
 
 
 def _crawl(query, config):
-    max_sources = _clamp_int(config.get("max_sources"), 8, 1, 12)
-    max_search_queries = _clamp_int(config.get("max_search_queries"), 6, 1, 10)
-    max_total_pages = _clamp_int(config.get("max_total_pages"), 20, max_sources, 30)
+    profile = str(config.get("_deepdive_profile") or "crawl")
+    max_sources = _clamp_int(config.get("max_sources"), 8, 1, 16)
+    max_search_queries = _clamp_int(config.get("max_search_queries"), 6, 1, 16)
+    parallel_search_workers = _clamp_int(config.get("parallel_search_workers"), 6, 1, 10)
+    parallel_fetch_workers = _clamp_int(config.get("parallel_fetch_workers"), 4, 1, 12)
+    max_total_pages = _clamp_int(config.get("max_total_pages"), 20, max_sources, 36)
     max_follow_links = _clamp_int(config.get("max_follow_links_per_source"), 3, 0, 6)
     max_depth = _clamp_int(config.get("max_depth"), 2, 0, 2)
     max_derived_queries = _clamp_int(config.get("max_derived_queries"), 4, 0, 8)
+    max_branch_queries = _clamp_int(config.get("max_branch_queries"), 8, 0, 12)
+    min_branch_sources = _clamp_int(config.get("min_branch_sources"), 6, 0, 10)
+    enable_subcrawls = _cfg_bool(config.get("enable_subcrawls"), True)
+    max_subcrawls = _clamp_int(config.get("max_subcrawls"), 4, 0, 8)
+    subcrawl_sources_per_topic = _clamp_int(config.get("subcrawl_sources_per_topic"), 2, 1, 4)
+    subcrawl_min_score = _clamp_int(config.get("subcrawl_min_score"), 6, 0, 50)
     timeout_s = _clamp_int(config.get("timeout_s"), 6, 3, 12)
-    python_timeout_s = _clamp_int(config.get("python_timeout_s"), 120, 20, 180)
+    python_timeout_s = _clamp_int(config.get("python_timeout_s"), 300, 20, 300)
     max_chars = _clamp_int(config.get("max_chars_per_source"), 6000, 1200, 16000)
     enable_reddit_sources = _cfg_bool(config.get("enable_reddit_sources"), False)
     reddit_max_threads = _clamp_int(config.get("reddit_max_threads"), 3, 0, 6)
     enable_grok_search_sources = _cfg_bool(config.get("enable_grok_search_sources"), False)
     grok_search_max_sources = _clamp_int(config.get("grok_search_max_sources"), 8, 0, 20)
     allow_private = bool(config.get("allow_private_networks") or False)
+    full_deepdive = profile != "quick"
+    if full_deepdive:
+        max_sources = max(max_sources, 12)
+        max_search_queries = max(max_search_queries, 16)
+        max_total_pages = max(max_total_pages, 36)
+        max_follow_links = max(max_follow_links, 4)
+        max_derived_queries = max(max_derived_queries, 6)
+        max_branch_queries = max(max_branch_queries, 8)
+        min_branch_sources = max(min_branch_sources, 6)
+        if enable_subcrawls:
+            max_subcrawls = max(max_subcrawls, 4)
+            subcrawl_sources_per_topic = max(subcrawl_sources_per_topic, 2)
+        parallel_search_workers = min(max(parallel_search_workers, 8), max_search_queries)
+        parallel_fetch_workers = min(max(parallel_fetch_workers, 6), max_total_pages)
+        if _cfg_bool(config.get("deep_full_auto_reddit_sources"), True):
+            enable_reddit_sources = True
+            reddit_max_threads = max(reddit_max_threads, 3)
+        if _cfg_bool(config.get("deep_full_auto_grok_search_sources"), True) and _grok_search_likely_available(config):
+            enable_grok_search_sources = True
+            grok_search_max_sources = max(grok_search_max_sources, 8)
+    original_query = query
+    query, query_normalization = _normalize_current_query(query)
     deadline = time.monotonic() + max(10, python_timeout_s - 5)
+    subcrawl_reserve_s = 0
+    if profile != "quick" and enable_subcrawls and max_subcrawls > 0:
+        subcrawl_reserve_s = max(40, min(90, int(python_timeout_s * 0.35)))
     crawl_started_at = datetime.now(timezone.utc)
     crawl_started_iso = crawl_started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     crawl_id = "dd-" + crawl_started_at.strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
+    research_plan = _impact_research_plan(query, max_search_queries, full_deepdive, config, max_branch_queries)
     trace = []
     tool_trace = []
     _trace(
@@ -269,95 +358,138 @@ def _crawl(query, config):
         "crawl.start",
         {
             "query": query,
+            "profile": profile,
             "max_sources": max_sources,
             "max_search_queries": max_search_queries,
+            "parallel_search_workers": parallel_search_workers,
+            "parallel_fetch_workers": parallel_fetch_workers,
             "max_total_pages": max_total_pages,
             "max_follow_links_per_source": max_follow_links,
             "max_depth": max_depth,
             "max_derived_queries": max_derived_queries,
+            "max_branch_queries": max_branch_queries,
+            "min_branch_sources": min_branch_sources,
+            "enable_subcrawls": enable_subcrawls,
+            "max_subcrawls": max_subcrawls,
+            "subcrawl_sources_per_topic": subcrawl_sources_per_topic,
+            "subcrawl_min_score": subcrawl_min_score,
+            "subcrawl_reserve_s": subcrawl_reserve_s,
             "timeout_s": timeout_s,
             "python_timeout_s": python_timeout_s,
             "enable_reddit_sources": enable_reddit_sources,
             "enable_grok_search_sources": enable_grok_search_sources,
+            "enable_branching_causality_plan": _cfg_bool(config.get("enable_branching_causality_plan"), True),
         },
     )
+    if query_normalization:
+        _trace(
+            trace,
+            "query.normalized_currentness",
+            {
+                "original_query": original_query,
+                "normalized_query": query,
+                **query_normalization,
+            },
+        )
+    _trace(trace, "research.plan", research_plan)
     _tool_trace(
         tool_trace,
         "deepdive.crawl",
         "START",
         {
             "query": query,
+            "profile": profile,
+            "impact_languages": [item.get("language") for item in research_plan.get("impact_plan", [])],
+            "branch_queries": len(research_plan.get("branch_queries", [])),
             "max_search_queries": max_search_queries,
+            "parallel_fetch_workers": parallel_fetch_workers,
             "max_total_pages": max_total_pages,
         },
     )
 
-    search_queries = _build_search_queries(query, max_search_queries)
+    search_queries = research_plan.get("search_queries") or _build_search_queries(query, max_search_queries)
+    branch_lookup = _branch_query_lookup(research_plan)
+    impact_lookup = _impact_query_lookup(research_plan)
     executed_searches = []
     search_errors = []
     candidates = []
     candidate_urls = set()
 
-    for search_query in search_queries:
-        if time.monotonic() > deadline:
-            search_errors.append("Zeitbudget vor Ende der Seed-Suche erreicht")
-            _trace(trace, "crawl.deadline", {"stage": "seed_search"})
-            break
+    seed_deadline = deadline
+    if full_deepdive and enable_subcrawls and max_subcrawls > 0 and subcrawl_reserve_s > 0:
+        seed_deadline = min(deadline, max(time.monotonic() + 10, deadline - subcrawl_reserve_s))
+        _trace(
+            trace,
+            "subcrawl.seed_reserve",
+            {
+                "seed_budget_s": round(max(0, seed_deadline - time.monotonic()), 1),
+                "subcrawl_reserve_s": subcrawl_reserve_s,
+            },
+        )
+    seed_results = _run_seed_searches(search_queries, timeout_s, config, seed_deadline, parallel_search_workers, trace, tool_trace)
+    for item in seed_results:
+        search_query = item["query"]
+        search_tool = item["tool"]
         executed_searches.append(search_query)
-        search_tool = _configured_search_tool_name(config)
-        try:
-            _trace(trace, "search.start", {"query": search_query, "engine": search_tool})
-            search_tool, raw_results, search_note = _search_web(search_query, 10, timeout_s, config)
-            accepted = 0
-            for result in raw_results:
-                url = _clean_url(result.get("url") or "")
-                if not url or url in candidate_urls:
-                    continue
-                if not _is_allowed_http_url(url, allow_private):
-                    continue
-                candidate_urls.add(url)
-                result["search_query"] = search_query
-                result["depth"] = 0
-                result["parent_url"] = ""
+        if item.get("error"):
+            search_errors.append(f"{search_query}: {item['error']}")
+            continue
+        raw_results = item.get("results") or []
+        branch_item = branch_lookup.get(_query_key(search_query))
+        impact_item = impact_lookup.get(_query_key(search_query))
+        accepted = 0
+        for result in raw_results:
+            url = _clean_url(result.get("url") or "")
+            if not url or url in candidate_urls:
+                continue
+            if not _is_allowed_http_url(url, allow_private):
+                continue
+            if _skip_link(url, f"{result.get('title', '')} {result.get('snippet', '')}"):
+                continue
+            candidate_urls.add(url)
+            result["search_query"] = search_query
+            result["depth"] = 0
+            result["parent_url"] = ""
+            if branch_item:
+                result["branch_name"] = branch_item.get("branch") or "branch"
+                result["branch_reason"] = branch_item.get("reason") or ""
+                result["discovery_method"] = "branch_search"
+                result["discovery_reason"] = f"Branch-Suchtreffer fuer {result['branch_name']}: {search_query}"
+            else:
                 result["discovery_method"] = "search"
                 result["discovery_reason"] = f"Suchtreffer fuer: {search_query}"
-                candidates.append(result)
-                accepted += 1
-            _trace(
-                trace,
-                "search.done",
-                {
-                    "query": search_query,
-                    "engine": search_tool,
-                    "results": len(raw_results),
-                    "accepted": accepted,
-                    **({"note": search_note} if search_note else {}),
-                },
-            )
-            _tool_trace(
-                tool_trace,
-                search_tool,
-                "OK",
-                {
-                    "phase": "seed",
-                    "query": search_query,
-                    "engine": search_tool,
-                    "results": len(raw_results),
-                    "accepted": accepted,
-                },
-            )
-        except Exception as exc:
-            search_errors.append(f"{search_query}: {exc}")
-            _trace(trace, "search.fail", {"query": search_query, "error": str(exc)})
-            _tool_trace(
-                tool_trace,
-                search_tool,
-                "FAIL",
-                {"phase": "seed", "query": search_query, "engine": search_tool, "error": str(exc)},
-            )
+            if impact_item:
+                result["impact_language"] = impact_item.get("language") or ""
+                result["impact_country"] = impact_item.get("country") or ""
+                result["impact_role"] = impact_item.get("role") or ""
+            candidates.append(result)
+            accepted += 1
+        _trace(
+            trace,
+            "search.accept",
+            {
+                "query": search_query,
+                "engine": search_tool,
+                "results": len(raw_results),
+                "accepted": accepted,
+            },
+        )
+        _tool_trace(
+            tool_trace,
+            search_tool,
+            "ACCEPT",
+            {
+                "phase": "seed",
+                "query": search_query,
+                "results": len(raw_results),
+                "accepted": accepted,
+            },
+        )
 
     # ── RSS-Integration: RSS-Quellen als zusätzliche Kandidaten ──
     rss_candidates_added = 0
+    rss_packet = ""
+    rss_urls = []
     try:
         rss_module = _load_rss_module()
         rss_source_list = rss_module._fuer_deepdive(json.dumps({
@@ -371,9 +503,12 @@ def _crawl(query, config):
         }), config)
         # Nur echte Item-URLs extrahieren – nicht den ganzen RSS-Block in den LLM-Kontext kippen.
         if rss_source_list:
+            rss_packet = str(rss_source_list or "")
             rss_urls = _extract_rss_item_urls(rss_source_list)
             for rss_url in rss_urls[:8]:
                 if rss_url not in candidate_urls and _is_allowed_http_url(rss_url, allow_private):
+                    if _skip_link(rss_url, ""):
+                        continue
                     candidate_urls.add(rss_url)
                     candidates.append({
                         "url": rss_url,
@@ -392,6 +527,27 @@ def _crawl(query, config):
         _tool_trace(tool_trace, "rss_verwaltung.fuer_deepdive", "OK", {"added_candidates": rss_candidates_added})
 
     external_packets = []
+    if rss_packet and rss_urls:
+        stored, storage_msg = _store_rag_note(
+            _external_packet_note(crawl_id, query, "rss_verwaltung.fuer_deepdive", rss_packet),
+            config,
+        )
+        external_packets.append(("rss_verwaltung.fuer_deepdive", len(rss_urls), stored, storage_msg))
+        _trace(
+            trace,
+            "rss.packet.store",
+            {"urls": len(rss_urls), "stored": stored, "rag_id": _stored_id(storage_msg), "message": storage_msg},
+        )
+        _tool_trace(
+            tool_trace,
+            "rag.speichern",
+            "OK" if stored else "FAIL",
+            {
+                "source_url": "rss_verwaltung.fuer_deepdive",
+                "rag_id": _stored_id(storage_msg),
+                "message": storage_msg,
+            },
+        )
     if enable_reddit_sources and reddit_max_threads > 0:
         try:
             packet, reddit_urls = _collect_reddit_sources(query, reddit_max_threads, config)
@@ -430,6 +586,8 @@ def _crawl(query, config):
             added = 0
             for grok_url in grok_urls[:grok_search_max_sources]:
                 if grok_url not in candidate_urls and _is_allowed_http_url(grok_url, allow_private):
+                    if _skip_link(grok_url, ""):
+                        continue
                     candidate_urls.add(grok_url)
                     candidates.append({
                         "title": "Grok Search Source",
@@ -452,7 +610,7 @@ def _crawl(query, config):
             _trace(trace, "grok_search.fail", {"error": str(exc)[:220]})
             _tool_trace(tool_trace, "grok_search", "FAIL", {"error": str(exc)[:220]})
 
-    selected = _select_sources(candidates, max_sources, query)
+    selected = _select_sources(candidates, max_sources, query, min_branch_sources=min_branch_sources)
     _trace(
         trace,
         "sources.select",
@@ -462,6 +620,44 @@ def _crawl(query, config):
             "urls": [item["url"] for item in selected],
         },
     )
+    subcrawl_plan = []
+    if full_deepdive and enable_subcrawls and max_subcrawls > 0:
+        planning_context = []
+        for item in (selected + candidates[:24]):
+            planning_context.append(
+                {
+                    "title": item.get("title") or "",
+                    "branch_name": item.get("branch_name") or "",
+                    "analysis_text": _collapse_ws(
+                        " ".join(
+                            [
+                                str(item.get("title") or ""),
+                                str(item.get("snippet") or ""),
+                                str(item.get("search_query") or ""),
+                                str(item.get("branch_name") or ""),
+                                str(item.get("branch_reason") or ""),
+                                str(item.get("discovery_reason") or ""),
+                            ]
+                        )
+                    )[:3000],
+                }
+            )
+        subcrawl_plan = _plan_subcrawls(
+            query,
+            planning_context,
+            research_plan,
+            max_subcrawls=max_subcrawls,
+            min_score=subcrawl_min_score,
+        )
+        _trace(
+            trace,
+            "subcrawl.plan",
+            {
+                "phase": "pre_fetch",
+                "candidates": len(subcrawl_plan),
+                "selected": [f"{item.get('score')}:{item.get('topic')}" for item in subcrawl_plan],
+            },
+        )
     crawl_queue = list(selected)
     known_urls = {item["url"] for item in crawl_queue}
     visited_urls = set()
@@ -470,12 +666,45 @@ def _crawl(query, config):
     followed_links = 0
     derived_queries_done = 0
     derived_sources_added = 0
+    subcrawl_sources_added = 0
 
     while crawl_queue and len(fetched) < max_total_pages:
         if time.monotonic() > deadline:
             failed.append("Zeitbudget erreicht, Crawl begrenzt beendet")
             _trace(trace, "crawl.deadline", {"stage": "fetch_loop", "fetched": len(fetched)})
             break
+        subcrawl_yield_reason = ""
+        if full_deepdive and enable_subcrawls and max_subcrawls > 0 and subcrawl_plan:
+            main_before_subcrawl_cap = max(4, min(10, max_sources))
+            if len(fetched) >= main_before_subcrawl_cap:
+                subcrawl_yield_reason = "main_page_cap"
+            elif subcrawl_reserve_s > 0 and len(fetched) >= 1 and time.monotonic() > deadline - subcrawl_reserve_s:
+                subcrawl_yield_reason = "time_reserve"
+        if subcrawl_yield_reason:
+            failed.append("Hauptcrawl zugunsten Subcrawl-Zeitreserve begrenzt")
+            _trace(
+                trace,
+                "subcrawl.reserve",
+                {
+                    "fetched": len(fetched),
+                    "queued": len(crawl_queue),
+                    "reserve_s": subcrawl_reserve_s,
+                    "reason": subcrawl_yield_reason,
+                    "stage": "fetch_loop",
+                },
+            )
+            break
+        if parallel_fetch_workers > 1:
+            _prefetch_queue(
+                crawl_queue,
+                visited_urls,
+                timeout_s,
+                parallel_fetch_workers,
+                deadline,
+                max_total_pages - len(fetched),
+                trace,
+                tool_trace,
+            )
         result = crawl_queue.pop(0)
         url = result["url"]
         if url in visited_urls:
@@ -494,8 +723,37 @@ def _crawl(query, config):
                     "parent_url": result.get("parent_url") or "",
                 },
             )
-            page_html = _fetch_url(url, timeout_s)
-            page = _parse_page(url, page_html)
+            prefetch_error = result.pop("_prefetch_error", "")
+            is_youtube = _is_youtube_url(url)
+            page_html = ""
+            if prefetch_error and not is_youtube:
+                raise RuntimeError(prefetch_error)
+            if is_youtube and bool(config.get("enable_youtube_transcripts", True)):
+                try:
+                    page = _youtube_transcript_page(url, query, config, max_chars)
+                    page_html = ""
+                    _trace(trace, "youtube_transcript.use", {"url": url, "text_chars": len(page.get("text") or "")})
+                    _tool_trace(
+                        tool_trace,
+                        "youtube_transcript.fetch",
+                        "OK",
+                        {"url": url, "text_chars": len(page.get("text") or "")},
+                    )
+                except Exception as exc:
+                    _trace(trace, "youtube_transcript.fail", {"url": url, "error": str(exc)[:220]})
+                    _tool_trace(tool_trace, "youtube_transcript.fetch", "FAIL", {"url": url, "error": str(exc)[:220]})
+                    if prefetch_error:
+                        raise RuntimeError(prefetch_error)
+                    page = None
+            else:
+                page = None
+            if page is None and "_prefetched_html" in result:
+                page_html = result.pop("_prefetched_html") or ""
+                _trace(trace, "fetch.prefetch_use", {"url": url, "html_chars": len(page_html)})
+            elif page is None:
+                page_html = _fetch_url(url, timeout_s)
+            if page is None:
+                page = _parse_page(url, page_html)
             if not page["text"] and not page["title"]:
                 failed.append(f"{url} -> kein lesbarer Text")
                 _trace(trace, "fetch.empty", {"url": url, "html_chars": len(page_html)})
@@ -506,17 +764,54 @@ def _crawl(query, config):
                     {"url": url, "depth": depth, "html_chars": len(page_html)},
                 )
                 continue
+            if _low_value_page(url, page):
+                failed.append(f"{url} -> low_value_page")
+                _trace(trace, "fetch.low_value", {"url": url, "title": page.get("title") or ""})
+                continue
             relevance_score = _relevance_score(query, result, page)
             reliability = _reliability_label(url)
             recency = _recency_label(page.get("dates") or [])
+            if _stale_for_current_query(query, page.get("dates") or []):
+                failed.append(f"{url} -> stale_source_for_current_query ({recency})")
+                _trace(
+                    trace,
+                    "fetch.stale_skip",
+                    {
+                        "url": url,
+                        "title": page["title"] or result.get("title") or "",
+                        "recency_label": recency,
+                        "query": query,
+                    },
+                )
+                _tool_trace(
+                    tool_trace,
+                    "http.get",
+                    "SKIP",
+                    {
+                        "url": url,
+                        "reason": "stale_source_for_current_query",
+                        "recency_label": recency,
+                    },
+                )
+                continue
             key_passages = _key_passages(query, page.get("text") or "", page.get("dates") or [])
             causality_hints = _causality_hints(query, page.get("text") or "", key_passages)
+            claim_hints = _claim_hints(query, page.get("text") or "", key_passages)
+            event_hints = _event_hints(query, page.get("text") or "", page.get("dates") or [])
+            lead_hints = _lead_hints(query, page.get("text") or "", page.get("links") or [])
+            contrast_hints = _contrast_hints(query, page.get("text") or "", key_passages)
+            perspective = _source_perspective(result, page, research_plan)
             page_role = _page_role(url, result, page, query)
             result["_relevance_score"] = relevance_score
             result["_reliability"] = reliability
             result["_recency_label"] = recency
             result["_key_passages"] = key_passages
             result["_causality_hints"] = causality_hints
+            result["_claim_hints"] = claim_hints
+            result["_event_hints"] = event_hints
+            result["_lead_hints"] = lead_hints
+            result["_contrast_hints"] = contrast_hints
+            result["_perspective"] = perspective
             result["_page_role"] = page_role
             note = _crawl_note(crawl_id, query, result, page, max_chars)
             stored, storage_msg = _store_rag_note(note, config)
@@ -589,10 +884,16 @@ def _crawl(query, config):
                     "relevance_score": relevance_score,
                     "reliability": reliability,
                     "recency_label": recency,
+                    "source_language": perspective.get("language", ""),
+                    "source_country": perspective.get("country", ""),
+                    "perspective_role": perspective.get("role", ""),
+                    "branch_name": result.get("branch_name") or "",
+                    "branch_reason": result.get("branch_reason") or "",
                     "page_role": page_role,
                     "stored": stored,
                     "storage_msg": storage_msg,
                     "chars": len(page["text"]),
+                    "analysis_text": _collapse_ws(" ".join([page["title"] or result.get("title") or ""] + key_passages[:4] + causality_hints[:3] + claim_hints[:3]))[:3000],
                 }
             )
 
@@ -637,6 +938,8 @@ def _crawl(query, config):
                                 "discovery_method": "source_link",
                                 "discovery_reason": link.get("reason") or "relevanter Link in Quelle",
                                 "link_score": link.get("score", 0),
+                                "branch_name": result.get("branch_name") or "",
+                                "branch_reason": result.get("branch_reason") or "",
                             }
                         )
                         followed_links += 1
@@ -714,12 +1017,16 @@ def _crawl(query, config):
                                 continue
                             if not _is_allowed_http_url(durl, allow_private):
                                 continue
+                            if _skip_link(durl, f"{dres.get('title', '')} {dres.get('snippet', '')}"):
+                                continue
                             dres["url"] = durl
                             dres["search_query"] = derived_query
                             dres["depth"] = depth + 1
                             dres["parent_url"] = url
                             dres["discovery_method"] = "derived_search"
                             dres["discovery_reason"] = f"Nachsuche aus Quelle: {page['title'] or url}"
+                            dres["branch_name"] = result.get("branch_name") or ""
+                            dres["branch_reason"] = result.get("branch_reason") or ""
                             derived_candidates.append(dres)
                         selected_derived = _select_sources(derived_candidates, 2, derived_query)
                         _trace(
@@ -791,6 +1098,44 @@ def _crawl(query, config):
                 {"url": url, "depth": depth, "error": str(exc)},
             )
 
+    if full_deepdive and enable_subcrawls and max_subcrawls > 0 and time.monotonic() < deadline:
+        if not subcrawl_plan:
+            subcrawl_plan = _plan_subcrawls(
+                query,
+                fetched,
+                research_plan,
+                max_subcrawls=max_subcrawls,
+                min_score=subcrawl_min_score,
+            )
+            _trace(
+                trace,
+                "subcrawl.plan",
+                {
+                    "phase": "post_fetch",
+                    "candidates": len(subcrawl_plan),
+                    "selected": [f"{item.get('score')}:{item.get('topic')}" for item in subcrawl_plan],
+                },
+            )
+        if subcrawl_plan:
+            subcrawl_added, subcrawl_failures = _run_subcrawls(
+                crawl_id,
+                query,
+                subcrawl_plan,
+                fetched,
+                known_urls,
+                config,
+                timeout_s,
+                max_chars,
+                allow_private,
+                research_plan,
+                trace,
+                tool_trace,
+                deadline,
+                subcrawl_sources_per_topic,
+            )
+            subcrawl_sources_added = subcrawl_added
+            failed.extend(subcrawl_failures)
+
     _trace(
         trace,
         "crawl.finish",
@@ -800,6 +1145,8 @@ def _crawl(query, config):
             "followup_links_queued": followed_links,
             "derived_queries_run": derived_queries_done,
             "derived_sources_queued": derived_sources_added,
+            "subcrawls_planned": len(subcrawl_plan),
+            "subcrawl_sources_added": subcrawl_sources_added,
             "failed": len(failed),
             "search_errors": len(search_errors),
         },
@@ -813,6 +1160,8 @@ def _crawl(query, config):
             "seed_sources": len(selected),
             "followup_links_queued": followed_links,
             "derived_queries_run": derived_queries_done,
+            "subcrawls_planned": len(subcrawl_plan),
+            "subcrawl_sources_added": subcrawl_sources_added,
             "failed": len(failed),
         },
     )
@@ -823,6 +1172,8 @@ def _crawl(query, config):
         fetched,
         failed,
         search_errors,
+        research_plan,
+        subcrawl_plan,
         trace,
         tool_trace,
     )
@@ -848,12 +1199,18 @@ def _crawl(query, config):
         f"crawl_id: {crawl_id}",
         f"crawl_started_at_utc: {crawl_started_iso}",
         f"query: {query}",
+        f"profile: {profile}",
+        f"impact_languages: {', '.join(item.get('language', '') for item in research_plan.get('impact_plan', [])) or '-'}",
+        f"impact_regions: {', '.join(_unique([item.get('country', '') for item in research_plan.get('impact_plan', []) if item.get('country')])) or '-'}",
+        f"branch_queries: {', '.join(research_plan.get('branch_queries', [])[:8]) or '-'}",
         f"searched: {', '.join(executed_searches)}",
         f"candidates: {len(candidates)}",
         f"seed_sources: {len(selected)}",
         f"followup_links_queued: {followed_links}",
         f"derived_queries_run: {derived_queries_done}",
         f"derived_sources_queued: {derived_sources_added}",
+        f"subcrawls_planned: {len(subcrawl_plan)}",
+        f"subcrawl_sources_added: {subcrawl_sources_added}",
         f"sources_fetched: {len(fetched)}/{max_total_pages}",
         f"rag_pool: {str(config.get('rag_pool') or 'DeepDive')}",
         f"manifest: {manifest_msg}",
@@ -865,7 +1222,7 @@ def _crawl(query, config):
         for idx, item in enumerate(fetched, 1):
             dates = "; ".join(item["dates"][:5]) if item["dates"] else "kein Datum erkannt"
             lines.append(
-                f"{idx}. role={item.get('page_role', 'source')} | depth={item['depth']} {item['discovery_method']} | score={item['relevance_score']} | {item['reliability']} | {item['recency_label']} | {item['title']} | {item['url']} | dates: {dates} | {item['storage_msg']}"
+                f"{idx}. role={item.get('page_role', 'source')} | branch={item.get('branch_name') or '-'} | subcrawl={item.get('subcrawl_id') or '-'} {item.get('subcrawl_topic') or ''} | perspective={item.get('perspective_role') or '-'} {item.get('source_country') or ''}/{item.get('source_language') or ''} | depth={item['depth']} {item['discovery_method']} | score={item['relevance_score']} | {item['reliability']} | {item['recency_label']} | {item['title']} | {item['url']} | dates: {dates} | {item['storage_msg']}"
             )
     else:
         lines.append("- keine Quelle erfolgreich verarbeitet")
@@ -890,12 +1247,1036 @@ def _crawl(query, config):
     lines.extend(
         [
             "",
-            f"NEXT_STEP: Jetzt rag.suchen({crawl_id} {query}) ausfuehren und daraus ein Lagebild bauen. Diese Crawl-ID begrenzt die Synthese auf frisch geholte Quellen.",
-            "WICHTIG: Nutze die RAG-Treffer als Arbeitsbasis, aber bewerte sie: Quelle, Alter, Stand, Relevanz, Widersprueche. Alte Rollen aktiv aufloesen; neue Quellen schlagen alte Rollen.",
+            f"NEXT_STEP: Jetzt deepdive.pack({crawl_id}) ausfuehren, danach deepdive.blocks({crawl_id}). Erst aus den vorbereiteten Bausteinen das Lagebild bauen.",
+            "WICHTIG: Nutze die RAG-Treffer als Arbeitsbasis, aber bewerte sie: Ereignisse, Akteure, Claims, Leads, Kausalketten, Perspektiven/Sprache/Land, Alter, Relevanz und Widersprueche. Social/Kommentar-Signale sind Leads, keine Belege.",
         ]
     )
 
     return {"success": bool(fetched), "data": "\n".join(lines)}
+
+
+def _quick_config(config):
+    cfg = dict(config or {})
+    quick_sources = _clamp_int(cfg.get("quick_max_sources"), 4, 1, 8)
+    quick_queries = _clamp_int(cfg.get("quick_max_search_queries"), 3, 1, 6)
+    quick_pages = _clamp_int(cfg.get("quick_max_total_pages"), 6, quick_sources, 12)
+    cfg["max_sources"] = quick_sources
+    cfg["max_search_queries"] = quick_queries
+    cfg["parallel_search_workers"] = min(_clamp_int(cfg.get("parallel_search_workers"), 6, 1, 10), quick_queries)
+    cfg["parallel_fetch_workers"] = min(_clamp_int(cfg.get("parallel_fetch_workers"), 4, 1, 12), quick_pages)
+    cfg["max_total_pages"] = quick_pages
+    cfg["max_follow_links_per_source"] = min(_clamp_int(cfg.get("max_follow_links_per_source"), 3, 0, 6), 1)
+    cfg["max_depth"] = min(_clamp_int(cfg.get("max_depth"), 2, 0, 2), 1)
+    cfg["max_derived_queries"] = min(_clamp_int(cfg.get("max_derived_queries"), 4, 0, 8), 1)
+    cfg["python_timeout_s"] = _clamp_int(cfg.get("quick_python_timeout_s"), 75, 20, 120)
+    cfg["reddit_max_threads"] = min(_clamp_int(cfg.get("reddit_max_threads"), 3, 0, 6), 2)
+    cfg["grok_search_max_sources"] = min(_clamp_int(cfg.get("grok_search_max_sources"), 8, 0, 20), 4)
+    cfg["_deepdive_profile"] = "quick"
+    return cfg
+
+
+def _plan_subcrawls(query, fetched, research_plan, max_subcrawls=4, min_score=6):
+    """Return scored side-topic candidates; top items with status=run are fetched."""
+    max_subcrawls = max(0, int(max_subcrawls or 0))
+    if max_subcrawls <= 0:
+        return []
+    corpus = _collapse_ws(
+        " ".join(
+            [query]
+            + [str(item.get("title") or "") for item in fetched or []]
+            + [str(item.get("analysis_text") or "") for item in fetched or []]
+            + [str(item.get("branch_name") or "") for item in fetched or []]
+        )
+    ).lower()
+    low = (query + " " + corpus[:5000]).lower()
+    base_terms = set(_important_words(query, 14))
+    candidates = []
+
+    def add(topic, search_query, reason, branch_name="", base_score=0):
+        search_query = _collapse_ws(search_query)
+        if not search_query:
+            return
+        terms = _important_words(search_query, 14)
+        side_terms = [term for term in terms if term not in base_terms]
+        score = int(base_score or 0)
+        score += sum(3 for term in side_terms if term in corpus)
+        score += sum(1 for term in terms if term in corpus)
+        if branch_name and branch_name in corpus:
+            score += 4
+        if any(word in search_query.lower() for word in ("nvidia", "tsmc", "huawei", "asml", "semiconductor", "chip", "export control")):
+            if any(word in low for word in ("china", "taiwan", "trump", "handelskrieg", "trade war", "tariff", "zoll")):
+                score += 20
+        if any(word in search_query.lower() for word in ("rubio", "vance", "bessent", "lutnick", "greer", "xi jinping")):
+            if any(word in low for word in ("china", "taiwan", "trump")):
+                score += 16
+        if any(word in search_query.lower() for word in ("japan", "south korea", "philippines", "alliance", "arms package")):
+            if "taiwan" in low or "china" in low:
+                score += 12
+        candidates.append(
+            {
+                "topic": topic,
+                "query": search_query,
+                "reason": reason,
+                "branch": branch_name or topic,
+                "score": score,
+            }
+        )
+
+    trade_or_chip_context = (
+        any(word in low for word in ("handelskrieg", "trade war", "tariff", "zoll", "export control", "export controls", "sanction", "sanktion"))
+        or any(word in low for word in ("nvidia", "tsmc", "huawei", "asml", "semiconductor", "chip", "ai compute", "rare earth", "supply chain", "lieferkette"))
+    )
+    if trade_or_chip_context and any(word in low for word in ("china", "taiwan", "xi", "trump")):
+        add(
+            "Chipkrieg / AI-Compute",
+            "Trump China Nvidia TSMC Huawei ASML export controls AI chips 2026",
+            "Strukturell hoher Zusammenhang: China/Taiwan/Trump laeuft ueber Chips, KI-Compute und Exportkontrollen.",
+            "subcrawl_chip_war",
+            32,
+        )
+        add(
+            "Politiker- und Verhandlergraph",
+            "Trump Xi Jinping Marco Rubio JD Vance Scott Bessent Howard Lutnick Jamieson Greer China Taiwan 2026",
+            "Politische Hebel und Aussagen koennen die kausale Linie hinter Handel, Taiwan und Sanktionen erklaeren.",
+            "subcrawl_policy_actors",
+            28,
+        )
+        add(
+            "Taiwan und Allianzen",
+            "Trump Xi Taiwan arms package Japan South Korea Philippines US China security 2026",
+            "Taiwan ist nicht nur bilaterales Thema, sondern haengt an Waffenpaketen, Allianzen und regionaler Abschreckung.",
+            "subcrawl_taiwan_alliances",
+            22,
+        )
+        add(
+            "Zoelle, Lieferketten und Seltene Erden",
+            "Trump China tariffs rare earths supply chains semiconductors export controls 2026",
+            "Handelskrieg wirkt kausal ueber Lieferketten, Seltene Erden, Zoelle und Tech-Exportkontrollen.",
+            "subcrawl_supply_chain",
+            20,
+        )
+
+    uap_context = any(word in low for word in ("uap", "ufo", "unidentified anomalous", "unidentified aerial", "alien", "aliens", "disclosure", "aaro", "pursue"))
+    if uap_context:
+        add(
+            "Offizielle UAP-Release-Quellen",
+            "war.gov UFO PURSUE AARO UAP release records May 2026 official",
+            "Primaerquellen und offizielle Release-Daten muessen vor Meta-Kommentaren geprueft werden.",
+            "subcrawl_uap_official_records",
+            30,
+        )
+        add(
+            "Internationale UAP-Behoerden und Archive",
+            "France GEIPAN UK UFO files Japan UAP committee China UAP Russia Soviet UFO archives",
+            "Internationale Kontraste sollen ueber Laender/Behoerden statt ueber US-only Narrative laufen.",
+            "subcrawl_uap_international_archives",
+            24,
+        )
+        add(
+            "Hearings, Whistleblower und Meldewege",
+            "David Grusch Ryan Graves AARO UAP reporting Congress hearing non-human biologics source",
+            "Whistleblower-Claims muessen als Aussagen/Behauptungen markiert und gegen belastbare Berichte abgegrenzt werden.",
+            "subcrawl_uap_whistleblower_reporting",
+            22,
+        )
+        add(
+            "Wissenschaftliche Kritik und Datenqualitaet",
+            "NASA AARO SCU UAP scientific analysis transparency data quality release 2026",
+            "Kritische Einordnung der Datenqualitaet verhindert, dass Disclosure-PR als Beweis missverstanden wird.",
+            "subcrawl_uap_science_skepticism",
+            20,
+        )
+
+    for item in (research_plan or {}).get("branch_plan", []) or []:
+        branch = item.get("branch") or "branch"
+        add(
+            branch,
+            item.get("query") or "",
+            item.get("reason") or "Branch-Kandidat aus Research-Plan",
+            branch,
+            6 if branch.startswith(("chip_", "ai_", "china_", "taiwan_", "sanctions_")) else 0,
+        )
+
+    deduped = []
+    seen = set()
+    for item in sorted(candidates, key=lambda entry: entry.get("score", 0), reverse=True):
+        key = _query_key(item.get("query") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+
+    max_candidates = max(max_subcrawls + 4, 8)
+    out = deduped[:max_candidates]
+    run_count = 0
+    family_runs = {}
+    for item in out:
+        family = _subcrawl_family(item.get("query") or "", item.get("branch") or "")
+        family_limit = 2 if family == "chips" else 1 if family in {"policy_actors", "alliances", "supply_chain"} else max_subcrawls
+        worth_followup = int(item.get("score") or 0) >= int(min_score or 0)
+        can_run = (
+            run_count < max_subcrawls
+            and worth_followup
+            and family_runs.get(family, 0) < family_limit
+        )
+        item["family"] = family
+        item["worth_followup"] = worth_followup
+        item["status"] = "run" if can_run else "suggested"
+        if can_run:
+            item["recommendation"] = "run_small_subcrawl"
+            item["next_step"] = "Wurde als Side-Crawl ausgefuehrt und soll in die Synthese einfliessen."
+        elif worth_followup:
+            item["recommendation"] = "suggest_full_followup_crawl"
+            item["next_step"] = "Kausal wertvoll, aber nicht im aktuellen Side-Crawl-Budget; als eigener Anschluss-Crawl vorschlagen."
+        else:
+            item["recommendation"] = "monitor_only"
+            item["next_step"] = "Nur als Lead markieren; aktuell zu schwach fuer eigenen Crawl."
+        if can_run:
+            run_count += 1
+            family_runs[family] = family_runs.get(family, 0) + 1
+    return out
+
+
+def _subcrawl_family(query, branch):
+    low = f"{query} {branch}".lower()
+    if any(word in low for word in ("tariff", "tariffs", "zoll", "rare earth", "supply chain", "liefer")):
+        return "supply_chain"
+    if any(word in low for word in ("nvidia", "tsmc", "huawei", "asml", "chip", "semiconductor", "compute", "export control")):
+        return "chips"
+    if any(word in low for word in ("rubio", "vance", "bessent", "lutnick", "greer", "cabinet", "actor", "policy")):
+        return "policy_actors"
+    if any(word in low for word in ("taiwan", "arms package", "japan", "south korea", "philippines", "alliance")):
+        return "alliances"
+    return "general"
+
+
+def _run_subcrawls(
+    crawl_id,
+    query,
+    subcrawl_plan,
+    fetched,
+    known_urls,
+    config,
+    timeout_s,
+    max_chars,
+    allow_private,
+    research_plan,
+    trace,
+    tool_trace,
+    deadline,
+    sources_per_topic,
+):
+    added = 0
+    failures = []
+    run_items = [item for item in subcrawl_plan or [] if item.get("status") == "run"]
+    for idx, plan in enumerate(run_items, 1):
+        if time.monotonic() > deadline:
+            failures.append("Subcrawl-Zeitbudget erreicht")
+            break
+        subcrawl_id = f"sc{idx}"
+        subquery = plan.get("query") or plan.get("topic") or query
+        search_tool = _configured_search_tool_name(config)
+        try:
+            _trace(trace, "subcrawl.search.start", {"subcrawl_id": subcrawl_id, "topic": plan.get("topic"), "query": subquery, "score": plan.get("score")})
+            search_tool, raw_results, search_note = _search_web(subquery, 6, timeout_s, config)
+            candidates = []
+            for result in raw_results:
+                url = _clean_url(result.get("url") or "")
+                if not url or url in known_urls:
+                    continue
+                if not _is_allowed_http_url(url, allow_private):
+                    continue
+                if _skip_link(url, f"{result.get('title', '')} {result.get('snippet', '')}"):
+                    continue
+                result["url"] = url
+                result["search_query"] = subquery
+                result["depth"] = 0
+                result["parent_url"] = ""
+                result["discovery_method"] = "subcrawl"
+                result["discovery_reason"] = f"Subcrawl {subcrawl_id}: {plan.get('reason') or plan.get('topic') or subquery}"
+                result["branch_name"] = plan.get("branch") or plan.get("topic") or "subcrawl"
+                result["branch_reason"] = plan.get("reason") or ""
+                result["subcrawl_id"] = subcrawl_id
+                result["subcrawl_topic"] = plan.get("topic") or subquery
+                result["subcrawl_reason"] = plan.get("reason") or ""
+                result["_analysis_query"] = subquery
+                candidates.append(result)
+            selected = _select_sources(candidates, sources_per_topic, subquery, min_branch_sources=0)
+            _trace(
+                trace,
+                "subcrawl.search.done",
+                {
+                    "subcrawl_id": subcrawl_id,
+                    "query": subquery,
+                    "engine": search_tool,
+                    "results": len(raw_results),
+                    "selected": len(selected),
+                    "urls": [item.get("url") for item in selected],
+                    **({"note": search_note} if search_note else {}),
+                },
+            )
+            _tool_trace(
+                tool_trace,
+                search_tool,
+                "OK",
+                {"phase": "subcrawl", "subcrawl_id": subcrawl_id, "query": subquery, "selected": len(selected)},
+            )
+        except Exception as exc:
+            failures.append(f"Subcrawl {subcrawl_id} Suche fehlgeschlagen: {exc}")
+            _trace(trace, "subcrawl.search.fail", {"subcrawl_id": subcrawl_id, "query": subquery, "error": str(exc)})
+            _tool_trace(tool_trace, search_tool, "FAIL", {"phase": "subcrawl", "subcrawl_id": subcrawl_id, "query": subquery, "error": str(exc)})
+            continue
+
+        for result in selected:
+            if time.monotonic() > deadline:
+                failures.append("Subcrawl-Zeitbudget erreicht")
+                return added, failures
+            source, error = _fetch_store_subcrawl_source(
+                crawl_id,
+                query,
+                result,
+                config,
+                timeout_s,
+                max_chars,
+                research_plan,
+                trace,
+                tool_trace,
+            )
+            if error:
+                failures.append(error)
+                continue
+            if source:
+                known_urls.add(source["url"])
+                fetched.append(source)
+                added += 1
+    return added, failures
+
+
+def _fetch_store_subcrawl_source(crawl_id, query, result, config, timeout_s, max_chars, research_plan, trace, tool_trace):
+    url = result.get("url") or ""
+    subcrawl_id = result.get("subcrawl_id") or "subcrawl"
+    analysis_query = result.get("_analysis_query") or result.get("search_query") or query
+    try:
+        _trace(trace, "subcrawl.fetch.start", {"subcrawl_id": subcrawl_id, "url": url, "query": analysis_query})
+        is_youtube = _is_youtube_url(url)
+        page_html = ""
+        if is_youtube and bool(config.get("enable_youtube_transcripts", True)):
+            page = _youtube_transcript_page(url, analysis_query, config, max_chars)
+        else:
+            page_html = _fetch_url(url, timeout_s)
+            page = _parse_page(url, page_html)
+        if not page["text"] and not page["title"]:
+            return None, f"Subcrawl {subcrawl_id}: {url} -> kein lesbarer Text"
+        if _low_value_page(url, page):
+            return None, f"Subcrawl {subcrawl_id}: {url} -> low_value_page"
+        relevance_score = _relevance_score(analysis_query, result, page)
+        if relevance_score <= 0:
+            return None, f"Subcrawl {subcrawl_id}: {url} -> relevance_score=0"
+        reliability = _reliability_label(url)
+        recency = _recency_label(page.get("dates") or [])
+        key_passages = _key_passages(analysis_query, page.get("text") or "", page.get("dates") or [])
+        causality_hints = _causality_hints(analysis_query, page.get("text") or "", key_passages)
+        claim_hints = _claim_hints(analysis_query, page.get("text") or "", key_passages)
+        event_hints = _event_hints(analysis_query, page.get("text") or "", page.get("dates") or [])
+        lead_hints = _lead_hints(analysis_query, page.get("text") or "", page.get("links") or [])
+        contrast_hints = _contrast_hints(analysis_query, page.get("text") or "", key_passages)
+        perspective = _source_perspective(result, page, research_plan)
+        page_role = _page_role(url, result, page, analysis_query)
+        result["_relevance_score"] = relevance_score
+        result["_reliability"] = reliability
+        result["_recency_label"] = recency
+        result["_key_passages"] = key_passages
+        result["_causality_hints"] = causality_hints
+        result["_claim_hints"] = claim_hints
+        result["_event_hints"] = event_hints
+        result["_lead_hints"] = lead_hints
+        result["_contrast_hints"] = contrast_hints
+        result["_perspective"] = perspective
+        result["_page_role"] = page_role
+        note = _crawl_note(crawl_id, query, result, page, max_chars)
+        stored, storage_msg = _store_rag_note(note, config)
+        _trace(
+            trace,
+            "subcrawl.fetch.done",
+            {
+                "subcrawl_id": subcrawl_id,
+                "url": url,
+                "title": page["title"] or result.get("title") or "",
+                "html_chars": len(page_html),
+                "text_chars": len(page["text"]),
+                "relevance_score": relevance_score,
+                "stored": stored,
+                "rag_id": _stored_id(storage_msg),
+            },
+        )
+        _tool_trace(tool_trace, "http.get", "OK", {"phase": "subcrawl", "subcrawl_id": subcrawl_id, "url": url, "text_chars": len(page["text"])})
+        _tool_trace(tool_trace, "rag.speichern", "OK" if stored else "FAIL", {"phase": "subcrawl", "source_url": url, "rag_id": _stored_id(storage_msg), "message": storage_msg})
+        return (
+            {
+                "url": url,
+                "title": page["title"] or result.get("title") or "(kein Titel)",
+                "dates": page["dates"],
+                "depth": 0,
+                "discovery_method": "subcrawl",
+                "parent_url": "",
+                "relevance_score": relevance_score,
+                "reliability": reliability,
+                "recency_label": recency,
+                "source_language": perspective.get("language", ""),
+                "source_country": perspective.get("country", ""),
+                "perspective_role": perspective.get("role", ""),
+                "branch_name": result.get("branch_name") or "",
+                "branch_reason": result.get("branch_reason") or "",
+                "subcrawl_id": subcrawl_id,
+                "subcrawl_topic": result.get("subcrawl_topic") or analysis_query,
+                "subcrawl_reason": result.get("subcrawl_reason") or "",
+                "page_role": page_role,
+                "stored": stored,
+                "storage_msg": storage_msg,
+                "chars": len(page["text"]),
+                "analysis_text": _collapse_ws(" ".join([page["title"] or result.get("title") or ""] + key_passages[:4] + causality_hints[:3] + claim_hints[:3]))[:3000],
+            },
+            None,
+        )
+    except Exception as exc:
+        _trace(trace, "subcrawl.fetch.fail", {"subcrawl_id": subcrawl_id, "url": url, "error": str(exc)})
+        _tool_trace(tool_trace, "http.get", "FAIL", {"phase": "subcrawl", "subcrawl_id": subcrawl_id, "url": url, "error": str(exc)})
+        return None, f"Subcrawl {subcrawl_id}: {url} -> {exc}"
+
+
+def _load_deepdive_entries(needle, config):
+    if not isinstance(config, dict):
+        return {"ok": False, "error": "Tool-Konfig fehlt."}
+    data_dir = str(config.get("data_dir") or "").strip()
+    pool = str(config.get("rag_pool") or "DeepDive").strip() or "DeepDive"
+    safe_pool = _safe_id(pool) or "DeepDive"
+    if not data_dir:
+        return {"ok": False, "error": "data_dir fehlt."}
+    rag_dir = os.path.join(data_dir, "rag", safe_pool)
+    if not os.path.isdir(rag_dir):
+        return {"ok": False, "error": f"RAG Pool '{safe_pool}' nicht gefunden."}
+
+    wanted_crawl_id = _extract_crawl_id(needle)
+    terms = _query_terms(needle)
+    max_scan = _clamp_int(config.get("pack_max_scan"), 2000, 50, 10000)
+    matches = []
+    try:
+        files = sorted(
+            (p for p in os.scandir(rag_dir) if p.is_file() and p.name.endswith(".json")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:max_scan]
+    except Exception as exc:
+        return {"ok": False, "error": f"RAG lesen fehlgeschlagen: {exc}"}
+
+    for path in files:
+        try:
+            with open(path.path, "r", encoding="utf-8") as fh:
+                entry = json.load(fh)
+        except Exception:
+            continue
+        text = str(entry.get("text") or "")
+        crawl_id = str(entry.get("crawl_id") or _line_value(text, "crawl_id") or "")
+        score = 0
+        if wanted_crawl_id:
+            if crawl_id != wanted_crawl_id:
+                continue
+            score = 1000
+        elif terms:
+            haystack = " ".join(
+                [
+                    text[:12000],
+                    str(entry.get("source_title") or ""),
+                    str(entry.get("source_url") or ""),
+                    str(entry.get("keywords") or ""),
+                ]
+            ).lower()
+            score = sum(1 for term in terms if term in haystack)
+            if score <= 0:
+                continue
+        else:
+            continue
+        matches.append((score, path.stat().st_mtime, entry))
+
+    if not matches:
+        target = wanted_crawl_id or needle
+        return {"ok": False, "error": f"Keine DeepDive-Notizen fuer '{target}' im Pool '{safe_pool}' gefunden."}
+
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    entries = [entry for _, _, entry in matches]
+    if not wanted_crawl_id:
+        wanted_crawl_id = _dominant_crawl_id(entries)
+        if wanted_crawl_id:
+            entries = [
+                entry
+                for entry in entries
+                if str(entry.get("crawl_id") or _line_value(str(entry.get("text") or ""), "crawl_id")) == wanted_crawl_id
+            ]
+    return {"ok": True, "pool": safe_pool, "crawl_id": wanted_crawl_id, "entries": entries}
+
+
+def _blocks(needle, config):
+    loaded = _load_deepdive_entries(needle, config)
+    if not loaded.get("ok"):
+        return {"success": False, "data": loaded.get("error") or "DeepDive-Blocks konnten nicht geladen werden."}
+
+    entries = list(loaded.get("entries") or [])
+    safe_pool = loaded.get("pool") or "DeepDive"
+    crawl_id = loaded.get("crawl_id") or _extract_crawl_id(needle) or "(query-match)"
+    max_sources = _clamp_int(config.get("blocks_max_sources"), 8, 3, 16)
+    manifest = next((entry for entry in entries if str(entry.get("text") or "").startswith("DEEPDIVE_CRAWL_MANIFEST")), None)
+    all_source_entries = [entry for entry in entries if str(entry.get("text") or "").startswith("DEEPDIVE_CRAWL_NOTE")]
+    external_entries = [entry for entry in entries if str(entry.get("text") or "").startswith("DEEPDIVE_EXTERNAL_PACKET")]
+    all_source_entries.sort(key=_pack_entry_sort_key, reverse=True)
+    subcrawl_entries = [
+        entry
+        for entry in all_source_entries
+        if (entry.get("subcrawl_id") or _line_value(str(entry.get("text") or ""), "subcrawl_id"))
+    ]
+    source_entries = []
+    seen_ids = set()
+    for entry in subcrawl_entries[: min(6, max_sources)] + all_source_entries:
+        entry_id = entry.get("id") or _line_value(str(entry.get("text") or ""), "source_url")
+        if entry_id in seen_ids:
+            continue
+        seen_ids.add(entry_id)
+        source_entries.append(entry)
+        if len(source_entries) >= max_sources:
+            break
+    manifest_text = str(manifest.get("text") or "") if manifest else ""
+    topic = _line_value(manifest_text, "topic") if manifest else ""
+    topic = topic or str(needle)
+    branch_plan_lines = _numbered_section_lines(manifest_text, "branch_plan", 10)
+    subcrawl_plan_lines = _numbered_section_lines(manifest_text, "subcrawl_plan", 12)
+    branch_queries = [item.strip() for item in (_line_value(manifest_text, "branch_queries") or "").split("|") if item.strip()]
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def add_unique(target, value, limit):
+        value = _collapse_ws(str(value or ""))
+        if not value or _is_boilerplate_line(value):
+            return
+        key = value.lower()[:220]
+        if key in {item.lower()[:220] for item in target}:
+            return
+        if len(target) < limit:
+            target.append(value)
+
+    source_lines = ["<quellen>"]
+    timeline = []
+    claims = []
+    causal = []
+    contrasts = []
+    leads = []
+    branch_sources = []
+    subcrawl_sources = []
+    seen_source_urls = set()
+
+    for idx, entry in enumerate(source_entries, 1):
+        text = str(entry.get("text") or "")
+        title = entry.get("source_title") or _line_value(text, "source_title") or "(kein Titel)"
+        url = entry.get("source_url") or _line_value(text, "source_url") or ""
+        if url:
+            seen_source_urls.add(url)
+        reliability = _line_value(text, "source_reliability") or "unknown_check_needed"
+        recency = entry.get("recency_label") or _line_value(text, "recency_label") or "unknown"
+        relevance = entry.get("relevance_score") or _line_value(text, "relevance_score") or "?"
+        source_type = _line_value(text, "source_type") or "source"
+        language = entry.get("source_language") or _line_value(text, "source_language") or "?"
+        country = entry.get("source_country") or _line_value(text, "source_country") or "?"
+        perspective = entry.get("perspective_role") or _line_value(text, "perspective_role") or "?"
+        branch_name = entry.get("branch_name") or _line_value(text, "branch_name") or ""
+        subcrawl_id = entry.get("subcrawl_id") or _line_value(text, "subcrawl_id") or ""
+        subcrawl_topic = entry.get("subcrawl_topic") or _line_value(text, "subcrawl_topic") or ""
+        captured = entry.get("captured_at_utc") or _line_value(text, "captured_at_utc") or entry.get("timestamp") or "?"
+        date_hints = _line_value(text, "date_hints")
+        passages = _section_bullets(text, "key_passages", 2) or _source_text_lines(text, 2)
+        used_for = passages[0] if passages else title
+        source_lines.append(
+            "- q{idx} | rag_id: {rag_id} | fundort: {url} | titel: {title} | typ: {source_type} | branch: {branch_name} | subcrawl: {subcrawl_id} {subcrawl_topic} | "
+            "stand: {stand} | abgerufen_utc: {captured} | relevanz: {relevance} | reliability: {reliability} | "
+            "perspektive: {perspective} {country}/{language} | genutzt_fuer: {used_for}".format(
+                idx=idx,
+                rag_id=str(entry.get("id") or "")[:8],
+                url=url,
+                title=_collapse_ws(title)[:180],
+                source_type=source_type,
+                branch_name=_collapse_ws(branch_name or "-")[:80],
+                subcrawl_id=_collapse_ws(subcrawl_id or "-")[:20],
+                subcrawl_topic=_collapse_ws(subcrawl_topic or "")[:100],
+                stand=_collapse_ws(date_hints or recency)[:180],
+                captured=str(captured)[:40],
+                relevance=relevance,
+                reliability=_collapse_ws(reliability)[:80],
+                perspective=_collapse_ws(perspective)[:60],
+                country=_collapse_ws(country)[:30],
+                language=_collapse_ws(language)[:20],
+                used_for=_collapse_ws(used_for)[:220],
+            )
+        )
+        if branch_name:
+            add_unique(branch_sources, f"{branch_name}: q{idx} | {title} | {url} | {used_for}", 16)
+        if subcrawl_id or subcrawl_topic:
+            add_unique(subcrawl_sources, f"{subcrawl_id or 'subcrawl'} | {subcrawl_topic or branch_name}: q{idx} | {title} | {url} | {used_for}", 16)
+        for item in _section_bullets(text, "event_hints", 3):
+            add_unique(timeline, f"q{idx}: {item}", 18)
+        if date_hints:
+            add_unique(timeline, f"q{idx}: Datumshinweise: {date_hints}", 18)
+        for item in _section_bullets(text, "claim_hints", 3):
+            add_unique(claims, f"q{idx}: {item}", 24)
+        if not _section_bullets(text, "claim_hints", 1):
+            for item in passages[:2]:
+                add_unique(claims, f"q{idx}: {item}", 24)
+        for item in _section_bullets(text, "causality_hints", 3):
+            add_unique(causal, f"q{idx}: {item}", 18)
+        for item in _section_bullets(text, "contrast_hints", 2):
+            add_unique(contrasts, f"q{idx}: {item}", 16)
+        if perspective != "?" or language != "?" or country != "?":
+            add_unique(contrasts, f"q{idx}: Perspektive/Region/Sprache: {perspective} {country}/{language}", 16)
+        for item in _section_bullets(text, "lead_hints", 3):
+            add_unique(leads, f"q{idx}: {item}", 20)
+
+    external_urls_added = 0
+    for entry in external_entries[:4]:
+        if external_urls_added >= 4:
+            break
+        text = str(entry.get("text") or "")
+        tool = _line_value(text, "tool") or entry.get("source_title") or "external"
+        for url in _extract_urls(text)[:8]:
+            if external_urls_added >= 4:
+                break
+            if url in seen_source_urls:
+                continue
+            seen_source_urls.add(url)
+            external_urls_added += 1
+            source_lines.extend(
+                [
+                    "- ext{idx} | rag_id: {rag_id} | fundort: {url} | titel: {tool} | typ: external_packet_url | "
+                    "stand: {stand} | reliability: lead_check_needed | genutzt_fuer: Lead/Kommentar-/Suchsignal; vor starken Behauptungen gegen Primaerquellen pruefen".format(
+                        idx=external_urls_added,
+                        rag_id=str(entry.get("id") or "")[:8],
+                        url=url,
+                        tool=_collapse_ws(tool)[:160],
+                        stand=str(_line_value(text, "captured_at_utc") or entry.get("timestamp") or "?")[:40],
+                    ),
+                ]
+            )
+        excerpt = _after_marker(text, "packet_text:", 900)
+        if excerpt:
+            add_unique(leads, f"{tool}: {_collapse_ws(excerpt)[:600]}", 20)
+
+    source_lines.append("</quellen>")
+    if not timeline:
+        timeline.append("Keine belastbare Timeline aus den Quellen extrahiert; nur vorsichtig nach Datumshinweisen berichten.")
+    if not claims:
+        claims.append("Keine expliziten Claims extrahiert; aus key_passages vorsichtig zusammenfassen.")
+    if not causal:
+        causal.append("Kausalitaeten/Mechanismen sind nicht belastbar extrahiert; nur als behauptete Zusammenhaenge markieren.")
+    if not contrasts:
+        contrasts.append("Kein klarer Perspektivenkontrast extrahiert; fehlende Laender-/Sprachsicht als Luecke markieren.")
+    if not leads:
+        leads.append("Keine offenen Leads extrahiert.")
+
+    lines = [
+        "DEEPDIVE_BLOCKS",
+        f"pool: {safe_pool}",
+        f"crawl_id: {crawl_id}",
+        f"topic: {topic}",
+        f"prepared_at_utc: {now}",
+        f"sources_prepared: {len(source_entries)}",
+        f"external_urls_added: {external_urls_added}",
+        "",
+        "PLACEHOLDER_MAP:",
+        "{{quellen}} -> QUELLEN_BLOCK",
+        "{{timeline}} -> TIMELINE_BLOCK",
+        "{{claims}} -> CLAIMS_BLOCK",
+        "{{kausalitaeten}} -> CAUSALITY_BLOCK",
+        "{{kontraste}} -> CONTRAST_BLOCK",
+        "{{branching}} -> BRANCHING_CONTEXT_BLOCK",
+        "{{subcrawls}} -> SUBCRAWL_PLAN_BLOCK + SUBCRAWL_RESULTS_BLOCK",
+        "{{leads}} -> LEADS_BLOCK",
+        "",
+        "QUELLEN_BLOCK:",
+        "\n".join(source_lines),
+        "",
+        "TIMELINE_BLOCK:",
+    ]
+    lines.extend("- " + item[:260] for item in timeline[:8])
+    lines.extend(["", "CLAIMS_BLOCK:"])
+    lines.extend("- " + item[:260] for item in claims[:10])
+    lines.extend(["", "CAUSALITY_BLOCK:"])
+    lines.extend("- " + item[:260] for item in causal[:8])
+    lines.extend(["", "CONTRAST_BLOCK:"])
+    lines.extend("- " + item[:260] for item in contrasts[:8])
+    lines.extend(["", "BRANCHING_CONTEXT_BLOCK:"])
+    if branch_plan_lines:
+        lines.append("- Branch-Suchplan:")
+        lines.extend("- " + item[:320] for item in branch_plan_lines[:8])
+    elif branch_queries:
+        lines.extend("- branch_query: " + item[:280] for item in branch_queries[:8])
+    else:
+        lines.append("- Kein separater Branch-Plan im Manifest; fehlende Nachbarbegriffe/Akteursnetzwerke als Luecke markieren.")
+    if branch_sources:
+        lines.append("- Branch-Quellen, die tatsaechlich gecrawlt wurden:")
+        lines.extend("- " + item[:340] for item in branch_sources[:10])
+    else:
+        lines.append("- Keine explizit markierten Branch-Quellen im Crawl; das ist eine Recherche-Luecke und muss als solche benannt werden.")
+    lines.extend(["", "SUBCRAWL_PLAN_BLOCK:"])
+    lines.append("- Bedeutung: status=run wurde als Side-Crawl geholt; recommendation=suggest_full_followup_crawl ist ein Vorschlag fuer einen eigenen Anschluss-Crawl.")
+    if subcrawl_plan_lines:
+        lines.extend("- " + item[:420] for item in subcrawl_plan_lines[:10])
+    else:
+        lines.append("- Keine Subcrawl-Kandidaten im Manifest.")
+    lines.extend(["", "SUBCRAWL_RESULTS_BLOCK:"])
+    if subcrawl_sources:
+        lines.extend("- " + item[:420] for item in subcrawl_sources[:12])
+    else:
+        lines.append("- Keine ausgefuehrten Subcrawl-Quellen in den vorbereiteten Quellen.")
+    lines.extend(["", "LEADS_BLOCK:"])
+    lines.extend("- " + item[:260] for item in leads[:8])
+    lines.extend(
+        [
+            "",
+            "SYNTHESIS_INSTRUCTION:",
+            "Nutze diese Blocks als harte Bausteine. Ersetze Platzhalter wie {{quellen}} nicht mit frei erfundenen Quellen, sondern mit dem QUELLEN_BLOCK. Baue daraus Lagebild, Chronologie, Akteure, Claims, Kausalitaeten, Subcrawl-Plan/Resultate, empfohlene Anschluss-Crawls, Branching-Kontext, Kontraste, Unsicherheiten und offene Leads. Keine neue Quelle behaupten, die nicht im Quellenblock oder in der Tool-Evidenz steht.",
+        ]
+    )
+    result = "\n".join(lines)
+    if _cfg_bool(config.get("store_blocks_in_rag"), True):
+        note = "\n".join(
+            [
+                "DEEPDIVE_PREPARED_BLOCKS",
+                f"crawl_id: {crawl_id}",
+                f"captured_at_utc: {now}",
+                f"topic: {topic}",
+                "source_title: DeepDive prepared blocks",
+                "source_type: prepared_research_blocks",
+                "source_text:",
+                result,
+            ]
+        )
+        stored, storage_msg = _store_rag_note(note, config)
+        result += f"\n\nRAG_STORE: {storage_msg if stored else 'nicht gespeichert: ' + storage_msg}"
+    return {"success": True, "data": result}
+
+
+def _pack(needle, config):
+    if not isinstance(config, dict):
+        return {"success": False, "data": "Tool-Konfig fehlt."}
+    data_dir = str(config.get("data_dir") or "").strip()
+    pool = str(config.get("rag_pool") or "DeepDive").strip() or "DeepDive"
+    safe_pool = _safe_id(pool) or "DeepDive"
+    if not data_dir:
+        return {"success": False, "data": "data_dir fehlt."}
+    rag_dir = os.path.join(data_dir, "rag", safe_pool)
+    if not os.path.isdir(rag_dir):
+        return {"success": False, "data": f"RAG Pool '{safe_pool}' nicht gefunden."}
+
+    wanted_crawl_id = _extract_crawl_id(needle)
+    terms = _query_terms(needle)
+    max_entries = _clamp_int(config.get("pack_max_entries"), 10, 1, 20)
+    max_scan = _clamp_int(config.get("pack_max_scan"), 2000, 50, 10000)
+    matches = []
+    try:
+        files = sorted(
+            (p for p in os.scandir(rag_dir) if p.is_file() and p.name.endswith(".json")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:max_scan]
+    except Exception as exc:
+        return {"success": False, "data": f"RAG lesen fehlgeschlagen: {exc}"}
+
+    for path in files:
+        try:
+            with open(path.path, "r", encoding="utf-8") as fh:
+                entry = json.load(fh)
+        except Exception:
+            continue
+        text = str(entry.get("text") or "")
+        crawl_id = str(entry.get("crawl_id") or _line_value(text, "crawl_id") or "")
+        score = 0
+        if wanted_crawl_id:
+            if crawl_id != wanted_crawl_id:
+                continue
+            score = 1000
+        elif terms:
+            haystack = " ".join(
+                [
+                    text[:12000],
+                    str(entry.get("source_title") or ""),
+                    str(entry.get("source_url") or ""),
+                    str(entry.get("keywords") or ""),
+                ]
+            ).lower()
+            score = sum(1 for term in terms if term in haystack)
+            if score <= 0:
+                continue
+        matches.append((score, path.stat().st_mtime, entry))
+
+    if not matches:
+        target = wanted_crawl_id or needle
+        return {"success": False, "data": f"Keine DeepDive-Notizen fuer '{target}' im Pool '{safe_pool}' gefunden."}
+
+    matches.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    entries = [entry for _, _, entry in matches]
+    if not wanted_crawl_id:
+        wanted_crawl_id = _dominant_crawl_id(entries)
+        if wanted_crawl_id:
+            entries = [entry for entry in entries if str(entry.get("crawl_id") or _line_value(str(entry.get("text") or ""), "crawl_id")) == wanted_crawl_id]
+
+    manifest = next((entry for entry in entries if str(entry.get("text") or "").startswith("DEEPDIVE_CRAWL_MANIFEST")), None)
+    source_entries = [entry for entry in entries if str(entry.get("text") or "").startswith("DEEPDIVE_CRAWL_NOTE")]
+    external_entries = [entry for entry in entries if str(entry.get("text") or "").startswith("DEEPDIVE_EXTERNAL_PACKET")]
+    source_entries.sort(key=_pack_entry_sort_key, reverse=True)
+    source_entries = source_entries[:max_entries]
+    external_entries = external_entries[: min(4, max_entries)]
+
+    lines = [
+        "DEEPDIVE_PACK",
+        f"pool: {safe_pool}",
+        f"input: {needle}",
+        f"crawl_id: {wanted_crawl_id or '(query-match)'}",
+        f"matched_entries: {len(entries)}",
+        f"sources_in_pack: {len(source_entries)}",
+        f"external_packets: {len(external_entries)}",
+    ]
+    if manifest:
+        text = str(manifest.get("text") or "")
+        lines.extend(
+            [
+                "",
+                "Manifest:",
+                f"- topic: {_line_value(text, 'topic')}",
+                f"- started: {_line_value(text, 'crawl_started_at_utc')}",
+                f"- impact_languages: {_line_value(text, 'impact_languages')}",
+                f"- impact_regions: {_line_value(text, 'impact_regions')}",
+                f"- branch_queries: {_line_value(text, 'branch_queries')}",
+                f"- subcrawl_candidates: {_line_value(text, 'subcrawl_candidates')}",
+                f"- subcrawls_run: {_line_value(text, 'subcrawls_run')}",
+                f"- sources_fetched: {_line_value(text, 'sources_fetched')}",
+                f"- failed_count: {_line_value(text, 'failed_count')}",
+                f"- search_error_count: {_line_value(text, 'search_error_count')}",
+            ]
+        )
+        subcrawl_plan_lines = _numbered_section_lines(text, "subcrawl_plan", 8)
+        if subcrawl_plan_lines:
+            lines.append("- subcrawl_plan:")
+            for item in subcrawl_plan_lines:
+                lines.append("  - " + item[:700])
+
+    lines.extend(["", "Quellenpaket:"])
+    if source_entries:
+        for idx, entry in enumerate(source_entries, 1):
+            text = str(entry.get("text") or "")
+            title = entry.get("source_title") or _line_value(text, "source_title") or "(kein Titel)"
+            url = entry.get("source_url") or _line_value(text, "source_url") or ""
+            reliability = _line_value(text, "source_reliability")
+            recency = entry.get("recency_label") or _line_value(text, "recency_label")
+            relevance = entry.get("relevance_score") or _line_value(text, "relevance_score")
+            source_type = _line_value(text, "source_type")
+            language = entry.get("source_language") or _line_value(text, "source_language")
+            country = entry.get("source_country") or _line_value(text, "source_country")
+            perspective = entry.get("perspective_role") or _line_value(text, "perspective_role")
+            branch_name = entry.get("branch_name") or _line_value(text, "branch_name")
+            subcrawl_id = entry.get("subcrawl_id") or _line_value(text, "subcrawl_id")
+            subcrawl_topic = entry.get("subcrawl_topic") or _line_value(text, "subcrawl_topic")
+            date_hints = _line_value(text, "date_hints")
+            lines.append(f"{idx}. score={relevance or '?'} | {source_type or 'source'} | branch={branch_name or '-'} | subcrawl={subcrawl_id or '-'} {subcrawl_topic or ''} | perspective={perspective or '-'} {country or ''}/{language or ''} | {reliability or 'reliability: unknown'} | {recency or 'recency: unknown'} | {title} | {url}")
+            if date_hints:
+                lines.append("   dates: " + date_hints[:500])
+            passages = _section_bullets(text, "key_passages", 4)
+            if not passages:
+                passages = _source_text_lines(text, 3)
+            if passages:
+                lines.append("   key_points:")
+                for passage in passages:
+                    lines.append("   - " + passage[:600])
+            for section, label, max_items in (
+                ("event_hints", "events", 3),
+                ("claim_hints", "claims", 3),
+                ("causality_hints", "causal_links", 3),
+                ("contrast_hints", "contrasts", 2),
+                ("lead_hints", "leads_to_follow", 3),
+            ):
+                bullets = _section_bullets(text, section, max_items)
+                if bullets:
+                    lines.append(f"   {label}:")
+                    for bullet in bullets:
+                        lines.append("   - " + bullet[:600])
+    else:
+        lines.append("- keine einzelnen Crawl-Quellen gefunden")
+
+    if external_entries:
+        lines.extend(["", "Externe Pakete:"])
+        for entry in external_entries:
+            text = str(entry.get("text") or "")
+            tool = _line_value(text, "tool") or entry.get("source_title") or "external"
+            lines.append(f"- {tool}: urls_found={_line_value(text, 'urls_found')}")
+            for url in _extract_urls(text)[:8]:
+                lines.append(f"  - {url}")
+            excerpt = _after_marker(text, "packet_text:", 1200)
+            if excerpt:
+                lines.append("  excerpt: " + _collapse_ws(excerpt)[:1200])
+
+    lines.extend(
+        [
+            "",
+            f"NEXT_STEP: Jetzt deepdive.blocks({wanted_crawl_id or needle}) ausfuehren. Erst danach synthetisieren, damit Quellen, Timeline, Claims, Kausalitaeten, Kontraste und Leads als vorbereitete Bausteine vorliegen.",
+        ]
+    )
+    return {"success": True, "data": "\n".join(lines)}
+
+
+def _prefetch_queue(crawl_queue, visited_urls, timeout_s, workers, deadline, remaining_pages, trace, tool_trace):
+    if remaining_pages <= 1:
+        return
+    selected = []
+    for item in crawl_queue:
+        if len(selected) >= min(workers, remaining_pages):
+            break
+        url = item.get("url") or ""
+        if not url or url in visited_urls:
+            continue
+        if "_prefetched_html" in item or "_prefetch_error" in item:
+            continue
+        selected.append(item)
+    if len(selected) <= 1:
+        return
+
+    worker_count = max(1, min(int(workers or 1), len(selected)))
+    _trace(trace, "fetch.prefetch_start", {"items": len(selected), "workers": worker_count, "urls": [item.get("url") for item in selected]})
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_map = {executor.submit(_fetch_url, item.get("url") or "", timeout_s): item for item in selected}
+        remaining_timeout = max(1, min(timeout_s + 3, deadline - time.monotonic()))
+        try:
+            for future in as_completed(future_map, timeout=remaining_timeout):
+                item = future_map[future]
+                url = item.get("url") or ""
+                depth = int(item.get("depth") or 0)
+                try:
+                    html_text = future.result()
+                    item["_prefetched_html"] = html_text
+                    _trace(trace, "fetch.prefetch_done", {"url": url, "html_chars": len(html_text)})
+                    _tool_trace(tool_trace, "http.prefetch", "OK", {"url": url, "depth": depth, "html_chars": len(html_text)})
+                except Exception as exc:
+                    item["_prefetch_error"] = str(exc)
+                    _trace(trace, "fetch.prefetch_fail", {"url": url, "error": str(exc)})
+                    _tool_trace(tool_trace, "http.prefetch", "FAIL", {"url": url, "depth": depth, "error": str(exc)})
+        except FuturesTimeout:
+            for future, item in future_map.items():
+                if future.done():
+                    continue
+                future.cancel()
+                url = item.get("url") or ""
+                item["_prefetch_error"] = "Prefetch Zeitbudget erreicht"
+                _trace(trace, "fetch.prefetch_timeout", {"url": url})
+                _tool_trace(tool_trace, "http.prefetch", "TIMEOUT", {"url": url, "depth": int(item.get("depth") or 0)})
+
+
+def _run_seed_searches(search_queries, timeout_s, config, deadline, workers, trace, tool_trace):
+    queries = list(search_queries or [])
+    if not queries:
+        return []
+    workers = max(1, min(int(workers or 1), len(queries)))
+    default_tool = _configured_search_tool_name(config)
+    results = []
+
+    if workers <= 1:
+        for query in queries:
+            if time.monotonic() > deadline:
+                results.append({"query": query, "tool": default_tool, "error": "Zeitbudget vor Ende der Seed-Suche erreicht"})
+                _trace(trace, "crawl.deadline", {"stage": "seed_search"})
+                break
+            results.append(_run_one_seed_search(query, timeout_s, config, trace, tool_trace))
+        return results
+
+    _trace(trace, "search.parallel.start", {"queries": len(queries), "workers": workers, "engine": default_tool})
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {}
+        for query in queries:
+            if time.monotonic() > deadline:
+                results.append({"query": query, "tool": default_tool, "error": "Zeitbudget vor Seed-Submit erreicht"})
+                break
+            _trace(trace, "search.start", {"query": query, "engine": default_tool, "parallel": True})
+            future = executor.submit(_search_web, query, 10, timeout_s, config)
+            future_map[future] = query
+        remaining_timeout = max(1, deadline - time.monotonic())
+        try:
+            for future in as_completed(future_map, timeout=remaining_timeout):
+                query = future_map[future]
+                try:
+                    tool, raw_results, search_note = future.result()
+                    item = {"query": query, "tool": tool, "results": raw_results, "note": search_note}
+                    results.append(item)
+                    _trace(
+                        trace,
+                        "search.done",
+                        {
+                            "query": query,
+                            "engine": tool,
+                            "results": len(raw_results),
+                            **({"note": search_note} if search_note else {}),
+                        },
+                    )
+                    _tool_trace(
+                        tool_trace,
+                        tool,
+                        "OK",
+                        {"phase": "seed", "query": query, "engine": tool, "results": len(raw_results)},
+                    )
+                except Exception as exc:
+                    results.append({"query": query, "tool": default_tool, "error": str(exc)})
+                    _trace(trace, "search.fail", {"query": query, "error": str(exc)})
+                    _tool_trace(
+                        tool_trace,
+                        default_tool,
+                        "FAIL",
+                        {"phase": "seed", "query": query, "engine": default_tool, "error": str(exc)},
+                    )
+        except FuturesTimeout:
+            pending = [future for future in future_map if not future.done()]
+            for future in pending:
+                future.cancel()
+                query = future_map[future]
+                results.append({"query": query, "tool": default_tool, "error": "Seed-Suche nach Zeitbudget abgebrochen"})
+                _trace(trace, "search.timeout", {"query": query})
+                _tool_trace(tool_trace, default_tool, "TIMEOUT", {"phase": "seed", "query": query})
+    order = {query: idx for idx, query in enumerate(queries)}
+    results.sort(key=lambda item: order.get(item.get("query"), 999))
+    _trace(trace, "search.parallel.done", {"results": len(results)})
+    return results
+
+
+def _run_one_seed_search(query, timeout_s, config, trace, tool_trace):
+    search_tool = _configured_search_tool_name(config)
+    try:
+        _trace(trace, "search.start", {"query": query, "engine": search_tool})
+        search_tool, raw_results, search_note = _search_web(query, 10, timeout_s, config)
+        _trace(
+            trace,
+            "search.done",
+            {
+                "query": query,
+                "engine": search_tool,
+                "results": len(raw_results),
+                **({"note": search_note} if search_note else {}),
+            },
+        )
+        _tool_trace(
+            tool_trace,
+            search_tool,
+            "OK",
+            {"phase": "seed", "query": query, "engine": search_tool, "results": len(raw_results)},
+        )
+        return {"query": query, "tool": search_tool, "results": raw_results, "note": search_note}
+    except Exception as exc:
+        _trace(trace, "search.fail", {"query": query, "error": str(exc)})
+        _tool_trace(
+            tool_trace,
+            search_tool,
+            "FAIL",
+            {"phase": "seed", "query": query, "engine": search_tool, "error": str(exc)},
+        )
+        return {"query": query, "tool": search_tool, "error": str(exc)}
 
 
 def _build_search_queries(query, max_queries=6):
@@ -914,6 +2295,297 @@ def _build_search_queries(query, max_queries=6):
     # the crawl so stale encyclopedic labels do not dominate.
     variants.append(base)
     return _unique(variants)[:max_queries]
+
+
+def _query_wants_current(query):
+    text = _collapse_ws(query).lower()
+    current_terms = (
+        "aktuell", "aktuelle", "aktueller", "nachrichten", "news", "heute",
+        "jetzt", "latest", "current", "current events", "neueste",
+        "stand heute", "letzte stunde", "live",
+    )
+    return any(term in text for term in current_terms)
+
+
+def _query_has_historical_scope(query):
+    text = _collapse_ws(query).lower()
+    historical_terms = (
+        "archiv", "archive", "historisch", "history", "rueckblick",
+        "ruckblick", "retrospective", "year in review", "was war", "damals",
+    )
+    return any(term in text for term in historical_terms)
+
+
+def _query_years(query):
+    years = []
+    seen = set()
+    for raw in re.findall(r"(?<!\d)((?:19|20)\d{2})(?!\d)", query or ""):
+        year = int(raw)
+        if year not in seen:
+            seen.add(year)
+            years.append(year)
+    return years
+
+
+def _normalize_current_query(query):
+    base = _collapse_ws(query)
+    if not base or not _query_wants_current(base) or _query_has_historical_scope(base):
+        return base, None
+    current_year = datetime.now(timezone.utc).year
+    stale_years = [year for year in _query_years(base) if year < current_year]
+    if not stale_years:
+        return base, None
+    stale_pattern = r"(?<!\d)(?:" + "|".join(re.escape(str(year)) for year in stale_years) + r")(?!\d)"
+    normalized = re.sub(stale_pattern, " ", base)
+    normalized = _collapse_ws(re.sub(r"\s+([,;:])", r"\1", normalized))
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if current_year not in _query_years(normalized):
+        normalized = _collapse_ws(f"{normalized} {current_year} {today} aktuelle News")
+    return normalized, {
+        "reason": "current_query_with_stale_year",
+        "removed_years": stale_years,
+        "current_year": current_year,
+        "current_date": today,
+    }
+
+
+def _recency_age_days(dates):
+    parsed = [_parse_date_hint(value) for value in dates or []]
+    parsed = [value for value in parsed if value]
+    if not parsed:
+        return None
+    age = datetime.now(timezone.utc) - max(parsed)
+    return age.days
+
+
+def _stale_for_current_query(query, dates, max_age_days=90):
+    if not _query_wants_current(query) or _query_has_historical_scope(query):
+        return False
+    age_days = _recency_age_days(dates)
+    return age_days is not None and age_days > max_age_days
+
+
+def _impact_research_plan(query, max_queries, full_deepdive, config, max_branch_queries=None):
+    base = _collapse_ws(query)
+    cfg = config or {}
+    if not full_deepdive:
+        return {
+            "objective": "quick_current_research",
+            "impact_plan": [],
+            "branch_plan": [],
+            "branch_queries": [],
+            "search_queries": _build_search_queries(query, max_queries),
+        }
+
+    year = datetime.now(timezone.utc).strftime("%Y")
+    impact_plan = _impact_language_plan(base) if _cfg_bool(cfg.get("enable_impact_language_plan"), True) else []
+    branch_limit = max_branch_queries
+    if branch_limit is None:
+        branch_limit = _clamp_int(cfg.get("max_branch_queries"), 6, 0, 10)
+    branch_plan = _branching_research_plan(base, branch_limit, cfg)
+    branch_queries = [item.get("query", "") for item in branch_plan if item.get("query")]
+    core_queries = [
+        f"{base} latest developments timeline causes consequences reactions {year}",
+        f"{base} background causal chain why implications contradictions analysis",
+        f"{base} official statement primary source policy document {year}",
+        f"{base} criticism disputed claims fact check comparison public opinion",
+    ]
+    perspective_queries = []
+    for item in impact_plan:
+        terms = item.get("terms") or ""
+        if not terms:
+            continue
+        perspective_queries.append(terms)
+        if item.get("extra"):
+            perspective_queries.append(item["extra"])
+    lead_queries = [
+        f"{base} compared with similar case analogy what does it resemble",
+        f"{base} who benefits who is affected mechanism incentives",
+    ]
+    search_queries = _unique(
+        core_queries[:2]
+        + branch_queries[:8]
+        + perspective_queries[:4]
+        + core_queries[2:]
+        + branch_queries[8:]
+        + perspective_queries[4:]
+        + lead_queries
+        + [base]
+    )[:max_queries]
+    return {
+        "objective": "causal_branching_multilingual_contrast_research",
+        "impact_plan": impact_plan,
+        "branch_plan": branch_plan,
+        "branch_queries": branch_queries,
+        "search_queries": search_queries,
+    }
+
+
+def _query_key(query):
+    return _collapse_ws(query).lower()
+
+
+def _branch_query_lookup(research_plan):
+    out = {}
+    for item in (research_plan or {}).get("branch_plan", []) or []:
+        key = _query_key(item.get("query") or "")
+        if key:
+            out[key] = item
+    return out
+
+
+def _impact_query_lookup(research_plan):
+    out = {}
+    for item in (research_plan or {}).get("impact_plan", []) or []:
+        for query in (item.get("terms") or "", item.get("extra") or ""):
+            key = _query_key(query)
+            if key:
+                out[key] = item
+    return out
+
+
+def _branch_core_topic(query):
+    words = _important_words(query, 7)
+    return " ".join(words) or _collapse_ws(query)
+
+
+def _branching_research_plan(query, max_branch_queries, config):
+    if max_branch_queries <= 0 or not _cfg_bool((config or {}).get("enable_branching_causality_plan"), True):
+        return []
+
+    base = _collapse_ws(query)
+    low = base.lower()
+    core = _branch_core_topic(base)
+    branches = []
+
+    def add(branch, search_query, reason):
+        search_query = _collapse_ws(search_query)
+        if not search_query:
+            return
+        key = search_query.lower()
+        if any(item.get("query", "").lower() == key for item in branches):
+            return
+        branches.append({"branch": branch, "query": search_query, "reason": reason})
+
+    if any(word in low for word in ("ufo", "ufos", "uap", "alien", "aliens", "extraterrestrial", "ausserird")):
+        add("adjacent_concept_aliens", f"{base} aliens extraterrestrial life disclosure evidence skeptics", "UFO/UAP kann mit Alien-/Disclosure-Claims verknuepft sein, muss aber getrennt bewertet werden")
+        add("military_sensor_chain", f"{base} military pilots radar sensors drones balloons AARO NASA", "UAP-Berichte haengen oft an Militaer, Sensorik, Fehlidentifikation und Behoerden")
+        add("whistleblower_congress", f"{base} David Grusch whistleblower Congress testimony reverse engineering claims", "Whistleblower und Kongressanhoerungen sind zentrale Claim-Treiber")
+        add("international_files", f"{base} China Russia UK France government UFO UAP files disclosure", "Internationale Akten/Perspektiven koennen Missing Links oder Gegenframing liefern")
+
+    if any(word in low for word in ("japan", "tokyo", "nippon", "japanese", "japanisch")):
+        add("regional_security_network", f"{base} China Taiwan United States South Korea security economy reaction", "Japan-Kontext braucht regionale Gegen- und Allianzperspektiven")
+        add("domestic_external_causality", f"{base} Japan domestic politics demographics economy defense China Taiwan causes", "Innenpolitik, Wirtschaft und regionale Sicherheit koennen kausal zusammenhaengen")
+
+    if any(word in low for word in ("china", "taiwan", "xi", "jinping", "handelskrieg", "trade war", "tariff", "tariffs", "zoll", "zoelle", "zölle", "export control", "exportkontrolle")):
+        add("chip_war_semiconductors", "Trump Xi China Taiwan semiconductors Nvidia TSMC Huawei ASML export controls 2026", "China/Taiwan/Handelskrieg haengt oft am Chipkrieg, KI-Compute und Exportkontrollen")
+        add("ai_compute_supply_chain", "Nvidia Huawei TSMC ASML US China AI chips export controls data centers 2026", "Nvidia/TSMC/Huawei/ASML koennen der fehlende Wirtschafts- und Sicherheitslink sein")
+        add("china_policy_actor_graph", "Trump China policy Xi Jinping Marco Rubio JD Vance Scott Bessent Howard Lutnick Jamieson Greer 2026", "Politiker, Kabinett und Verhandler erklaeren Absichten und Hebel")
+        add("taiwan_alliance_network", "Trump Xi Taiwan arms package Japan South Korea Philippines US China security 2026", "Taiwan wirkt ueber Allianzen, Waffenpakete und regionale Abschreckung")
+        add("sanctions_leverage_theatres", "Trump China Iran North Korea Russia sanctions leverage trade Taiwan 2026", "Iran/Nordkorea/Russland koennen als Druck- und Verhandlungshebel in China-Politik auftauchen")
+
+    if any(word in low for word in ("ford", "ford motors", "automotive", "autohersteller", "electric vehicle", "ev")):
+        add("competitor_market_map", f"{core} competitors GM Toyota Tesla Stellantis Hyundai BYD market share strategy", "Bei Autoherstellern erklaeren Wettbewerber und Marktanteile oft die Dynamik")
+        add("supply_chain_labor_policy", f"{core} supply chain batteries UAW labor tariffs China EV incentives pricing", "Lieferketten, Gewerkschaften, Zoelle und EV-Foerderung sind moegliche Ursachen")
+
+    if any(word in low for word in ("openai", "google", "microsoft", "anthropic", "deepseek", "xai", "nvidia", "semiconductor", "chip", "tsmc", "huawei", "asml")) or re.search(r"\b(ai|ki|llm|model)\b", low):
+        add("tech_competitor_ecosystem", f"{core} competitors ecosystem regulation open source chips cloud pricing", "Tech-Themen brauchen Wettbewerber, Regulierung, Infrastruktur und Kostenstruktur")
+        add("supply_compute_policy", f"{core} compute supply chain export controls GPUs data centers policy impact", "Compute, Chips und Regulierung sind haeufige Kausalfaktoren")
+
+    if any(word in low for word in ("bitcoin", "crypto", "krypto", "ethereum", "stock", "aktie", "market", "price", "preis")):
+        add("market_drivers", f"{core} macro liquidity regulation ETF flows derivatives sentiment drivers", "Marktbewegungen brauchen Treiber statt nur Preisquellen")
+        add("market_counterparties", f"{core} competitors alternatives institutional retail miners exchanges risks", "Gegenparteien und Alternativen helfen Kausalitaet einzuordnen")
+
+    org_like = any(
+        word in low
+        for word in (
+            "motors", "motor", "corp", "inc", "ltd", "company", "gmbh", "ag",
+            "ford", "tesla", "nvidia", "openai", "google", "microsoft", "apple", "amazon", "meta", "byd",
+        )
+    )
+    person_like = any(word in low for word in ("trump", "biden", "putin", "merkel", "merz", "musk", "altman")) or bool(
+        re.search(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}\b", base)
+    )
+    if person_like and not org_like:
+        add("person_inner_circle", f"{core} inner circle advisers donors cabinet family business legal network", "Bei Personen ist das Umfeld oft kausal wichtiger als die Person alleine")
+        add("person_opposition_institutions", f"{core} opponents courts agencies congress party media influence network", "Gegenakteure und Institutionen zeigen Druck, Grenzen und Interessen")
+
+    add("actor_network", f"{core} key actors stakeholders allies opponents institutions network", "Akteursnetzwerk und Interessenlage suchen")
+    add("missing_links", f"{core} adjacent topics related phenomena missing links context", "Moegliche fehlende Verbindungen und Nachbarbegriffe suchen")
+    add("causal_mechanism", f"{core} causal mechanism incentives who benefits who loses why", "Mechanismen, Anreize und Gewinner/Verlierer herausarbeiten")
+    add("historical_analogy", f"{core} historical parallels similar cases analogy comparison", "Historische Parallelen und Vergleichsfaelle als Leads pruefen")
+
+    return branches[:max_branch_queries]
+
+
+def _impact_language_plan(query):
+    low = query.lower()
+    entries = []
+
+    def add(language, country, role, terms, reason, extra=""):
+        key = (language, country)
+        if any((item["language"], item["country"]) == key for item in entries):
+            return
+        entries.append(
+            {
+                "language": language,
+                "country": country,
+                "role": role,
+                "terms": terms,
+                "extra": extra,
+                "reason": reason,
+            }
+        )
+
+    if any(word in low for word in ("ufo", "ufos", "uap", "alien", "aliens", "extraterrestrial", "ausserird")):
+        add("en", "United States", "government_disclosure_primary", f"{query} UAP AARO NASA Pentagon Congress disclosure whistleblower", "US-Behoerden und Kongress sind beim UAP-Thema zentrale Primaerakteure")
+        add("fr", "France", "legacy_government_files", f"{query} OVNI PAN GEIPAN CNES rapports temoignages analyse", "Frankreich/GEIPAN ist eine wichtige staatliche UFO/PAN-Quelle")
+        add("zh", "China", "strategic_or_state_framing", f"{query} 不明飞行物 UFO UAP 外星人 军方 反应 分析", "Chinesische Perspektive kann strategisches Gegenframing und Sicherheitsdebatte zeigen")
+        add("ru", "Russia", "strategic_or_state_framing", f"{query} НЛО UAP инопланетяне военные документы реакция анализ", "Russische Perspektive kann Sicherheits-/Militaerframing zeigen")
+        add("es", "Spain/Latin America", "public_reports_region", f"{query} ovnis UAP extraterrestres gobierno militares testimonios analisis", "Spanischsprachige Quellen liefern weitere Meldungs- und Meinungsraeume")
+    if any(word in low for word in ("japan", "tokyo", "nippon", "japanese", "japanisch")):
+        add("ja", "Japan", "domestic_primary", "日本 防衛費 軍事力 増強 原因 影響 反応", "Japan ist direkter Akteur")
+        add("zh", "China", "rival_or_affected", "日本 军事扩张 中国 反应 台湾 安全 原因 影响", "China ist bei Japan/Taiwan/Sicherheit zentral betroffen")
+        add("zh-TW", "Taiwan", "affected_region", "日本 軍事 擴張 台灣 安全 影響 中國 反應", "Taiwan ist betroffene Region")
+        add("ko", "South Korea", "regional_ally_affected", "일본 군사력 증강 한국 반응 안보 영향", "Korea ist regionaler Sicherheitsakteur")
+        add("en", "United States", "ally_security_architecture", "Japan military buildup causes implications Taiwan China US response", "USA ist Sicherheitsgarant/Allianzakteur")
+    if any(word in low for word in ("china", "chinese", "beijing", "peking", "taiwan", "taiwanese")):
+        add("zh", "China", "domestic_or_state_framing", "中国 台湾 日本 美国 安全 反应 原因 影响", "Chinesische Perspektive ist direkt relevant")
+        add("zh-TW", "Taiwan", "directly_affected", "台灣 中國 美國 日本 安全 影響 反應", "Taiwan-Perspektive ist direkt betroffen")
+        add("en", "United States", "global_power_or_ally", "China Taiwan Japan US security implications analysis", "US/englische Analyse fuer internationale Einordnung")
+        add("ja", "Japan", "regional_affected", "中国 台湾 日本 安全保障 影響 反応", "Japan ist regional betroffen")
+    if any(word in low for word in ("ukraine", "russia", "russland", "moscow", "moskau", "kyiv", "kiew")):
+        add("uk", "Ukraine", "directly_affected", "Україна Росія війна причини наслідки реакція", "Ukraine ist direkter Akteur")
+        add("ru", "Russia", "adversary_or_state_framing", "Россия Украина война причины последствия реакция", "Russische Perspektive zeigt Gegenframing")
+        add("en", "United States/NATO", "ally_or_security_architecture", "Ukraine Russia war causes consequences NATO reactions analysis", "NATO/US-Kontext")
+        add("pl", "Poland/Eastern Europe", "regional_affected", "Ukraina Rosja wojna konsekwencje reakcje Polska", "Osteuropa ist besonders betroffen")
+    if any(word in low for word in ("israel", "gaza", "hamas", "palestine", "palästina", "iran", "tehran", "teheran")):
+        add("he", "Israel", "domestic_primary", "ישראל עזה איראן סיבות השלכות תגובות", "Israelische Perspektive ist direkter Akteur")
+        add("ar", "Palestine/Arab region", "affected_region", "غزة إسرائيل فلسطين أسباب تداعيات ردود فعل", "Arabische/palaestinensische Perspektive ist direkt betroffen")
+        add("fa", "Iran", "regional_actor", "ایران اسرائیل غزه علت پیامد واکنش", "Iranische Perspektive bei regionaler Dynamik")
+        add("en", "International", "international_analysis", "Israel Gaza Iran causes consequences reactions analysis", "Internationale Analyse")
+    if any(word in low for word in ("germany", "deutschland", "bundesregierung", "berlin", "merz", "afd", "spd", "cdu")):
+        add("de", "Germany", "domestic_primary", f"{query} Deutschland Ursache Folgen Reaktionen Chronologie", "Deutsche Innenperspektive ist primaer")
+        add("en", "International", "outside_analysis", f"{query} Germany international reaction analysis", "Internationale Einordnung")
+        add("fr", "France/EU", "neighbor_or_eu", f"{query} Allemagne Europe France réaction analyse", "EU-Nachbarperspektive")
+    if any(word in low for word in ("bitcoin", "crypto", "krypto", "ethereum", "openai", "nvidia", "semiconductor", "chip")) or re.search(r"\b(ai|ki)\b", low):
+        add("en", "United States/Global", "market_or_tech_primary", f"{query} latest market technical analysis causes impact", "Englisch dominiert Tech-/Marktdebatten")
+        add("zh", "China/Asia", "market_or_policy_contrast", f"{query} 中国 市场 政策 影响 分析", "China/Asien ist bei Tech/Markets oft relevant")
+        add("ja", "Japan", "market_regional", f"{query} 日本 市場 影響 分析", "Japanische Markt-/Tech-Perspektive")
+        add("ko", "South Korea", "market_regional", f"{query} 한국 시장 영향 분석", "Koreanische Tech-/Marktperspektive")
+
+    if not entries:
+        add("en", "International", "global_analysis", f"{query} latest developments causes consequences reactions analysis", "Englisch als breiter internationaler Quellenraum")
+        add("de", "German-speaking", "user_language_context", f"{query} Ursache Folgen Reaktionen Analyse", "Nutzersprache fuer lokalen Kontext")
+    return entries[:8]
+
+
+def _grok_search_likely_available(config):
+    try:
+        settings = _grok_search_config(config or {})
+        return bool(str(settings.get("api_key") or "").strip())
+    except Exception:
+        return False
 
 
 def _load_rss_module():
@@ -941,6 +2613,14 @@ def _load_grok_search_module():
     return _GROK_SEARCH_MODULE
 
 
+def _load_youtube_transcript_module():
+    global _YOUTUBE_TRANSCRIPT_MODULE
+    if _YOUTUBE_TRANSCRIPT_MODULE is not None:
+        return _YOUTUBE_TRANSCRIPT_MODULE
+    _YOUTUBE_TRANSCRIPT_MODULE = _load_sibling_module("youtube_transcript", "deepdive_youtube_transcript")
+    return _YOUTUBE_TRANSCRIPT_MODULE
+
+
 def _load_sibling_module(module_name, import_name):
     module_path = os.path.abspath(os.path.join(MODUL_DIR, "..", module_name, "module.py"))
     if not os.path.exists(module_path):
@@ -951,6 +2631,65 @@ def _load_sibling_module(module_name, import_name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _is_youtube_url(url):
+    try:
+        parsed = urllib.parse.urlparse(str(url or ""))
+        host = (parsed.netloc or "").lower().split("@")[-1].split(":")[0]
+        return (
+            host == "youtu.be"
+            or host == "youtube.com"
+            or host.endswith(".youtube.com")
+            or host.endswith(".youtube-nocookie.com")
+        )
+    except Exception:
+        return False
+
+
+def _youtube_transcript_page(url, query, config, max_chars):
+    youtube_module = _load_youtube_transcript_module()
+    youtube_config = _module_settings(config, "youtube_transcript")
+    youtube_config.update(
+        {
+            "data_dir": config.get("data_dir", ""),
+            "rag_pool": config.get("rag_pool", "DeepDive"),
+            "home_dir": config.get("home_dir", ""),
+            "project_root": config.get("project_root", ""),
+            "modules_dir": config.get("modules_dir", ""),
+            "max_output_chars": max(12000, min(max_chars + 8000, 80000)),
+        }
+    )
+    if youtube_config.get("xai_api_key"):
+        youtube_config["xai_api_key"] = _resolve_api_key_alias(youtube_config.get("xai_api_key"), config)
+    payload = {
+        "url": url,
+        "languages": str(config.get("youtube_transcript_languages") or youtube_config.get("preferred_languages") or "de,en,auto"),
+        "fallback_stt": bool(config.get("youtube_transcript_fallback_stt", False)),
+    }
+    result = youtube_module.handle_tool("youtube_transcript.fetch", [json.dumps(payload)], youtube_config)
+    if not result.get("success"):
+        raise RuntimeError(str(result.get("data") or "youtube_transcript.fetch failed")[:1200])
+    packet = str(result.get("data") or "")
+    title = _line_value(packet, "title") or "YouTube transcript"
+    upload_date = _line_value(packet, "upload_date")
+    source_url = _line_value(packet, "source_url") or url
+    links = [{"text": "YouTube video", "url": source_url}]
+    text = packet
+    if query and "transcript:" in packet:
+        # Keep metadata plus transcript; DeepDive hint extraction can work directly on this.
+        text = packet
+    return {
+        "title": title,
+        "text": text,
+        "links": links,
+        "dates": [upload_date] if upload_date else [],
+        "meta": {
+            "description": "YouTube transcript via youtube_transcript.fetch",
+            "og:title": title,
+            "source_type": "youtube_transcript",
+        },
+    }
 
 
 def _collect_reddit_sources(query, max_threads, config):
@@ -1026,7 +2765,7 @@ def _external_packet_note(crawl_id, query, tool, packet):
         lines.append("- " + url)
     lines.extend(
         [
-            "assessment_required: compare with fetched sources; treat social/X/Reddit as signal, not proof",
+            "assessment_required: extract claims, opinions, analogies and source leads; compare with fetched sources; treat social/X/Reddit as signal or lead, not proof",
             "packet_text:",
             str(packet or "")[:20000],
         ]
@@ -1061,11 +2800,13 @@ def _grok_search_config(config):
     settings = _module_settings(config, "grok_search")
     explicit_key = str((config or {}).get("grok_search_api_key") or "").strip()
     if explicit_key:
-        settings["api_key"] = explicit_key
+        settings["api_key"] = _resolve_api_key_alias(explicit_key, config)
+    elif settings.get("api_key"):
+        settings["api_key"] = _resolve_api_key_alias(settings.get("api_key"), config)
     if not settings.get("api_key"):
         backend_key = _xai_api_key_from_runtime(config)
         if backend_key:
-            settings["api_key"] = backend_key
+            settings["api_key"] = _resolve_api_key_alias(backend_key, config)
     explicit_model = str((config or {}).get("grok_search_model") or "").strip()
     if explicit_model:
         settings["model"] = explicit_model
@@ -1096,7 +2837,12 @@ def _data_dir(config):
 def _settings_has_key(settings):
     if not isinstance(settings, dict):
         return False
-    return bool(settings.get("api_key") or settings.get("bearer_token") or settings.get("grok_api_key"))
+    return bool(
+        settings.get("api_key")
+        or settings.get("bearer_token")
+        or settings.get("grok_api_key")
+        or settings.get("xai_api_key")
+    )
 
 
 def _xai_api_key_from_runtime(config):
@@ -1107,8 +2853,26 @@ def _xai_api_key_from_runtime(config):
         if backend.get("typ") == "Grok" or "grok" in str(backend.get("id", "")).lower():
             key = str(backend.get("api_key") or "").strip()
             if key:
-                return key
+                return _resolve_api_key_alias(key, config)
     return os.environ.get("XAI_API_KEY", "").strip() or os.environ.get("GROK_API_KEY", "").strip()
+
+
+def _resolve_api_key_alias(value, config):
+    text = str(value or "").strip()
+    if not text.startswith("api."):
+        return text
+    key_id = text.split(".", 1)[1].strip()
+    if not key_id:
+        return text
+    runtime = _runtime_config(config)
+    for item in runtime.get("api_key_vault", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "").strip() == key_id:
+            secret = str(item.get("secret") or "").strip()
+            if secret:
+                return secret
+    return text
 
 
 def _search_web(query, max_results, timeout_s, config):
@@ -1163,7 +2927,7 @@ def _tavily_api_key(config):
     cfg = config or {}
     explicit = str(cfg.get("tavily_api_key") or "").strip()
     if explicit:
-        return explicit
+        return _resolve_api_key_alias(explicit, config)
 
     env_key = os.environ.get("TAVILY_API_KEY", "").strip()
     if env_key:
@@ -1176,7 +2940,7 @@ def _tavily_api_key(config):
         for key in ("api_key", "tavily_api_key"):
             value = str(tavily_cfg.get(key) or "").strip()
             if value:
-                return value
+                return _resolve_api_key_alias(value, config)
     except Exception:
         pass
     return ""
@@ -1262,21 +3026,30 @@ def _search_duckduckgo(query, max_results, timeout_s):
     return out
 
 
-def _select_sources(candidates, max_sources, query=""):
+def _select_sources(candidates, max_sources, query="", min_branch_sources=0):
     selected = []
+    selected_urls = set()
     host_counts = {}
     preferred = []
     terms = _query_terms(query)
     broad_query = _is_broad_query(query)
+    current_query = _query_wants_current(query) and not _query_has_historical_scope(query)
+    current_year = datetime.now(timezone.utc).year
     for result in candidates:
         host = urllib.parse.urlparse(result["url"]).netloc.lower().removeprefix("www.")
         score = 0
         text = f"{result.get('title','')} {result.get('snippet','')} {result.get('url','')}".lower()
         term_hits = sum(1 for term in terms if term in text)
-        if terms and term_hits == 0 and not broad_query and result.get("discovery_method") != "rss":
+        source_terms = _query_terms(result.get("search_query") or "")
+        source_term_hits = sum(1 for term in source_terms if term in text)
+        is_branch = bool(result.get("branch_name"))
+        if terms and term_hits == 0 and source_term_hits == 0 and not broad_query and result.get("discovery_method") != "rss" and not is_branch:
             continue
         score += term_hits * 8
-        if terms and term_hits >= min(2, len(terms)):
+        score += source_term_hits * 5
+        if is_branch:
+            score += 14
+        if (terms and term_hits >= min(2, len(terms))) or source_term_hits >= 2:
             score += 4
         if result.get("discovery_method") == "rss":
             score += 6
@@ -1286,14 +3059,41 @@ def _select_sources(candidates, max_sources, query=""):
             score += 3
         if _extract_dates(text):
             score += 2
+        if current_query:
+            candidate_years = _query_years(text)
+            if current_year in candidate_years:
+                score += 4
+            if any(year < current_year for year in candidate_years):
+                score -= 12
         preferred.append((score, result))
     preferred.sort(key=lambda item: item[0], reverse=True)
+
+    branch_limit = min(max(0, int(min_branch_sources or 0)), max_sources)
+    branch_seen = set()
+    if branch_limit > 0:
+        for _, result in preferred:
+            branch = str(result.get("branch_name") or "").strip()
+            if not branch or branch in branch_seen:
+                continue
+            host = urllib.parse.urlparse(result["url"]).netloc.lower().removeprefix("www.")
+            if host_counts.get(host, 0) >= 2:
+                continue
+            selected.append(result)
+            selected_urls.add(result["url"])
+            branch_seen.add(branch)
+            host_counts[host] = host_counts.get(host, 0) + 1
+            if len(selected) >= branch_limit:
+                break
+
     for _, result in preferred:
+        if result["url"] in selected_urls:
+            continue
         host = urllib.parse.urlparse(result["url"]).netloc.lower().removeprefix("www.")
         if host_counts.get(host, 0) >= 2:
             continue
         host_counts[host] = host_counts.get(host, 0) + 1
         selected.append(result)
+        selected_urls.add(result["url"])
         if len(selected) >= max_sources:
             break
     return selected
@@ -1401,6 +3201,8 @@ def _derive_search_queries(query, page):
     )
     dates = page.get("dates") or []
     snippets = _key_passages(query, page.get("text") or "", dates)[:3]
+    leads = _lead_hints(query, page.get("text") or "", page.get("links") or [])[:3]
+    causal = _causality_hints(query, page.get("text") or "", snippets)[:2]
     variants = []
     if title:
         title_terms = " ".join(_important_words(title, 6))
@@ -1419,16 +3221,26 @@ def _derive_search_queries(query, page):
         passage_terms = " ".join(_important_words(passage, 5))
         if passage_terms:
             variants.append(f"{query} {passage_terms} Reaktion Analyse")
-    return [q for q in _unique(variants) if q.lower() != _collapse_ws(query).lower()][:3]
+    for lead in leads:
+        lead_terms = " ".join(_important_words(lead, 6))
+        if lead_terms:
+            variants.append(f"{query} {lead_terms} pruefen Quelle Vergleich")
+    for hint in causal:
+        hint_terms = " ".join(_important_words(hint, 5))
+        if hint_terms:
+            variants.append(f"{query} {hint_terms} Ursache Mechanismus")
+    return [q for q in _unique(variants) if q.lower() != _collapse_ws(query).lower()][:4]
 
 
 def _relevance_score(query, result, page):
     text = f"{result.get('title','')} {result.get('snippet','')} {page.get('title','')} {page.get('text','')[:4000]}".lower()
     terms = _query_terms(query)
     term_hits = sum(1 for term in terms if term in text)
-    if terms and term_hits == 0 and not _is_broad_query(query):
+    source_terms = _query_terms(result.get("search_query") or "")
+    source_term_hits = sum(1 for term in source_terms if term in text)
+    if terms and term_hits == 0 and source_term_hits == 0 and not _is_broad_query(query):
         return 0
-    score = term_hits * 3
+    score = term_hits * 3 + source_term_hits * 2
     if any(word in text for word in ("aktuell", "news", "nachrichten", "heute", "live", "entwicklung")):
         score += 8
     if page.get("dates"):
@@ -1486,7 +3298,7 @@ def _causality_hints(query, text, key_passages):
     scored = []
     for raw in candidates:
         sentence = _collapse_ws(raw)
-        if len(sentence) < 80 or len(sentence) > 900:
+        if len(sentence) < 55 or len(sentence) > 900:
             continue
         low = sentence.lower()
         score = sum(3 for term in query_terms if term in low)
@@ -1505,6 +3317,149 @@ def _causality_hints(query, text, key_passages):
         if len(out) >= 6:
             break
     return out
+
+
+def _claim_hints(query, text, key_passages):
+    parts = list(key_passages or [])
+    parts.extend(re.split(r"(?<=[.!?])\s+|\n+", text or ""))
+    terms = _query_terms(query)
+    claim_words = (
+        "sagt", "sagte", "erklaerte", "erklärte", "behauptet", "laut",
+        "according to", "said", "claimed", "reported", "warned", "announced",
+        "fordert", "kritisiert", "bestreitet", "denies", "accuses", "argues",
+        "认为", "表示", "称", "警告", "主張", "述べ", "발표", "주장",
+    )
+    return _scored_sentences(parts, terms, claim_words, 6, min_score=3)
+
+
+def _event_hints(query, text, dates):
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text or "")
+    terms = _query_terms(query)
+    event_words = (
+        "am ", "seit", "zuvor", "danach", "heute", "gestern", "angekuendigt",
+        "angekündigt", "beschlossen", "veroeffentlicht", "veröffentlicht",
+        "announced", "launched", "published", "reported", "after", "before",
+        "timeline", "chronologie", "年", "月", "日", "発表", "宣布", "发布",
+    )
+    candidates = []
+    for raw in parts:
+        sentence = _collapse_ws(raw)
+        if any(date and date in sentence for date in dates[:8]) or _extract_dates(sentence):
+            candidates.append(sentence)
+        elif any(word in sentence.lower() for word in event_words):
+            candidates.append(sentence)
+    return _scored_sentences(candidates, terms, event_words, 6, min_score=2)
+
+
+def _lead_hints(query, text, links):
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text or "")
+    terms = _query_terms(query)
+    lead_words = (
+        "vergleich", "vergleichbar", "wie ", "ähnlich", "aehnlich", "siehe",
+        "steht auch", "laut", "quelle", "link", "thread", "comment", "kommentar",
+        "compare", "similar to", "like ", "also see", "source", "on x", "on reddit",
+        "analog", "parallele", "precedent", "例", "类似", "参照", "비슷", "출처",
+    )
+    candidates = [sentence for sentence in parts if any(word in sentence.lower() for word in lead_words)]
+    for link in links or []:
+        label = _collapse_ws(link.get("text") or "")
+        url = link.get("url") or ""
+        if label and url:
+            candidates.append(f"{label} -> {url}")
+    return _scored_sentences(candidates, terms, lead_words, 8, min_score=1)
+
+
+def _contrast_hints(query, text, key_passages):
+    parts = list(key_passages or [])
+    parts.extend(re.split(r"(?<=[.!?])\s+|\n+", text or ""))
+    terms = _query_terms(query)
+    contrast_words = (
+        "aber", "jedoch", "widerspruch", "dagegen", "andererseits", "kritik",
+        "bestreitet", "unlike", "however", "but", "contrary", "disputed",
+        "critics", "supporters", "whereas", "反对", "但是", "然而", "批评",
+        "一方", "しかし", "반면", "하지만",
+    )
+    return _scored_sentences(parts, terms, contrast_words, 6, min_score=3)
+
+
+def _scored_sentences(parts, terms, marker_words, limit, min_score=1):
+    scored = []
+    for raw in parts:
+        sentence = _collapse_ws(raw)
+        if len(sentence) < 55 or len(sentence) > 1000:
+            continue
+        low = sentence.lower()
+        score = sum(2 for term in terms if term in low)
+        score += sum(2 for word in marker_words if word in low)
+        if _extract_urls(sentence):
+            score += 2
+        if _extract_dates(sentence):
+            score += 2
+        if score >= min_score:
+            scored.append((score, sentence))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    out = []
+    seen = set()
+    for _, sentence in scored:
+        key = sentence[:180].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(sentence)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _source_perspective(result, page, research_plan):
+    if result.get("impact_language") or result.get("impact_country") or result.get("impact_role"):
+        return {
+            "language": result.get("impact_language") or "",
+            "country": result.get("impact_country") or "",
+            "role": result.get("impact_role") or "",
+        }
+    url = result.get("url") or ""
+    host = _host(url)
+    haystack = " ".join(
+        [
+            str(result.get("title") or ""),
+            str(page.get("title") or ""),
+            host,
+            urllib.parse.urlparse(url).path,
+        ]
+    ).lower()
+    for item in research_plan.get("impact_plan", []) or []:
+        language = str(item.get("language") or "").lower()
+        country = str(item.get("country") or "")
+        role = str(item.get("role") or "")
+        if language and (f"language={language}" in haystack or language in haystack.split()):
+            return {"language": language, "country": country, "role": role}
+        country_token = country.lower().split("/")[0]
+        if country_token and country_token in haystack:
+            return {"language": language, "country": country, "role": role}
+    tld_language = _language_from_host(host)
+    if tld_language:
+        return tld_language
+    return {"language": "", "country": "", "role": "unknown_or_international"}
+
+
+def _language_from_host(host):
+    checks = [
+        (".jp", "ja", "Japan"),
+        (".cn", "zh", "China"),
+        (".tw", "zh-TW", "Taiwan"),
+        (".kr", "ko", "South Korea"),
+        (".ua", "uk", "Ukraine"),
+        (".ru", "ru", "Russia"),
+        (".de", "de", "Germany"),
+        (".fr", "fr", "France"),
+        (".ir", "fa", "Iran"),
+        (".il", "he", "Israel"),
+    ]
+    for suffix, language, country in checks:
+        if host.endswith(suffix):
+            return {"language": language, "country": country, "role": "host_tld_inferred"}
+    return None
 
 
 def _page_role(url, result, page, query):
@@ -1601,14 +3556,82 @@ def _source_type(url, meta):
 
 def _skip_link(url, label):
     low = f"{url} {label}".lower()
+    try:
+        parsed = urllib.parse.urlparse(str(url or ""))
+        host = (parsed.netloc or "").lower().removeprefix("www.")
+        path = (parsed.path or "").lower()
+        query = (parsed.query or "").lower()
+    except Exception:
+        host = ""
+        path = ""
+        query = ""
+    if host.endswith("biggo.com") or host.endswith("linkedin.com"):
+        return True
+    if _is_youtube_url(url) and any(part in path for part in ("/results", "/playlist", "/shorts")):
+        return True
+    if re.search(r"/(search|suche)(/|$)", path) or path.rstrip("/").endswith(("/search", "/suche")):
+        return True
+    if "/users/" in path or "forgot" in path or "referer_url=" in query or "hot_keyword=" in query:
+        return True
     bad_parts = (
         "#", "mailto:", "javascript:", "/login", "/signin", "/abo", "/newsletter",
         "/signup", "/register", "session_redirect=", "/datenschutz", "/privacy",
-        "/impressum", "/kontakt", "/shop", "/account",
+        "/impressum", "/kontakt", "/shop", "/account", "/mye/", "myebay",
+        "bidsoffers", "security measure", "sicherheitsmaßnahme", "sicherheitsmassnahme",
+        "signin.ebay.", "auth.ebay.", "ebay.de/help", "ebay.com/help",
         ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".pdf", ".zip", ".mp4",
-        "facebook.com", "instagram.com", "linkedin.com/share", "whatsapp", "mailto",
+        "facebook.com", "instagram.com", "whatsapp", "mailto",
+        "twitter.com/intent", "x.com/intent", "twitter.com/share", "x.com/share",
+        "flipboard.com", "pinterest.com", "reddit.com/submit", "/print", "print=true",
+        "kommentarbereich", "comment-", "#comments", "sharearticle", "sharing",
+        "trk=article-ssr",
     )
-    return any(part in low for part in bad_parts)
+    if any(part in low for part in bad_parts):
+        return True
+    label_low = _collapse_ws(label or "").lower()
+    bad_labels = {
+        "x", "twitter", "facebook", "linkedin", "flipboard", "whatsapp",
+        "teilen", "share", "vorlesen", "drucken", "print", "sign in", "login",
+        "subscribe", "newsletter", "blätterkatalog", "blaetterkatalog",
+        "re-use guardian content", "re-use content", "reuse content",
+    }
+    if label_low in bad_labels:
+        return True
+    return False
+
+
+def _low_value_page(url, page):
+    title = _collapse_ws((page or {}).get("title") or "").lower()
+    text = _collapse_ws((page or {}).get("text") or "").lower()
+    meta = (page or {}).get("meta") or {}
+    host = _host(url)
+    if (
+        host in {"x.com", "twitter.com", "flipboard.com"}
+        or host.endswith(".x.com")
+        or host.endswith(".twitter.com")
+        or host.endswith(".biggo.com")
+        or host.endswith(".linkedin.com")
+        or host in {"biggo.com", "linkedin.com"}
+    ):
+        return True
+    if _is_youtube_url(url) and meta.get("source_type") != "youtube_transcript":
+        return True
+    if title in {"x.com", "twitter", "flipboard", "anmelden", "sign in"}:
+        return True
+    if any(marker in title for marker in ("blätterkatalog", "blaetterkatalog", "re-use guardian content", "search", "suche", "forgot password")):
+        return True
+    parsed = urllib.parse.urlparse(str(url or ""))
+    path = (parsed.path or "").lower()
+    if re.search(r"/(search|suche)(/|$)", path) or "/users/" in path or "forgot" in path:
+        return True
+    if len(text) < 160 and any(marker in text for marker in ("sign in", "enable javascript", "log in", "cookies")):
+        return True
+    return False
+
+
+def _looks_like_tracking_id(value):
+    text = _collapse_ws(value or "")
+    return bool(re.fullmatch(r"[a-fA-F0-9]{16,}", text))
 
 
 def _looks_like_navigation(label, path):
@@ -1751,9 +3774,15 @@ def _parse_page(url, page_html):
 
 def _crawl_note(crawl_id, query, result, page, max_chars):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    analysis_query = result.get("_analysis_query") or result.get("search_query") or query
     key_passages = result.get("_key_passages") or []
     causality_hints = result.get("_causality_hints") or []
-    text = _prepared_source_text(query, page["text"], key_passages)
+    claim_hints = result.get("_claim_hints") or []
+    event_hints = result.get("_event_hints") or []
+    lead_hints = result.get("_lead_hints") or []
+    contrast_hints = result.get("_contrast_hints") or []
+    perspective = result.get("_perspective") or {}
+    text = _prepared_source_text(analysis_query, page["text"], key_passages)
     if len(text) > max_chars:
         text = text[:max_chars].rstrip() + "\n[Text gekuerzt]"
     meta = page["meta"]
@@ -1767,11 +3796,20 @@ def _crawl_note(crawl_id, query, result, page, max_chars):
         f"page_role: {result.get('_page_role') or 'source'}",
         f"discovery_method: {result.get('discovery_method') or 'search'}",
         f"discovery_reason: {result.get('discovery_reason') or ''}",
+        f"branch_name: {result.get('branch_name') or ''}",
+        f"branch_reason: {result.get('branch_reason') or ''}",
+        f"subcrawl_id: {result.get('subcrawl_id') or ''}",
+        f"subcrawl_topic: {result.get('subcrawl_topic') or ''}",
+        f"subcrawl_reason: {result.get('subcrawl_reason') or ''}",
         f"parent_url: {result.get('parent_url') or ''}",
         f"search_query: {result.get('search_query', '')}",
+        f"analysis_query: {analysis_query}",
         f"source_url: {result.get('url', '')}",
         f"source_title: {page['title'] or result.get('title') or ''}",
         f"source_type: {_source_type(result.get('url', ''), meta)}",
+        f"source_language: {perspective.get('language', '')}",
+        f"source_country: {perspective.get('country', '')}",
+        f"perspective_role: {perspective.get('role', '')}",
         f"source_reliability: {result.get('_reliability') or _reliability_label(result.get('url', ''))}",
         f"relevance_score: {result.get('_relevance_score', 0)}",
         f"recency_label: {result.get('_recency_label') or _recency_label(page.get('dates') or [])}",
@@ -1789,13 +3827,29 @@ def _crawl_note(crawl_id, query, result, page, max_chars):
         lines.append("key_passages:")
         for passage in key_passages[:8]:
             lines.append("- " + passage)
+    if event_hints:
+        lines.append("event_hints:")
+        for hint in event_hints[:6]:
+            lines.append("- " + hint)
+    if claim_hints:
+        lines.append("claim_hints:")
+        for hint in claim_hints[:6]:
+            lines.append("- " + hint)
     if causality_hints:
         lines.append("causality_hints:")
         for hint in causality_hints[:6]:
             lines.append("- " + hint)
+    if contrast_hints:
+        lines.append("contrast_hints:")
+        for hint in contrast_hints[:6]:
+            lines.append("- " + hint)
+    if lead_hints:
+        lines.append("lead_hints:")
+        for hint in lead_hints[:8]:
+            lines.append("- " + hint)
     lines.extend(
         [
-            "assessment_required: relevance, reliability, date_context, uncertainty, contradictions",
+            "assessment_required: relevance, reliability, date_context, uncertainty, contradictions, causal_links, perspective_contrast, leads_to_follow",
             "source_text:",
             text,
         ]
@@ -1816,6 +3870,8 @@ def _crawl_manifest_note(
     fetched,
     failed,
     search_errors,
+    research_plan,
+    subcrawl_plan,
     trace,
     tool_trace,
 ):
@@ -1828,15 +3884,40 @@ def _crawl_manifest_note(
         f"source_last_seen_utc: {now}",
         f"topic: {query}",
         "source_title: Crawl Manifest",
+        f"impact_languages: {', '.join(item.get('language', '') for item in research_plan.get('impact_plan', []))}",
+        f"impact_regions: {', '.join(_unique([item.get('country', '') for item in research_plan.get('impact_plan', []) if item.get('country')]))}",
+        f"branch_queries: {' | '.join(research_plan.get('branch_queries', [])[:12])}",
+        f"subcrawl_candidates: {len(subcrawl_plan or [])}",
+        f"subcrawls_run: {sum(1 for item in (subcrawl_plan or []) if item.get('status') == 'run')}",
+        "research_objective: reconstruct_events_claims_leads_causal_links_perspectives_without_own_opinion",
         f"sources_fetched: {len(fetched)}",
         f"failed_count: {len(failed)}",
         f"search_error_count: {len(search_errors)}",
-        "sources:",
+        "search_plan:",
     ]
+    for idx, item in enumerate(research_plan.get("impact_plan", [])[:12], 1):
+        lines.append(
+            f"{idx}. language={item.get('language','')} country={item.get('country','')} role={item.get('role','')} reason={item.get('reason','')}"
+        )
+    if research_plan.get("branch_plan"):
+        lines.append("branch_plan:")
+        for idx, item in enumerate(research_plan.get("branch_plan", [])[:12], 1):
+            lines.append(
+                f"{idx}. branch={item.get('branch','')} reason={item.get('reason','')} query={item.get('query','')}"
+            )
+    if subcrawl_plan:
+        lines.append("subcrawl_plan:")
+        for idx, item in enumerate((subcrawl_plan or [])[:12], 1):
+            lines.append(
+                f"{idx}. status={item.get('status','')} score={item.get('score','')} family={item.get('family','')} recommendation={item.get('recommendation','')} worth_followup={item.get('worth_followup','')} branch={item.get('branch','')} topic={item.get('topic','')} reason={item.get('reason','')} next_step={item.get('next_step','')} query={item.get('query','')}"
+            )
+    lines.extend([
+        "sources:",
+    ])
     for idx, item in enumerate(fetched, 1):
         dates = "; ".join(item.get("dates") or [])
         lines.append(
-            f"{idx}. role={item.get('page_role', 'source')} depth={item.get('depth')} method={item.get('discovery_method')} score={item.get('relevance_score')} recency={item.get('recency_label')} title={item.get('title')} url={item.get('url')} parent={item.get('parent_url')} dates={dates}"
+            f"{idx}. role={item.get('page_role', 'source')} branch={item.get('branch_name','')} subcrawl={item.get('subcrawl_id','')} subcrawl_topic={item.get('subcrawl_topic','')} perspective={item.get('perspective_role','')} country={item.get('source_country','')} language={item.get('source_language','')} depth={item.get('depth')} method={item.get('discovery_method')} score={item.get('relevance_score')} recency={item.get('recency_label')} title={item.get('title')} url={item.get('url')} parent={item.get('parent_url')} dates={dates}"
         )
     if failed:
         lines.append("failures:")
@@ -1921,6 +4002,107 @@ def _trace_value(value):
 def _stored_id(storage_msg):
     m = re.search(r"id:\s*([A-Za-z0-9_-]+)", storage_msg or "")
     return m.group(1) if m else ""
+
+
+def _extract_crawl_id(text):
+    m = re.search(r"\bdd-\d{8}T\d{6}Z-[a-fA-F0-9]{8}\b", str(text or ""))
+    return m.group(0) if m else ""
+
+
+def _dominant_crawl_id(entries):
+    counts = {}
+    order = []
+    for entry in entries:
+        text = str(entry.get("text") or "")
+        crawl_id = str(entry.get("crawl_id") or _line_value(text, "crawl_id") or "")
+        if not crawl_id:
+            continue
+        if crawl_id not in counts:
+            order.append(crawl_id)
+            counts[crawl_id] = 0
+        counts[crawl_id] += 1
+    if not counts:
+        return ""
+    return sorted(order, key=lambda value: counts[value], reverse=True)[0]
+
+
+def _pack_entry_sort_key(entry):
+    text = str(entry.get("text") or "")
+    relevance = entry.get("relevance_score") or _line_value(text, "relevance_score")
+    try:
+        relevance_value = int(float(str(relevance).strip()))
+    except Exception:
+        relevance_value = 0
+    depth = entry.get("source_depth") or _line_value(text, "source_depth")
+    try:
+        depth_value = int(float(str(depth).strip()))
+    except Exception:
+        depth_value = 9
+    timestamp = str(entry.get("timestamp") or entry.get("captured_at_utc") or _line_value(text, "captured_at_utc") or "")
+    return (relevance_value, -depth_value, timestamp)
+
+
+def _section_bullets(text, section, max_items):
+    wanted = section.rstrip(":") + ":"
+    lines = str(text or "").splitlines()
+    out = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if not in_section:
+            if stripped == wanted:
+                in_section = True
+            continue
+        if stripped.startswith("- "):
+            out.append(_collapse_ws(stripped[2:]))
+            if len(out) >= max_items:
+                break
+            continue
+        if stripped and not line.startswith((" ", "\t")):
+            break
+    return [item for item in out if item]
+
+
+def _numbered_section_lines(text, section, max_items):
+    wanted = section.rstrip(":") + ":"
+    lines = str(text or "").splitlines()
+    out = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if not in_section:
+            if stripped == wanted:
+                in_section = True
+            continue
+        if re.match(r"^\d+\.\s+", stripped):
+            out.append(_collapse_ws(re.sub(r"^\d+\.\s+", "", stripped)))
+            if len(out) >= max_items:
+                break
+            continue
+        if stripped and stripped.endswith(":") and not line.startswith((" ", "\t")):
+            break
+    return [item for item in out if item]
+
+
+def _source_text_lines(text, max_items):
+    payload = _after_marker(text, "source_text:", 2400)
+    out = []
+    for line in payload.splitlines():
+        line = _collapse_ws(line)
+        if not line or _is_boilerplate_line(line):
+            continue
+        out.append(line)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _after_marker(text, marker, max_chars):
+    raw = str(text or "")
+    idx = raw.find(marker)
+    if idx < 0:
+        return ""
+    return raw[idx + len(marker):].strip()[:max_chars]
 
 
 def _prepared_source_text(query, raw_text, key_passages):
@@ -2018,7 +4200,7 @@ def _source_note(source):
         lines.append("date_hints: " + "; ".join(dates[:10]))
     lines.extend(
         [
-            "assessment_required: relevance, reliability, date_context, uncertainty",
+            "assessment_required: relevance, reliability, date_context, uncertainty, claims, leads, causal_links, perspective_contrast",
             "source_material:",
             source.strip(),
         ]
@@ -2059,7 +4241,15 @@ def _store_rag_note(note, config):
             "captured_at_utc": _line_value(note, "captured_at_utc"),
             "source_depth": _line_value(note, "source_depth"),
             "page_role": _line_value(note, "page_role"),
+            "source_language": _line_value(note, "source_language"),
+            "source_country": _line_value(note, "source_country"),
+            "perspective_role": _line_value(note, "perspective_role"),
             "discovery_method": _line_value(note, "discovery_method"),
+            "branch_name": _line_value(note, "branch_name"),
+            "branch_reason": _line_value(note, "branch_reason"),
+            "subcrawl_id": _line_value(note, "subcrawl_id"),
+            "subcrawl_topic": _line_value(note, "subcrawl_topic"),
+            "subcrawl_reason": _line_value(note, "subcrawl_reason"),
             "parent_url": _line_value(note, "parent_url"),
             "recency_label": _line_value(note, "recency_label"),
             "relevance_score": _line_value(note, "relevance_score"),

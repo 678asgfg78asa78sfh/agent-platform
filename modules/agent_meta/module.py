@@ -11,6 +11,7 @@ MODULE = {
     "tools": [
         {"name": "agent.capabilities", "description": "Zeigt nur die Tools, die dieser Agent wirklich verwenden darf. Nutze das wenn du wissen willst was du kannst.", "params": []},
         {"name": "agent.module_info", "description": "Zeigt Details zu einem bestimmten Modul (Settings, Tools, Beschreibung)", "params": ["modul_name"]},
+        {"name": "agent.module_graph", "description": "Zeigt Modul-Abhaengigkeiten, Links, Berechtigungen und Risiko-Markierungen. Nutze das, wenn unklar ist welches Modul worauf zugreift.", "params": ["modul_id_optional"]},
         {"name": "agent.instances", "description": "Zeigt alle aktiven Modul-Instanzen und deren Konfiguration", "params": []},
         {"name": "agent.aufgaben", "description": "Zeigt aktuelle Aufgaben im Pool (wartend, laufend, erledigt)", "params": []},
     ],
@@ -29,6 +30,9 @@ def handle_tool(tool_name, params, config):
     elif tool_name == "agent.module_info":
         name = params[0] if params else ""
         return _module_info(port, token, name)
+    elif tool_name == "agent.module_graph":
+        name = params[0] if params else ""
+        return _module_graph(port, token, name)
     elif tool_name == "agent.instances":
         return _instances(port, token)
     elif tool_name == "agent.aufgaben":
@@ -63,7 +67,8 @@ def _capabilities(port, token):
         return _load_failed(f"/api/module-capabilities/{caller}", data.get("error") if isinstance(data, dict) else err)
 
     lines = [
-        f"Verfuegbare Tools fuer '{data.get('id', caller)}':",
+        "AGENT_CAPABILITIES",
+        f"Modul: {data.get('id', caller)}",
         f"LLM Backend: {data.get('llm_backend', '-')}",
         f"RAG Pool: {data.get('rag_pool') or '-'}",
         "",
@@ -72,26 +77,48 @@ def _capabilities(port, token):
     rust_tools = data.get("rust_tools") or []
     py_tools = data.get("python_tools") or []
     if rust_tools:
-        lines.append("Rust-Tools:")
-        for t in rust_tools:
-            params = ", ".join(t.get("params") or [])
-            lines.append(f"- {t.get('name')}({params}) — {t.get('description', '')}")
+        lines.append(f"Rust-Tools ({len(rust_tools)}): " + _join_tool_names(rust_tools))
     if py_tools:
         if rust_tools:
             lines.append("")
-        lines.append("Python-Tools:")
+        lines.append(f"Python-Tools ({len(py_tools)}):")
+        grouped = {}
         for t in py_tools:
-            params = ", ".join(t.get("params") or [])
             via = t.get("via_python_module") or "python"
-            lines.append(f"- {t.get('name')}({params}) [{via}] — {t.get('description', '')}")
+            grouped.setdefault(via, []).append(t)
+        for via in sorted(grouped):
+            lines.append(f"- {via}: {_join_tool_names(grouped[via])}")
     if not rust_tools and not py_tools:
         lines.append("(keine Tools verfuegbar)")
 
     linked = data.get("linked_modules") or []
     if linked:
-        lines.extend(["", "Verlinkte Modulinstanzen:", "- " + ", ".join(linked)])
+        shown = ", ".join(str(x) for x in linked[:30])
+        suffix = f" (+{len(linked) - 30} weitere)" if len(linked) > 30 else ""
+        lines.extend(["", f"Verlinkte Modulinstanzen ({len(linked)}):", "- " + shown + suffix])
+    lines.extend([
+        "",
+        "Details zu einem Modul: agent.module_info(modul_name).",
+    ])
 
-    return {"success": True, "data": "\n".join(lines)}
+    return {"success": True, "data": _cap_text("\n".join(lines), 3600)}
+
+def _join_tool_names(tools):
+    names = []
+    for t in tools:
+        name = str(t.get("name") or "?")
+        params = t.get("params") or []
+        if params:
+            name += "(" + ", ".join(str(p) for p in params[:4]) + (", ..." if len(params) > 4 else "") + ")"
+        else:
+            name += "()"
+        names.append(name)
+    return ", ".join(names)
+
+def _cap_text(text, max_chars):
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n...[gekuerzt; Details mit agent.module_info(modul_name)]"
 
 def _module_info(port, token, name):
     if not name:
@@ -137,6 +164,117 @@ def _instances(port, token):
         lines.append(f"  {m['id']:20s} typ={m['typ']:12s} llm={m.get('llm_backend', '?')}{port_info}")
 
     return {"success": True, "data": "\n".join(lines)}
+
+def _module_graph(port, token, name):
+    cfg, err = _snapshot_or_api("config_snapshot", port, "/api/config", token)
+    if not cfg:
+        return _load_failed("/api/config", err)
+    modules_meta, meta_err = _snapshot_or_api("modules_snapshot", port, "/api/modules", token)
+    if not modules_meta:
+        modules_meta = {"modules": []}
+
+    modules = cfg.get("module") or []
+    by_id = {m.get("id"): m for m in modules if isinstance(m, dict) and m.get("id")}
+    py_by_name = {m.get("name"): m for m in modules_meta.get("modules", []) if isinstance(m, dict) and m.get("name")}
+    py_tool_counts = {name: len((meta.get("tools") or [])) for name, meta in py_by_name.items()}
+    selected = _select_graph_modules(modules, name)
+    if name and not selected:
+        return {"success": False, "data": f"Modul/Filter '{name}' nicht gefunden"}
+
+    lines = [
+        "MODULE_GRAPH",
+        "Legende: LINK = explizite linked_modules-Kante, PERM = direkte Berechtigung, PY = dadurch sichtbares Python-Toolset, RISK = breiter/gefährlicher Zugriff.",
+        f"module_count: {len(modules)}",
+        f"shown: {len(selected)}",
+        "",
+    ]
+
+    for m in selected:
+        mid = m.get("id") or "?"
+        typ = m.get("typ") or "?"
+        llm = m.get("llm_backend") or "-"
+        persistent = m.get("persistent", True)
+        perms = [str(x) for x in (m.get("berechtigungen") or [])]
+        links = [str(x) for x in (m.get("linked_modules") or [])]
+        input_enhancers = [str(x) for x in (m.get("input_enhancers") or [])]
+        output_enhancers = [str(x) for x in (m.get("output_enhancers") or [])]
+        combined_enhancers = [str(x) for x in (m.get("combined_enhancers") or [])]
+        risks = _risk_labels(perms, links, typ, persistent)
+        lines.append(f"[{mid}] typ={typ} llm={llm} persistent={persistent}")
+        lines.append("  PERM: " + (", ".join(perms) if perms else "-"))
+        if risks:
+            lines.append("  RISK: " + ", ".join(risks))
+        if links:
+            lines.append("  LINK:")
+            for link in links:
+                target = by_id.get(link)
+                target_typ = (target or {}).get("typ") or _py_type_from_link(link, py_by_name) or "unknown"
+                py_name = _py_type_from_link(link, py_by_name)
+                py_suffix = ""
+                if py_name:
+                    py_suffix = f" | PY {py_name} tools={py_tool_counts.get(py_name, 0)}"
+                lines.append(f"    -> {link} typ={target_typ}{py_suffix}")
+        else:
+            lines.append("  LINK: -")
+        if input_enhancers or output_enhancers or combined_enhancers:
+            lines.append("  ENHANCER:")
+            if input_enhancers:
+                lines.append("    input: " + ", ".join(input_enhancers))
+            if output_enhancers:
+                lines.append("    output: " + ", ".join(output_enhancers))
+            if combined_enhancers:
+                lines.append("    combined: " + ", ".join(combined_enhancers))
+        inbound = [src.get("id") for src in modules if mid in (src.get("linked_modules") or [])]
+        if inbound:
+            lines.append("  INBOUND: " + ", ".join(str(x) for x in inbound[:12]))
+        lines.append("")
+
+    if meta_err:
+        lines.append(f"Hinweis: /api/modules nicht geladen: {meta_err}")
+    return {"success": True, "data": "\n".join(lines).rstrip()}
+
+def _select_graph_modules(modules, name):
+    needle = str(name or "").strip().lower()
+    if not needle:
+        return modules
+    out = []
+    for m in modules:
+        mid = str(m.get("id") or "")
+        typ = str(m.get("typ") or "")
+        if needle in mid.lower() or needle == typ.lower():
+            out.append(m)
+            continue
+        if any(needle in str(link).lower() for link in (m.get("linked_modules") or [])):
+            out.append(m)
+    return out
+
+def _py_type_from_link(link, py_by_name):
+    value = str(link or "")
+    for py_name in py_by_name:
+        if value == py_name or value.startswith(f"{py_name}."):
+            return py_name
+    return ""
+
+def _risk_labels(perms, links, typ, persistent):
+    risks = []
+    perm_set = set(perms or [])
+    if "py.*" in perm_set:
+        risks.append("py.*")
+    if "files.*" in perm_set or "files" in perm_set:
+        risks.append("files")
+    if "shell" in perm_set:
+        risks.append("shell")
+    if "agent.spawn" in perm_set or "agent.*" in perm_set:
+        risks.append("spawns_agents")
+    if "aufgaben" in perm_set:
+        risks.append("can_create_tasks")
+    if any(str(link).startswith("telegram_bot.") for link in links or []):
+        risks.append("telegram_channel_link")
+    if typ == "chat" and len(links or []) >= 10:
+        risks.append("large_tool_surface")
+    if not persistent:
+        risks.append("temporary")
+    return risks
 
 def _snapshot_or_api(snapshot_key, port, path, token):
     snap = _RUNTIME_CONFIG.get(snapshot_key)

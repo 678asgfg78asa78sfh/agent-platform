@@ -1,5 +1,6 @@
 """eBay.de search and listing analysis via eBay Browse API with public HTML fallback."""
 
+import ast
 import base64
 import html
 import json
@@ -37,6 +38,7 @@ MODULE = {
         "default_location_country": {"type": "string", "label": "Artikelstandort Standard", "default": ""},
         "prefer_api": {"type": "bool", "label": "Browse API bevorzugen", "default": True},
         "allow_public_html": {"type": "bool", "label": "Public HTML Fallback erlauben", "default": True},
+        "show_seller_names": {"type": "bool", "label": "Seller-Namen anzeigen/speichern", "default": False},
         "request_timeout_s": {"type": "number", "label": "HTTP Timeout Sekunden", "default": 20},
     },
     "tools": [
@@ -162,8 +164,19 @@ def _search(params, config, analysis_first=False):
             source = "browse_api"
             raw = api_data
             listings = normalize_api_items(api_data)
+            if not listings:
+                errors.append("Browse API genutzt, aber keine itemSummaries fuer diese Query erhalten.")
         elif err:
             errors.append(err)
+
+    if prefer_api and not listings and has_api_credentials(config):
+        expanded_listings, expanded_raw, expanded_errors = browse_search_expansions(query, payload, config, limit)
+        if expanded_errors:
+            errors.extend(expanded_errors)
+        if expanded_listings:
+            source = "browse_api_expanded"
+            raw = expanded_raw
+            listings = expanded_listings
 
     if not listings and cfg_bool(config.get("allow_public_html"), True):
         target_url = url or build_search_url(query, payload, limit)
@@ -184,8 +197,16 @@ def _search(params, config, analysis_first=False):
         ]
         if setup_missing:
             lines.append("setup_required: eBay Browse API Credentials fehlen im Modul oder in EBAY_CLIENT_ID/EBAY_CLIENT_SECRET/EBAY_ACCESS_TOKEN.")
+        else:
+            lines.append("api_status: Browse API Credentials wurden genutzt.")
+            suggestions = fallback_queries_for(query)
+            if suggestions:
+                lines.append("query_suggestions: " + ", ".join(suggestions))
         lines.extend(f"- {e}" for e in errors)
-        lines.append("hint: Fuer stabile Ergebnisse eBay Developer Client ID/Secret oder access_token in den Modul-Settings setzen.")
+        if setup_missing:
+            lines.append("hint: Fuer stabile Ergebnisse eBay Developer Client ID/Secret oder access_token in den Modul-Settings setzen.")
+        else:
+            lines.append("hint: eBay Browse API liefert bei generischen Queries oft leer. Nutze konkrete Produktnamen/SKUs oder Filter.")
         record_history("ebay_de", "ebay_de.analyze" if analysis_first else "ebay_de.search", query, payload, "failed", config, [], "; ".join(errors), {"setup_missing": setup_missing})
         return fail("\n".join(lines))
 
@@ -194,7 +215,8 @@ def _search(params, config, analysis_first=False):
     listings, dropped = apply_local_filters(listings, payload, filter_report)
     filter_report["dropped"] = dropped
     listings = listings[:limit]
-    analysis = analyze_listings(listings)
+    listings_for_output = redact_seller_names(listings, config)
+    analysis = analyze_listings(listings_for_output)
     record_history(
         "ebay_de",
         "ebay_de.analyze" if analysis_first else "ebay_de.search",
@@ -202,16 +224,16 @@ def _search(params, config, analysis_first=False):
         payload,
         "success",
         config,
-        history_sources_from_listings(listings),
+        history_sources_from_listings(listings_for_output),
         "",
         {
             "source": source,
-            "results": len(listings),
+            "results": len(listings_for_output),
             "priced_results": analysis.get("priced_count", 0),
             "dropped": filter_report.get("dropped") or {},
         },
     )
-    text = format_result(query, listings, analysis, source, raw, errors, analysis_first=analysis_first, filter_report=filter_report)
+    text = format_result(query, listings_for_output, analysis, source, raw, errors, analysis_first=analysis_first, filter_report=filter_report)
     return ok(limit_output(text, config))
 
 
@@ -229,7 +251,7 @@ def _item(params, config):
         req_url = f"{API_BASE}/item/{urllib.parse.quote(item_id)}"
         ok_api, data, err = api_get(req_url, config, token)
         if ok_api:
-            item = normalize_api_item(data)
+            item = redact_seller_names([normalize_api_item(data)], config)[0]
             return ok(format_item(item, source="browse_api"))
         if err:
             return fail(f"EBAY_DE_ITEM_FAILED\n{err}")
@@ -256,8 +278,9 @@ def _parse_html_tool(params, config):
     filter_report["dropped"] = dropped
     if not listings:
         return fail("Keine eBay-Listings nach Filterung uebrig.")
-    analysis = analyze_listings(listings)
-    return ok(limit_output(format_result(query, listings, analysis, "pasted_html", {}, [], analysis_first=True, filter_report=filter_report), config))
+    listings_for_output = redact_seller_names(listings, config)
+    analysis = analyze_listings(listings_for_output)
+    return ok(limit_output(format_result(query, listings_for_output, analysis, "pasted_html", {}, [], analysis_first=True, filter_report=filter_report), config))
 
 
 def browse_search(query, payload, config, limit):
@@ -286,6 +309,49 @@ def browse_search(query, payload, config, limit):
     if ok and isinstance(data, dict):
         data["_request"] = {"url": url, "filters": filters, "sort": params.get("sort", "")}
     return ok, data, err
+
+
+def browse_search_expansions(query, payload, config, limit):
+    suggestions = fallback_queries_for(query)
+    if not suggestions:
+        return [], {}, []
+    listings = []
+    used = []
+    errors = []
+    per_query_limit = max(5, min(50, limit))
+    for suggestion in suggestions:
+        ok_api, api_data, err = browse_search(suggestion, payload, config, per_query_limit)
+        if ok_api:
+            found = normalize_api_items(api_data or {})
+            if found:
+                used.append(suggestion)
+                listings.extend(found)
+        elif err:
+            errors.append(f"Fallback-Query '{suggestion}': {err}")
+    raw = {
+        "_request": {
+            "fallback_queries": used,
+            "filters": build_api_filters(payload, config),
+            "sort": browse_sort(payload.get("sort")),
+        }
+    }
+    return listings, raw, errors
+
+
+def fallback_queries_for(query):
+    norm = normalize_alias(query)
+    suggestions = []
+    generic_gpu = any(token in norm for token in ("grafikkarte", "gpu", "vram", "graphics_card"))
+    wants_32gb = "32gb" in norm or ("32" in norm and "vram" in norm)
+    if generic_gpu and wants_32gb:
+        suggestions.extend(
+            [
+                "Nvidia Tesla V100 32GB",
+                "AMD Radeon Pro W6800 32GB",
+                "Radeon Pro W6800 32GB",
+            ]
+        )
+    return unique(suggestions)
 
 
 def api_get(url, config, token):
@@ -372,7 +438,7 @@ def fetch_public_html(url, config):
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         if exc.code in {401, 403, 429}:
-            return False, "", f"Public HTML HTTP {exc.code}: eBay blockiert den Abruf. Nutze Browse API Credentials."
+            return False, "", f"Public HTML HTTP {exc.code}: eBay blockiert den Abruf."
         return False, "", f"Public HTML HTTP {exc.code}: {truncate(body, 500)}"
     except Exception as exc:
         return False, "", f"Public HTML Fehler: {exc}"
@@ -712,6 +778,9 @@ def format_result(query, listings, analysis, source, raw, errors, analysis_first
     ]
     if raw.get("url"):
         summary.append(f"url: {raw['url']}")
+    request = raw.get("_request", {}) if isinstance(raw, dict) else {}
+    if request.get("fallback_queries"):
+        summary.append("expanded_queries: " + ", ".join(request.get("fallback_queries") or []))
     if errors:
         summary.append("fallback_notes:")
         summary.extend(f"- {e}" for e in errors)
@@ -803,6 +872,18 @@ def format_item(item, source):
             val = eur(item[key]) if key == "total_eur" else item[key]
             lines.append(f"{key}: {val}")
     return "\n".join(lines)
+
+
+def redact_seller_names(listings, config):
+    if cfg_bool((config or {}).get("show_seller_names"), False):
+        return listings
+    redacted = []
+    for item in listings:
+        copy = dict(item)
+        if copy.get("seller"):
+            copy["seller"] = "[redacted]"
+        redacted.append(copy)
+    return redacted
 
 
 def filter_help():
@@ -1142,18 +1223,95 @@ def parse_payload(params, default_key="query"):
         return dict(params)
     if not params:
         return {}
-    raw = params[0]
+    raw = params[0] if len(params) == 1 else ", ".join(str(p or "").strip() for p in params if str(p or "").strip())
     if isinstance(raw, dict):
         return dict(raw)
     text = str(raw or "").strip()
     if text.startswith("{") and text.endswith("}"):
+        data = parse_jsonish_dict(text)
+        if isinstance(data, dict):
+            return data
+    repaired = repair_jsonish_payload(text)
+    if repaired:
+        return repaired
+    return {default_key: text} if text else {}
+
+
+def parse_jsonish_dict(text):
+    for parser in (json.loads, ast.literal_eval):
         try:
-            data = json.loads(text)
+            data = parser(text)
             if isinstance(data, dict):
                 return data
         except Exception:
-            pass
-    return {default_key: text}
+            continue
+    return None
+
+
+def repair_jsonish_payload(text):
+    text = str(text or "").strip()
+    if not text:
+        return {}
+    lower = text.lower()
+    if not any(key in lower for key in ("query", "q", "keyword", "url")):
+        return {}
+    out = {}
+    query = repair_text_field(text, "query") or repair_text_field(text, "q") or repair_text_field(text, "keyword")
+    if query:
+        out["query"] = strip_accidental_key_tail(query)
+    url = repair_text_field(text, "url")
+    if url:
+        out["url"] = url
+    for key in ("limit", "offset"):
+        value = repair_number_field(text, key)
+        if value is not None:
+            out[key] = value
+    for key in (
+        "sort",
+        "buying_option",
+        "condition",
+        "seller_type",
+        "shipping",
+        "delivery_country",
+        "postal_code",
+        "location_country",
+        "min_price",
+        "max_price",
+    ):
+        value = repair_text_field(text, key)
+        if value:
+            out[key] = value
+    return out
+
+
+def repair_text_field(text, key):
+    pattern = re.compile(r'["\']?' + re.escape(key) + r'["\']?\s*:\s*["\']?([^,"\'}]+(?:,[^"\'}:]+)?)', re.I)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    return clean_text(match.group(1)).strip(" '\"")
+
+
+def repair_number_field(text, key):
+    pattern = re.compile(r'["\']?' + re.escape(key) + r'["\']?\s*:\s*["\']?(-?\d+(?:[.,]\d+)?)', re.I)
+    match = pattern.search(text)
+    if not match:
+        return None
+    raw = match.group(1).replace(",", ".")
+    try:
+        value = float(raw)
+    except Exception:
+        return None
+    return int(value) if value.is_integer() else value
+
+
+def strip_accidental_key_tail(value):
+    return re.sub(
+        r"\s*,?\s*(limit|offset|sort|condition|buying_option|seller_type|shipping|min_price|max_price)\s*$",
+        "",
+        clean_text(value),
+        flags=re.I,
+    ).strip()
 
 
 def first_text(payload, *keys):

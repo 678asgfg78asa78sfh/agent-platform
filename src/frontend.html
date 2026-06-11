@@ -462,6 +462,92 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
 }
 .llm-gem-item.gem-active .llm-gem-name { color: var(--cyan); text-shadow: 0 0 8px var(--cyan-glow); }
 
+/* === ENHANCER ROW === */
+.config-row-enhancers {
+  display: flex; align-items: center; gap: 12px; padding: 8px 20px;
+  background: linear-gradient(180deg, rgba(136,85,255,0.055), rgba(0,170,255,0.025), transparent);
+  border-bottom: 1px solid rgba(136,85,255,0.14);
+  z-index: 4; flex-shrink: 0; position: relative; min-height: 82px;
+}
+.config-row-enhancers .row-label {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 2px;
+  color: var(--purple); writing-mode: vertical-rl; transform: rotate(180deg); margin-right: 2px;
+  text-shadow: 0 0 8px var(--purple-glow);
+}
+.enhancer-orbs-row { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.enhancer-orb-item {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  cursor: pointer; transition: var(--transition); position: relative; min-width: 58px;
+}
+.enhancer-orb-item:hover { filter: brightness(1.25); transform: translateY(-1px); }
+.enhancer-mini-orb {
+  width: 44px; height: 44px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 13px; font-weight: 800;
+  color: var(--text-bright); border: 2px solid var(--purple);
+  background: radial-gradient(circle at 30% 24%, #d8c8ff, #7c4dff 42%, #23103d 76%);
+  box-shadow: 0 0 20px var(--purple-glow), inset 0 0 16px rgba(255,255,255,0.12);
+  position: relative; overflow: hidden;
+  animation: enhancerSoftPulse 4.8s ease-in-out infinite;
+}
+@keyframes enhancerSoftPulse {
+  0%,100% { transform: scale(1); filter: brightness(1); }
+  50% { transform: scale(1.035); filter: brightness(1.14); }
+}
+.enhancer-mini-orb::after {
+  content: ''; position: absolute; inset: 4px; border-radius: 50%;
+  background: radial-gradient(circle at 30% 20%, rgba(255,255,255,0.38), transparent 45%);
+  pointer-events: none;
+}
+.enhancer-mini-orb.mode-filter { border-color: var(--red); box-shadow: 0 0 20px var(--red-glow), inset 0 0 16px rgba(255,255,255,0.10); }
+.enhancer-mini-orb.mode-rewrite, .enhancer-mini-orb.mode-translate { border-color: var(--cyan); box-shadow: 0 0 20px var(--cyan-glow), inset 0 0 16px rgba(255,255,255,0.10); }
+.enhancer-mini-orb.mode-quality { border-color: var(--green); box-shadow: 0 0 20px var(--green-glow), inset 0 0 16px rgba(255,255,255,0.10); }
+.enhancer-mini-orb.mode-gateway { border-color: var(--orange); box-shadow: 0 0 20px var(--orange-glow), inset 0 0 16px rgba(255,255,255,0.10); }
+.enhancer-mini-name, .enhancer-mini-mode {
+  max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-align: center; line-height: 1.1;
+}
+.enhancer-mini-name { color: var(--text); font-size: 9px; font-weight: 700; }
+.enhancer-mini-mode { color: var(--text-dim); font-size: 8px; text-transform: uppercase; letter-spacing: 0.3px; }
+.add-enhancer-btn {
+  width: 44px; height: 44px; border-radius: 50%; border: 2px dashed rgba(136,85,255,0.35);
+  background: transparent; color: var(--text-dim); font-size: 20px;
+  cursor: pointer; transition: var(--transition); display: flex; align-items: center; justify-content: center; font-family: var(--font);
+}
+.add-enhancer-btn:hover { border-color: var(--purple); color: var(--purple); box-shadow: 0 0 18px var(--purple-glow); background: rgba(136,85,255,0.04); }
+.enhancer-slot-panel {
+  margin-top: 10px; padding: 10px; border: 1px solid rgba(136,85,255,0.2);
+  border-radius: var(--radius-lg); background: rgba(0,0,0,0.12);
+}
+.enhancer-slot-title { color: var(--purple); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 8px; }
+.enhancer-slot-picker { display: grid; gap: 7px; }
+.enhancer-slot-row { display: grid; grid-template-columns: 70px minmax(0,1fr); gap: 8px; align-items: start; }
+.enhancer-slot-name { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; padding-top: 5px; }
+.enhancer-slot-chips { display: flex; flex-wrap: wrap; gap: 5px; min-height: 26px; }
+.enhancer-slot-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px;
+  border-radius: 14px; border: 1px solid var(--border); background: var(--bg-input);
+  color: var(--text-dim); cursor: pointer; transition: var(--transition); font-size: 10px;
+  max-width: 190px;
+}
+.enhancer-slot-chip:hover { border-color: rgba(136,85,255,0.35); color: var(--text); }
+.enhancer-slot-chip.active { border-color: var(--purple); color: var(--purple); background: rgba(136,85,255,0.12); box-shadow: 0 0 10px rgba(136,85,255,0.08); }
+.enhancer-slot-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+.enhancer-slot-chip.active .enhancer-slot-chip-dot { background: var(--purple); box-shadow: 0 0 7px var(--purple-glow); }
+.enhancer-slot-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.enhancer-slot-empty { color: var(--text-dim); font-size: 10px; padding: 5px 0; font-style: italic; }
+.enhancer-manual-fields { margin-top: 8px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 6px; }
+.enhancer-manual-fields summary { cursor: pointer; color: var(--text-dim); font-size: 10px; }
+.enhancer-assignment-list { display: grid; gap: 7px; }
+.enhancer-assignment-row {
+  display: grid; grid-template-columns: minmax(130px, 1fr) auto; gap: 10px; align-items: center;
+  padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.05);
+}
+.enhancer-assignment-row:first-child { border-top: 0; }
+.enhancer-assignment-name { min-width: 0; }
+.enhancer-assignment-title { color: var(--text-bright); font-size: 11px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.enhancer-assignment-id { color: var(--text-dim); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.enhancer-assignment-slots { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+
 /* === MATERIA PANEL === */
 #materia-panel {
   background: var(--bg-surface); border: 1px solid rgba(0,238,255,0.15);
@@ -764,6 +850,9 @@ label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; lett
   .config-toolbar .cfg-general-fields { flex-wrap: wrap; }
   .llm-gem-orb { width: 44px; height: 44px; font-size: 18px; }
   .add-gem-btn { width: 44px; height: 44px; }
+  .config-row-enhancers { min-height: 70px; padding: 8px 14px; }
+  .enhancer-mini-orb, .add-enhancer-btn { width: 36px; height: 36px; font-size: 11px; }
+  .enhancer-slot-row { grid-template-columns: 1fr; gap: 4px; }
 }
 
 /* CRT Scanlines */
@@ -824,6 +913,7 @@ body::after {
     </div>
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="config"><span class="tab-icon">&#x2699;&#xFE0F;</span> <span class="tab-label">Config</span></button>
+      <button class="tab-btn" data-tab="vault"><span class="tab-icon">&#x1F511;</span> <span class="tab-label">API Vault</span></button>
       <button class="tab-btn" data-tab="aufgaben"><span class="tab-icon">&#x1F4CB;</span> <span class="tab-label">Tasks</span></button>
       <button class="tab-btn" data-tab="heartbeat"><span class="tab-icon">&#x1F4CA;</span> <span class="tab-label">Monitor</span></button>
       <button class="tab-btn" data-tab="cron"><span class="tab-icon">&#x23F0;</span> <span class="tab-label">Cron</span></button>
@@ -847,6 +937,47 @@ body::after {
   <div class="tab-content">
 
     <!-- CHAT TAB ENTFERNT — Chat ist jetzt unter /chat/modul-id -->
+
+    <!-- TAB: VAULTS -->
+    <div id="tab-vault" class="tab-panel" style="background:var(--bg-base);overflow:auto;padding:18px 22px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;">
+        <h2 style="margin:0;color:var(--cyan);font-size:16px;">Vaults</h2>
+        <button class="btn btn-sm" id="vault-refresh" type="button">&#x21BB; Refresh</button>
+      </div>
+      <h3 style="margin:0 0 10px;color:var(--text-bright);font-size:13px;">API Keys</h3>
+      <div style="display:grid;grid-template-columns:repeat(5,minmax(120px,1fr)) auto;gap:8px;align-items:end;margin-bottom:14px;">
+        <div class="form-row"><label>ID</label><input type="text" id="vault-id" placeholder="deepseek" /></div>
+        <div class="form-row"><label>Name</label><input type="text" id="vault-name" placeholder="DeepSeek API" /></div>
+        <div class="form-row"><label>Provider</label><input type="text" id="vault-provider" placeholder="deepseek" /></div>
+        <div class="form-row"><label>Secret</label><input type="password" id="vault-secret" placeholder="leer lassen = behalten" /></div>
+        <div class="form-row"><label>Notes</label><input type="text" id="vault-notes" placeholder="optional" /></div>
+        <div style="display:flex;gap:6px;padding-bottom:8px;">
+          <button class="btn btn-primary" id="vault-submit" type="button">Save</button>
+          <button class="btn" id="vault-clear" type="button">Clear</button>
+        </div>
+      </div>
+      <div id="vault-list" style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:rgba(0,0,0,0.16);"></div>
+
+      <h3 style="margin:24px 0 10px;color:var(--text-bright);font-size:13px;">Credentials</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr auto;gap:8px;align-items:end;margin-bottom:10px;">
+        <div class="form-row"><label>Vault ID</label><input type="text" id="cred-vault-id" placeholder="mail.private" /></div>
+        <div class="form-row"><label>Name</label><input type="text" id="cred-vault-name" placeholder="Private Mail" /></div>
+        <div class="form-row"><label>Kind</label><input type="text" id="cred-vault-kind" placeholder="mail" /></div>
+        <div class="form-row"><label>Notes</label><input type="text" id="cred-vault-notes" placeholder="optional" /></div>
+        <div style="display:flex;gap:6px;padding-bottom:8px;">
+          <button class="btn btn-primary" id="cred-vault-submit" type="button">Save</button>
+          <button class="btn" id="cred-vault-clear" type="button">Clear</button>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1.4fr auto auto;gap:8px;align-items:end;margin-bottom:10px;">
+        <div class="form-row"><label>Field</label><input type="text" id="cred-field-key" placeholder="password" /></div>
+        <div class="form-row"><label>Value</label><input type="password" id="cred-field-value" placeholder="leer lassen = behalten" /></div>
+        <label style="display:flex;gap:6px;align-items:center;padding-bottom:14px;color:var(--text-dim);font-size:12px;"><input type="checkbox" id="cred-field-secret" checked style="width:auto;"> Secret</label>
+        <div style="display:flex;gap:6px;padding-bottom:8px;"><button class="btn btn-sm" id="cred-field-add" type="button">Add Field</button></div>
+      </div>
+      <div id="cred-fields-preview" style="border:1px solid var(--border);border-radius:var(--radius);padding:8px;margin-bottom:12px;background:rgba(0,0,0,0.12);font-size:12px;color:var(--text-dim);"></div>
+      <div id="credential-vault-list" style="border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;background:rgba(0,0,0,0.16);"></div>
+    </div>
 
     <!-- TAB 2: AUFGABEN -->
     <div id="tab-aufgaben" class="tab-panel">
@@ -931,6 +1062,10 @@ body::after {
             <div id="materia-prompt-preview" style="background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);padding:8px;max-height:120px;overflow:auto;font-size:11px;color:var(--text-dim);white-space:pre-wrap;word-wrap:break-word;cursor:pointer;" onclick="showAgentPromptPreview()" title="Click for full preview"></div>
           </div>
         </div>
+        <div class="config-row-enhancers" id="config-row-enhancers">
+          <span class="row-label">ENH</span>
+          <div class="enhancer-orbs-row" id="enhancer-orbs-row"></div>
+        </div>
         <div class="config-row-modules" id="config-row-modules">
           <div class="row-label-h">MODULES</div>
           <div class="module-grid" id="module-grid"></div>
@@ -956,7 +1091,10 @@ body::after {
           <div style="margin:8px 0;"><label>API URL
             <input type="text" id="wcfg-url" style="width:320px;"></label></div>
           <div style="margin:8px 0;"><label>API Key
-            <input type="password" id="wcfg-key" style="width:320px;"></label></div>
+            <span style="display:inline-flex;gap:6px;align-items:center;">
+              <input type="password" id="wcfg-key" style="width:320px;" placeholder="sk-... oder api.deepseek">
+              <select id="wcfg-key-vault" style="max-width:170px;"></select>
+            </span></label></div>
           <div style="margin:8px 0;"><label>Model
             <div style="display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;">
               <select id="wcfg-model-select" style="min-width:220px;"
@@ -1228,7 +1366,12 @@ body::after {
       </select>
     </div>
     <div class="form-row"><label>URL</label><input type="text" id="llm-url" placeholder="http://localhost:11434" /></div>
-    <div class="form-row"><label>API Key (optional)</label><input type="password" id="llm-apikey" placeholder="sk-..." /></div>
+    <div class="form-row"><label>API Key (optional)</label>
+      <div style="display:flex;gap:6px;">
+        <input type="password" id="llm-apikey" placeholder="sk-... oder api.deepseek" style="flex:1;" />
+        <select id="llm-apikey-vault" style="max-width:170px;"></select>
+      </div>
+    </div>
     <div class="form-row">
       <label>Model</label>
       <div style="display:flex;gap:4px;">
@@ -1394,13 +1537,40 @@ body::after {
     </div>
     <div class="form-row"><label>Instance ID</label><input type="text" id="mod-id" placeholder="z.B. chat.support, shell.deploy" /></div>
     <div class="form-row"><label>Display Name</label><input type="text" id="mod-display-name" placeholder="Anzeigename" /></div>
-    <div class="form-row"><label>Attached LLM Gem</label><select id="mod-llm-backend"></select></div>
+    <div class="form-row"><label>Backend / LLM Gem</label><select id="mod-llm-backend"></select></div>
     <input type="hidden" id="mod-perms" />
-    <div style="margin-top:10px;">
+    <div id="mod-link-section" style="margin-top:10px;">
       <label style="color:var(--cyan);font-size:11px;text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:8px;">Linked Modules</label>
       <div id="mod-link-grid" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
     </div>
-    <div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:16px;">
+    <div id="mod-enhancer-slots" class="enhancer-slot-panel">
+      <label class="enhancer-slot-title">Enhancer Slots</label>
+      <div class="enhancer-slot-picker" id="mod-enhancer-slot-picker">
+        <div class="enhancer-slot-row">
+          <span class="enhancer-slot-name">Input</span>
+          <div class="enhancer-slot-chips" id="mod-input-enhancer-picks"></div>
+        </div>
+        <div class="enhancer-slot-row">
+          <span class="enhancer-slot-name">Output</span>
+          <div class="enhancer-slot-chips" id="mod-output-enhancer-picks"></div>
+        </div>
+        <div class="enhancer-slot-row">
+          <span class="enhancer-slot-name">Combined</span>
+          <div class="enhancer-slot-chips" id="mod-combined-enhancer-picks"></div>
+        </div>
+      </div>
+      <details class="enhancer-manual-fields">
+        <summary>IDs direkt bearbeiten</summary>
+        <div class="form-row"><label>Input Enhancers</label><input type="text" id="mod-input-enhancers" placeholder="enhancer.promptpolish, enhancer.security" /></div>
+        <div class="form-row"><label>Output Enhancers</label><input type="text" id="mod-output-enhancers" placeholder="enhancer.quality" /></div>
+        <div class="form-row"><label>Combined Enhancers</label><input type="text" id="mod-combined-enhancers" placeholder="enhancer.selfreview" /></div>
+      </details>
+    </div>
+    <div id="mod-enhancer-assignment" class="enhancer-slot-panel">
+      <label class="enhancer-slot-title">In Chat-Slots verwenden</label>
+      <div class="enhancer-assignment-list" id="mod-enhancer-assignment-list"></div>
+    </div>
+    <div id="mod-perm-section" style="margin-top:10px;display:flex;flex-wrap:wrap;gap:16px;">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);font-size:12px;">
         <input type="checkbox" id="mod-perm-aufgaben" style="accent-color:var(--cyan);"> Can create tasks (aufgaben)
       </label>
@@ -1497,6 +1667,11 @@ var appConfig = null;
 var editingLlmIdx = -1;
 var editingModIdx = -1;
 var editingRagIdx = -1;
+var editingVaultId = '';
+var apiVault = {entries: []};
+var editingCredentialVaultId = '';
+var credentialVault = {entries: []};
+var credentialDraftFields = [];
 var expandedModuleIds = {};
 
 // Heartbeat monitor state
@@ -1590,6 +1765,7 @@ function escHtml(s) {
   d.textContent = String(s);
   return d.innerHTML;
 }
+function escapeHtml(s) { return escHtml(s); }
 
 function todayStr() {
   var d = new Date();
@@ -1643,6 +1819,7 @@ function moduleTools(typ) {
 function moduleTypIcon(typ) {
   switch(typ) {
     case 'chat': return '\uD83D\uDCAC';
+    case 'llm_worker': return '\u2699';
     case 'mail': return '\uD83D\uDCE7';
     case 'filesystem': return '\uD83D\uDCC1';
     case 'websearch': return '\uD83D\uDD0D';
@@ -1652,6 +1829,7 @@ function moduleTypIcon(typ) {
     case 'notify': return '\uD83D\uDD14';
     case 'cron': return '\u23F0';
     case 'webhook': return '\uD83C\uDF10';
+    case 'enhancer': return '\u2699';
     default: return '\u2B23';
   }
 }
@@ -1679,6 +1857,7 @@ function populateLinkGrid(currentModuleId, linkedModules) {
 
   appConfig.module.forEach(function(m) {
     if (m.id === currentModuleId) return;
+    if (m.typ === 'enhancer') return;
     if (m.persistent === false) return;
 
     var isLinked = (linkedModules || []).indexOf(m.id) >= 0;
@@ -1711,6 +1890,198 @@ function getSelectedLinks() {
     }
   });
   return links;
+}
+
+function parseModuleIdList(value) {
+  return String(value || '').split(',').map(function(v) { return v.trim(); }).filter(Boolean);
+}
+
+function joinModuleIdList(value) {
+  return (value || []).join(', ');
+}
+
+function safeCssName(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9_-]/g, '');
+}
+
+function enhancerModules() {
+  if (!appConfig || !appConfig.module) return [];
+  return appConfig.module.filter(function(m) { return m.typ === 'enhancer'; });
+}
+
+function isInternalAgentEndpoint(m) {
+  return !!m && (m.typ === 'llm_worker' || (m.settings && m.settings.internal_agent_endpoint === true));
+}
+
+function isInternalLlmBackend(b) {
+  if (!b) return false;
+  return b.internal === true;
+}
+
+function visibleLlmBackends() {
+  if (!appConfig || !appConfig.llm_backends) return [];
+  return appConfig.llm_backends;
+}
+
+function linkableLlmBackends() {
+  if (!appConfig || !appConfig.llm_backends) return [];
+  return appConfig.llm_backends.filter(function(b) {
+    return (appConfig.module || []).some(function(m) { return m.llm_backend === b.id; });
+  });
+}
+
+function normalModules() {
+  if (!appConfig || !appConfig.module) return [];
+  return appConfig.module.filter(function(m) { return m.typ !== 'enhancer' && !isInternalAgentEndpoint(m); });
+}
+
+function chatModules() {
+  if (!appConfig || !appConfig.module) return [];
+  return appConfig.module.filter(function(m) { return m.typ === 'chat'; });
+}
+
+function enhancerMode(mod) {
+  return (mod && mod.settings && mod.settings.enhancer_mode) || 'observe';
+}
+
+function enhancerModeIcon(mode) {
+  switch(mode) {
+    case 'filter': return 'BLK';
+    case 'rewrite': return 'RW';
+    case 'translate': return 'TR';
+    case 'quality': return 'QA';
+    case 'gateway': return 'GW';
+    default: return 'OBS';
+  }
+}
+
+function uniqueModuleId(baseId) {
+  var base = String(baseId || 'module.neu').trim() || 'module.neu';
+  var current = base;
+  var idx = 2;
+  while ((appConfig.module || []).some(function(m) { return m.id === current; })) {
+    current = base + idx;
+    idx += 1;
+  }
+  return current;
+}
+
+function ensureRagPool(id, name) {
+  if (!appConfig) return;
+  if (!appConfig.rag_pools) appConfig.rag_pools = [];
+  if (!appConfig.rag_pools.some(function(r) { return r.id === id; })) {
+    appConfig.rag_pools.push({ id: id, name: name || id, typ: 'Shared' });
+  }
+}
+
+function enhancerInputId(slot) {
+  if (slot === 'output') return 'mod-output-enhancers';
+  if (slot === 'combined') return 'mod-combined-enhancers';
+  return 'mod-input-enhancers';
+}
+
+function enhancerPicksId(slot) {
+  if (slot === 'output') return 'mod-output-enhancer-picks';
+  if (slot === 'combined') return 'mod-combined-enhancer-picks';
+  return 'mod-input-enhancer-picks';
+}
+
+function enhancerSlotField(slot) {
+  if (slot === 'output') return 'output_enhancers';
+  if (slot === 'combined') return 'combined_enhancers';
+  return 'input_enhancers';
+}
+
+function toggleEnhancerSlot(slot, enhancerId) {
+  var input = ge(enhancerInputId(slot));
+  if (!input) return;
+  var ids = parseModuleIdList(input.value);
+  var pos = ids.indexOf(enhancerId);
+  if (pos >= 0) ids.splice(pos, 1);
+  else ids.push(enhancerId);
+  input.value = joinModuleIdList(ids);
+  renderEnhancerSlotPicker();
+}
+
+function renderEnhancerSlotPicker() {
+  if (!ge('mod-enhancer-slot-picker')) return;
+  var enhancers = enhancerModules();
+  ['input', 'output', 'combined'].forEach(function(slot) {
+    var target = ge(enhancerPicksId(slot));
+    var input = ge(enhancerInputId(slot));
+    if (!target || !input) return;
+    var selected = parseModuleIdList(input.value);
+    target.innerHTML = '';
+    if (!enhancers.length) {
+      target.innerHTML = '<span class="enhancer-slot-empty">Noch kein Enhancer angelegt</span>';
+      return;
+    }
+    enhancers.forEach(function(m) {
+      var active = selected.indexOf(m.id) >= 0;
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'enhancer-slot-chip' + (active ? ' active' : '');
+      chip.title = m.id + ' · ' + enhancerMode(m);
+      chip.innerHTML =
+        '<span class="enhancer-slot-chip-dot"></span>' +
+        '<span class="enhancer-slot-chip-label">' + escHtml(m.display_name || m.id) + '</span>';
+      chip.addEventListener('click', function() { toggleEnhancerSlot(slot, m.id); });
+      target.appendChild(chip);
+    });
+  });
+}
+
+function toggleEnhancerAssignment(chatId, slot, enhancerId) {
+  var chat = (appConfig.module || []).find(function(m) { return m.id === chatId; });
+  if (!chat || !enhancerId) return;
+  var field = enhancerSlotField(slot);
+  var ids = (chat[field] || []).slice();
+  var pos = ids.indexOf(enhancerId);
+  if (pos >= 0) ids.splice(pos, 1);
+  else ids.push(enhancerId);
+  chat[field] = ids;
+  renderEnhancerAssignment(enhancerId);
+  renderModuleCards();
+  setTimeout(drawConnections, 50);
+  autoSave('module');
+}
+
+function renderEnhancerAssignment(enhancerId) {
+  var list = ge('mod-enhancer-assignment-list');
+  if (!list) return;
+  enhancerId = enhancerId || (ge('mod-id') ? ge('mod-id').value.trim() : '');
+  list.innerHTML = '';
+  var chats = chatModules();
+  if (!enhancerId) {
+    list.innerHTML = '<span class="enhancer-slot-empty">Enhancer erst speichern.</span>';
+    return;
+  }
+  if (!chats.length) {
+    list.innerHTML = '<span class="enhancer-slot-empty">Keine Chat-Module vorhanden.</span>';
+    return;
+  }
+  chats.forEach(function(chat) {
+    var row = document.createElement('div');
+    row.className = 'enhancer-assignment-row';
+    var slotsHtml = ['input', 'output', 'combined'].map(function(slot) {
+      var active = ((chat[enhancerSlotField(slot)] || []).indexOf(enhancerId) >= 0);
+      var label = slot === 'combined' ? 'Combined' : (slot === 'output' ? 'Output' : 'Input');
+      return '<button type="button" class="enhancer-slot-chip' + (active ? ' active' : '') + '" data-chat-id="' + escHtml(chat.id) + '" data-enh-slot="' + slot + '">' +
+        '<span class="enhancer-slot-chip-dot"></span><span class="enhancer-slot-chip-label">' + label + '</span></button>';
+    }).join('');
+    row.innerHTML =
+      '<div class="enhancer-assignment-name">' +
+        '<div class="enhancer-assignment-title">' + escHtml(chat.display_name || chat.id) + '</div>' +
+        '<div class="enhancer-assignment-id">' + escHtml(chat.id) + '</div>' +
+      '</div>' +
+      '<div class="enhancer-assignment-slots">' + slotsHtml + '</div>';
+    row.querySelectorAll('[data-chat-id][data-enh-slot]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        toggleEnhancerAssignment(btn.dataset.chatId, btn.dataset.enhSlot, enhancerId);
+      });
+    });
+    list.appendChild(row);
+  });
 }
 
 function updateDerivedPerms() {
@@ -1805,10 +2176,27 @@ function renderSettingsFields(typName, currentValues) {
       var displayVal = '';
       if (Array.isArray(val)) { displayVal = val.join(', '); }
       else if (val !== null && val !== undefined) { displayVal = String(val); }
-      row.innerHTML = '<label>' + escHtml(field.label) + '</label>' +
-        '<input type="' + field.type + '" id="ms-' + field.key + '" value="' + escHtml(displayVal) + '" placeholder="' + escHtml(field.placeholder || '') + '" />';
+      if (field.type === 'password') {
+        row.innerHTML = '<label>' + escHtml(field.label) + '</label>' +
+          '<div style="display:flex;gap:6px;">' +
+          '<input type="password" id="ms-' + field.key + '" value="' + escHtml(displayVal) + '" placeholder="' + escHtml(field.placeholder || 'api.alias') + '" style="flex:1;" />' +
+          '<select id="ms-' + field.key + '-vault" style="max-width:190px;">' + allVaultAliasOptions(displayVal) + '</select>' +
+          '</div>';
+      } else {
+        row.innerHTML = '<label>' + escHtml(field.label) + '</label>' +
+          '<input type="' + field.type + '" id="ms-' + field.key + '" value="' + escHtml(displayVal) + '" placeholder="' + escHtml(field.placeholder || '') + '" />';
+      }
     }
     container.appendChild(row);
+    var vaultSelect = ge('ms-' + field.key + '-vault');
+    var vaultInput = ge('ms-' + field.key);
+    if (vaultSelect && vaultInput) {
+      (function(sel, input) {
+        sel.addEventListener('change', function() {
+          if (this.value) input.value = this.value;
+        });
+      })(vaultSelect, vaultInput);
+    }
   });
 }
 
@@ -1836,10 +2224,12 @@ function collectSettings(typName) {
 }
 
 /* Populate module-type dropdown from registry */
-function populateModuleTypDropdown() {
+function populateModuleTypDropdown(includeEnhancer, onlyEnhancer) {
   var sel = ge('mod-typ');
   sel.innerHTML = '';
   availableModules.forEach(function(m) {
+    if (onlyEnhancer && m.name !== 'enhancer') return;
+    if (m.name === 'enhancer' && !includeEnhancer) return;
     var opt = document.createElement('option');
     opt.value = m.name;
     var src = m.source === 'python' ? ' [py]' : '';
@@ -1853,7 +2243,11 @@ function populateLlmDropdown() {
   var sel = ge('mod-llm-backend');
   sel.innerHTML = '';
   if (!appConfig) return;
-  appConfig.llm_backends.forEach(function(b) {
+  var empty = document.createElement('option');
+  empty.value = '';
+  empty.textContent = '(kein Backend / spaeter waehlen)';
+  sel.appendChild(empty);
+  visibleLlmBackends().forEach(function(b) {
     var opt = document.createElement('option');
     opt.value = b.id;
     opt.textContent = b.name + ' - ' + b.model;
@@ -1925,6 +2319,8 @@ function loadConfig() {
     document.title = cfg.name || 'Agent Platform';
     setStatus(true);
     renderConfig();
+    loadApiVault(false).catch(function(){});
+    loadCredentialVault(false).catch(function(){});
   }).catch(function(e) {
     setStatus(false);
     toast('Config laden fehlgeschlagen: ' + e.message, 'error');
@@ -1937,6 +2333,429 @@ function setStatus(ok) {
   if (ok) { dot.className = 'status-dot'; txt.textContent = 'Connected'; }
   else { dot.className = 'status-dot error'; txt.textContent = 'Disconnected'; }
 }
+
+function loadApiVault(render) {
+  return apiFetch('GET', '/api/key-vault').then(function(data) {
+    apiVault = data || {entries: []};
+    if (render !== false) renderApiVault();
+    refreshVaultSelects();
+    return apiVault;
+  });
+}
+
+function loadCredentialVault(render) {
+  return apiFetch('GET', '/api/credential-vault').then(function(data) {
+    credentialVault = data || {entries: []};
+    if (render !== false) renderCredentialVault();
+    refreshVaultSelects();
+    return credentialVault;
+  });
+}
+
+function vaultAliasOptions(current) {
+  var cur = current || '';
+  var opts = '<option value="">Vault</option>';
+  (apiVault.entries || []).slice().sort(function(a, b) {
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  }).forEach(function(e) {
+    var alias = e.alias || ('api.' + e.id);
+    opts += '<option value="' + escHtml(alias) + '"' + (cur === alias ? ' selected' : '') + '>' +
+      escHtml(alias) + (e.has_secret ? '' : ' (missing)') + '</option>';
+  });
+  return opts;
+}
+
+function credentialAliasOptions(current) {
+  var cur = current || '';
+  var opts = '<option value="">Credential</option>';
+  (credentialVault.entries || []).slice().sort(function(a, b) {
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  }).forEach(function(e) {
+    (e.fields || []).slice().sort(function(a, b) {
+      return String(a.key || '').localeCompare(String(b.key || ''));
+    }).forEach(function(f) {
+      var alias = f.alias || ('cred.' + e.id + '.' + f.key);
+      opts += '<option value="' + escHtml(alias) + '"' + (cur === alias ? ' selected' : '') + '>' +
+        escHtml(alias) + (f.has_value ? '' : ' (missing)') + '</option>';
+    });
+  });
+  return opts;
+}
+
+function allVaultAliasOptions(current) {
+  var cur = current || '';
+  var opts = '<option value="">Vault</option><optgroup label="API Keys">';
+  (apiVault.entries || []).slice().sort(function(a, b) {
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  }).forEach(function(e) {
+    var alias = e.alias || ('api.' + e.id);
+    opts += '<option value="' + escHtml(alias) + '"' + (cur === alias ? ' selected' : '') + '>' +
+      escHtml(alias) + (e.has_secret ? '' : ' (missing)') + '</option>';
+  });
+  opts += '</optgroup><optgroup label="Credentials">';
+  (credentialVault.entries || []).slice().sort(function(a, b) {
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  }).forEach(function(e) {
+    (e.fields || []).forEach(function(f) {
+      var alias = f.alias || ('cred.' + e.id + '.' + f.key);
+      opts += '<option value="' + escHtml(alias) + '"' + (cur === alias ? ' selected' : '') + '>' +
+        escHtml(alias) + (f.has_value ? '' : ' (missing)') + '</option>';
+    });
+  });
+  return opts + '</optgroup>';
+}
+
+function unwrapVaultAlias(value) {
+  var s = String(value || '').trim();
+  if (s.indexOf('${') === 0 && s.lastIndexOf('}') === s.length - 1) {
+    s = s.slice(2, -1).trim();
+  }
+  return s;
+}
+
+function apiVaultEntryForAlias(value) {
+  var alias = unwrapVaultAlias(value);
+  if (!alias) return null;
+  var bare = alias.indexOf('api.') === 0 ? alias.slice(4) : alias;
+  return (apiVault.entries || []).find(function(e) {
+    var eAlias = e.alias || ('api.' + e.id);
+    return alias === eAlias || alias === e.id || bare === e.id;
+  }) || null;
+}
+
+function normalizeVaultProvider(value) {
+  var p = String(value || '').trim().toLowerCase();
+  if (!p) return '';
+  if (p.indexOf('deepseek') >= 0) return 'deepseek';
+  if (p.indexOf('openrouter') >= 0) return 'openrouter';
+  if (p.indexOf('openai') >= 0 || p.indexOf('chatgpt') >= 0) return 'openai';
+  if (p.indexOf('anthropic') >= 0 || p.indexOf('claude') >= 0) return 'anthropic';
+  if (p.indexOf('grok') >= 0 || p.indexOf('x.ai') >= 0 || p === 'xai') return 'grok';
+  if (p.indexOf('ollama') >= 0) return 'ollama';
+  if (p.indexOf('llama') >= 0 || p.indexOf('local') >= 0 || p.indexOf('lan') >= 0) return 'llamacpp';
+  return '';
+}
+
+function providerFromVaultAlias(value) {
+  var entry = apiVaultEntryForAlias(value);
+  var candidates = [];
+  if (entry) candidates.push(entry.provider, entry.id, entry.name);
+  candidates.push(unwrapVaultAlias(value));
+  for (var i = 0; i < candidates.length; i++) {
+    var provider = normalizeVaultProvider(candidates[i]);
+    if (provider) return provider;
+  }
+  return '';
+}
+
+function applyLlmVaultProviderDefaults(value) {
+  var provider = providerFromVaultAlias(value);
+  if (!provider || !ge('llm-typ')) return;
+  ge('llm-typ').value = provider;
+  updateLlmProviderUi(false, false);
+}
+
+function wizardProviderFromLlmProvider(provider) {
+  if (provider === 'deepseek') return 'DeepSeek';
+  if (provider === 'openrouter') return 'OpenRouter';
+  if (provider === 'openai') return 'OpenAI';
+  if (provider === 'anthropic') return 'Claude';
+  if (provider === 'grok') return 'Grok';
+  if (provider === 'ollama' || provider === 'llamacpp') return 'Local/LAN';
+  return '';
+}
+
+function applyWizardVaultProviderDefaults(value) {
+  var provider = providerFromVaultAlias(value);
+  var label = wizardProviderFromLlmProvider(provider);
+  if (!label || !ge('wcfg-provider')) return;
+  ge('wcfg-provider').value = label;
+  var urls = {
+    Claude: 'https://api.anthropic.com',
+    OpenAI: 'https://api.openai.com',
+    Grok: 'https://api.x.ai',
+    OpenRouter: 'https://openrouter.ai/api',
+    DeepSeek: 'https://api.deepseek.com',
+    'Local/LAN': ''
+  };
+  var urlEl = ge('wcfg-url');
+  var current = urlEl ? urlEl.value.trim() : '';
+  var next = urls[label] || '';
+  var known = Object.keys(urls).some(function(k) { return urls[k] && urls[k] === current; });
+  if (urlEl && (!current || (next && known))) urlEl.value = next;
+  if (label === 'DeepSeek' && ge('wcfg-model') && !ge('wcfg-model').value.trim()) {
+    ge('wcfg-model').value = 'deepseek-v4-flash';
+  }
+  clearWizardModelPicker();
+}
+
+function populateVaultAliasSelect(selectId, inputId) {
+  var sel = ge(selectId);
+  var input = ge(inputId);
+  if (!sel || !input) return;
+  sel.innerHTML = vaultAliasOptions(input.value.trim());
+}
+
+function refreshVaultSelects() {
+  populateVaultAliasSelect('llm-apikey-vault', 'llm-apikey');
+  populateVaultAliasSelect('wcfg-key-vault', 'wcfg-key');
+}
+
+function renderCredentialDraftFields() {
+  var box = ge('cred-fields-preview');
+  if (!box) return;
+  if (!credentialDraftFields.length) {
+    box.innerHTML = 'Noch keine Felder. Typisch fuer Mail: <code>host</code>, <code>port</code>, <code>email</code>, <code>password</code>.';
+    return;
+  }
+  box.innerHTML = credentialDraftFields.map(function(f, idx) {
+    var alias = 'cred.' + (ge('cred-vault-id') ? ge('cred-vault-id').value.trim() || 'vault' : 'vault') + '.' + f.key;
+    return '<div style="display:grid;grid-template-columns:1fr 1.4fr 0.7fr 70px;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04);">' +
+      '<code style="color:var(--cyan);">' + escHtml(alias) + '</code>' +
+      '<span>' + escHtml(f.secret ? (f.value ? 'set' : 'keep/empty') : (f.value || 'keep/empty')) + '</span>' +
+      '<span style="color:var(--text-dim);">' + (f.secret ? 'secret' : 'plain') + '</span>' +
+      '<button class="btn btn-sm" type="button" data-cred-field-del="' + idx + '">Del</button>' +
+      '</div>';
+  }).join('');
+  box.querySelectorAll('[data-cred-field-del]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      credentialDraftFields.splice(parseInt(btn.dataset.credFieldDel, 10), 1);
+      renderCredentialDraftFields();
+    });
+  });
+}
+
+function clearCredentialVaultForm() {
+  editingCredentialVaultId = '';
+  credentialDraftFields = [];
+  ['cred-vault-id','cred-vault-name','cred-vault-kind','cred-vault-notes','cred-field-key','cred-field-value'].forEach(function(id) {
+    if (ge(id)) ge(id).value = '';
+  });
+  if (ge('cred-vault-id')) ge('cred-vault-id').disabled = false;
+  if (ge('cred-field-secret')) ge('cred-field-secret').checked = true;
+  renderCredentialDraftFields();
+}
+
+function renderCredentialVault() {
+  var list = ge('credential-vault-list');
+  if (!list) return;
+  var entries = (credentialVault.entries || []).slice().sort(function(a, b) {
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+  renderCredentialDraftFields();
+  if (!entries.length) {
+    list.innerHTML = '<div style="padding:14px;color:var(--text-dim);font-size:12px;">Noch keine Credentials. Lege z.B. <code>mail.private</code> mit Feldern <code>host</code>, <code>email</code>, <code>password</code> an.</div>';
+    return;
+  }
+  var html = '<div style="display:grid;grid-template-columns:1fr 1.2fr 0.7fr 0.6fr 2.3fr 112px;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);">' +
+    '<span>ID</span><span>Name</span><span>Kind</span><span>Calls</span><span>Fields / Used in</span><span></span></div>';
+  entries.forEach(function(e) {
+    var fieldInfo = (e.fields || []).map(function(f) {
+      var used = [];
+      (f.modules || []).forEach(function(m) { used.push(m.id + ':' + (m.paths || []).join('|')); });
+      return (f.alias || ('cred.' + e.id + '.' + f.key)) + (f.secret ? ' [secret]' : '') + (used.length ? ' -> ' + used.join(', ') : '');
+    }).join('\\n');
+    html += '<div style="display:grid;grid-template-columns:1fr 1.2fr 0.7fr 0.6fr 2.3fr 112px;gap:8px;align-items:center;padding:9px 10px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">' +
+      '<code style="color:var(--cyan);">' + escHtml(e.id) + '</code>' +
+      '<span>' + escHtml(e.name || e.id) + '</span>' +
+      '<span style="color:var(--text-dim);">' + escHtml(e.kind || '-') + '</span>' +
+      '<span style="color:var(--orange);">' + (e.call_count || 0) + '</span>' +
+      '<span style="color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + escHtml(fieldInfo) + '">' + escHtml(fieldInfo.replace(/\\n/g, ', ') || '-') + '</span>' +
+      '<span style="display:flex;gap:5px;justify-content:flex-end;"><button class="btn btn-sm" data-cred-edit="' + escHtml(e.id) + '">Edit</button><button class="btn btn-sm" data-cred-del="' + escHtml(e.id) + '">Del</button></span>' +
+      '</div>';
+  });
+  list.innerHTML = html;
+  list.querySelectorAll('[data-cred-edit]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var id = btn.dataset.credEdit;
+      var e = (credentialVault.entries || []).find(function(x) { return x.id === id; });
+      if (!e) return;
+      editingCredentialVaultId = e.id;
+      ge('cred-vault-id').value = e.id; ge('cred-vault-id').disabled = true;
+      ge('cred-vault-name').value = e.name || e.id;
+      ge('cred-vault-kind').value = e.kind || '';
+      ge('cred-vault-notes').value = e.notes || '';
+      credentialDraftFields = (e.fields || []).map(function(f) {
+        return {key: f.key, value: f.secret ? '' : (f.value || ''), secret: !!f.secret};
+      });
+      renderCredentialDraftFields();
+    });
+  });
+  list.querySelectorAll('[data-cred-del]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var id = btn.dataset.credDel;
+      if (!confirm('Credential Vault ' + id + ' loeschen? Aliase in Modulen bleiben stehen, funktionieren dann aber nicht mehr.')) return;
+      var next = (credentialVault.entries || []).filter(function(e) { return e.id !== id; });
+      saveCredentialVault(next);
+    });
+  });
+}
+
+function saveCredentialVault(entries) {
+  return apiFetch('POST', '/api/credential-vault', {entries: entries}).then(function(res) {
+    if (!res.ok) { toast('Credential Vault speichern fehlgeschlagen: ' + (res.error || 'unknown'), 'error'); return; }
+    credentialVault = res.vault || {entries: []};
+    if (appConfig) appConfig.credential_vault = credentialVault.entries || [];
+    clearCredentialVaultForm();
+    renderCredentialVault();
+    refreshVaultSelects();
+    toast('Credential Vault gespeichert', 'success');
+  }).catch(function(e) {
+    toast('Credential Vault speichern fehlgeschlagen: ' + e.message, 'error');
+  });
+}
+
+function clearVaultForm() {
+  editingVaultId = '';
+  ['vault-id','vault-name','vault-provider','vault-secret','vault-notes'].forEach(function(id) {
+    if (ge(id)) ge(id).value = '';
+  });
+  if (ge('vault-id')) ge('vault-id').disabled = false;
+}
+
+function renderApiVault() {
+  var list = ge('vault-list');
+  if (!list) return;
+  var entries = (apiVault.entries || []).slice().sort(function(a, b) {
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+  if (!entries.length) {
+    list.innerHTML = '<div style="padding:14px;color:var(--text-dim);font-size:12px;">Noch keine Vault Keys. Lege oben einen Key an und nutze danach Alias wie <code>api.deepseek</code>.</div>';
+    return;
+  }
+  var html = '<div style="display:grid;grid-template-columns:1.1fr 1.4fr 0.8fr 0.8fr 0.8fr 2fr 112px;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);">' +
+    '<span>Alias</span><span>Name</span><span>Provider</span><span>Secret</span><span>Calls</span><span>Used in</span><span></span></div>';
+  entries.forEach(function(e) {
+    var used = [];
+    (e.llm_backends || []).forEach(function(b) { used.push('LLM:' + b.id + ' (' + (b.calls || 0) + ')'); });
+    (e.modules || []).forEach(function(m) { used.push(m.id + ':' + (m.paths || []).join('|')); });
+    (e.wizard || []).forEach(function(w) { used.push('Wizard:' + w.id); });
+    html += '<div style="display:grid;grid-template-columns:1.1fr 1.4fr 0.8fr 0.8fr 0.8fr 2fr 112px;gap:8px;align-items:center;padding:9px 10px;border-bottom:1px solid rgba(255,255,255,0.05);font-size:12px;">' +
+      '<code style="color:var(--cyan);">' + escHtml(e.alias || ('api.' + e.id)) + '</code>' +
+      '<span>' + escHtml(e.name || e.id) + '</span>' +
+      '<span style="color:var(--text-dim);">' + escHtml(e.provider || '-') + '</span>' +
+      '<span style="color:' + (e.has_secret ? 'var(--green)' : 'var(--red)') + ';">' + (e.has_secret ? 'set' : 'missing') + '</span>' +
+      '<span style="color:var(--orange);">' + (e.call_count || 0) + '</span>' +
+      '<span style="color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + escHtml(used.join('\\n')) + '">' + escHtml(used.join(', ') || '-') + '</span>' +
+      '<span style="display:flex;gap:5px;justify-content:flex-end;"><button class="btn btn-sm" data-vault-edit="' + escHtml(e.id) + '">Edit</button><button class="btn btn-sm" data-vault-del="' + escHtml(e.id) + '">Del</button></span>' +
+      '</div>';
+  });
+  list.innerHTML = html;
+  list.querySelectorAll('[data-vault-edit]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var id = btn.dataset.vaultEdit;
+      var e = (apiVault.entries || []).find(function(x) { return x.id === id; });
+      if (!e) return;
+      editingVaultId = e.id;
+      ge('vault-id').value = e.id; ge('vault-id').disabled = true;
+      ge('vault-name').value = e.name || e.id;
+      ge('vault-provider').value = e.provider || '';
+      ge('vault-secret').value = '';
+      ge('vault-notes').value = e.notes || '';
+    });
+  });
+  list.querySelectorAll('[data-vault-del]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var id = btn.dataset.vaultDel;
+      if (!confirm('Vault Key ' + id + ' loeschen? Aliase in Modulen bleiben stehen, funktionieren dann aber nicht mehr.')) return;
+      var next = (apiVault.entries || []).filter(function(e) { return e.id !== id; });
+      saveApiVault(next);
+    });
+  });
+}
+
+function saveApiVault(entries) {
+  return apiFetch('POST', '/api/key-vault', {entries: entries}).then(function(res) {
+    if (!res.ok) { toast('Vault speichern fehlgeschlagen: ' + (res.error || 'unknown'), 'error'); return; }
+    apiVault = res.vault || {entries: []};
+    if (appConfig) appConfig.api_key_vault = apiVault.entries || [];
+    clearVaultForm();
+    renderApiVault();
+    refreshVaultSelects();
+    toast('API Vault gespeichert', 'success');
+  }).catch(function(e) {
+    toast('Vault speichern fehlgeschlagen: ' + e.message, 'error');
+  });
+}
+
+if (ge('vault-refresh')) ge('vault-refresh').addEventListener('click', function() {
+  loadApiVault(true);
+  loadCredentialVault(true);
+});
+if (ge('vault-clear')) ge('vault-clear').addEventListener('click', clearVaultForm);
+if (ge('vault-submit')) ge('vault-submit').addEventListener('click', function() {
+  var rawId = ge('vault-id').value.trim().replace(/^api\./, '');
+  if (!rawId) { toast('Vault-ID fehlt', 'error'); return; }
+  var entry = {
+    id: rawId,
+    name: ge('vault-name').value.trim() || rawId,
+    provider: ge('vault-provider').value.trim() || null,
+    secret: ge('vault-secret').value,
+    notes: ge('vault-notes').value.trim() || null
+  };
+  var found = false;
+  var next = (apiVault.entries || []).map(function(e) {
+    if (e.id === (editingVaultId || rawId)) {
+      found = true;
+      return Object.assign({}, e, entry, {id: rawId});
+    }
+    return e;
+  });
+  if (!found) next.push(entry);
+  saveApiVault(next);
+});
+
+if (ge('cred-vault-clear')) ge('cred-vault-clear').addEventListener('click', clearCredentialVaultForm);
+if (ge('cred-field-add')) ge('cred-field-add').addEventListener('click', function() {
+  var key = ge('cred-field-key').value.trim();
+  if (!key) { toast('Credential-Feld fehlt', 'error'); return; }
+  var field = {key: key, value: ge('cred-field-value').value, secret: !!ge('cred-field-secret').checked};
+  var found = false;
+  credentialDraftFields = credentialDraftFields.map(function(f) {
+    if (f.key === key) { found = true; return field; }
+    return f;
+  });
+  if (!found) credentialDraftFields.push(field);
+  ge('cred-field-key').value = '';
+  ge('cred-field-value').value = '';
+  ge('cred-field-secret').checked = true;
+  renderCredentialDraftFields();
+});
+if (ge('cred-vault-submit')) ge('cred-vault-submit').addEventListener('click', function() {
+  var rawId = ge('cred-vault-id').value.trim().replace(/^cred\./, '');
+  if (!rawId) { toast('Credential-Vault-ID fehlt', 'error'); return; }
+  if (!credentialDraftFields.length) { toast('Mindestens ein Credential-Feld fehlt', 'error'); return; }
+  var entry = {
+    id: rawId,
+    name: ge('cred-vault-name').value.trim() || rawId,
+    kind: ge('cred-vault-kind').value.trim() || null,
+    notes: ge('cred-vault-notes').value.trim() || null,
+    fields: credentialDraftFields
+  };
+  var found = false;
+  var next = (credentialVault.entries || []).map(function(e) {
+    if (e.id === (editingCredentialVaultId || rawId)) {
+      found = true;
+      return Object.assign({}, e, entry, {id: rawId});
+    }
+    return e;
+  });
+  if (!found) next.push(entry);
+  saveCredentialVault(next);
+});
+
+['llm-apikey-vault','wcfg-key-vault'].forEach(function(selectId) {
+  var sel = ge(selectId);
+  if (!sel) return;
+  sel.addEventListener('change', function() {
+    var inputId = selectId === 'llm-apikey-vault' ? 'llm-apikey' : 'wcfg-key';
+    if (sel.value && ge(inputId)) {
+      ge(inputId).value = sel.value;
+      if (selectId === 'llm-apikey-vault') applyLlmVaultProviderDefaults(sel.value);
+      if (selectId === 'wcfg-key-vault') applyWizardVaultProviderDefaults(sel.value);
+    }
+  });
+});
 
 /* ═══════════════════════════════════════════════════════════
    TABS
@@ -1958,6 +2777,7 @@ qsa('.tab-btn').forEach(function(btn) {
     if (btn.dataset.tab === 'cron') { loadCronJobs(); startCronPolling(); }
     else { stopCronPolling(); }
     if (btn.dataset.tab === 'audit') { refreshAudit(); }
+    if (btn.dataset.tab === 'vault') { loadApiVault(true); loadCredentialVault(true); }
   });
 });
 
@@ -2132,8 +2952,22 @@ var aufgabenChildMap = {};
 var aufgabenChildIds = {};
 var aufgabenSyntheticGroups = [];
 
+function isNoopWorkflowTickTask(task) {
+  if (!task) return false;
+  if (task.erstellt_von !== 'workflow_trigger.cron') return false;
+  if (task.modul !== 'workflow_trigger.default') return false;
+  if (task.tool !== 'workflow_trigger.tick') return false;
+  var result = task.ergebnis || '';
+  return result.indexOf('"processed": 0') >= 0
+    && result.indexOf('"changed": 0') >= 0
+    && result.indexOf('"workflows": []') >= 0;
+}
+
 function allAufgaben(data) {
-  return (data.erledigt || []).concat(data.gestartet || []).concat(data.erstellt || []);
+  return (data.erledigt || [])
+    .concat(data.gestartet || [])
+    .concat(data.erstellt || [])
+    .filter(function(t) { return !isNoopWorkflowTickTask(t); });
 }
 
 function taskTimeMs(task) {
@@ -2281,11 +3115,11 @@ function canRestartTask(task) {
 
 function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
   var container = ge(containerId);
-  var visibleTasks = tasks.filter(function(task) { return !task.parent_id && !aufgabenChildIds[task.id]; });
-  var childCount = tasks.length - visibleTasks.length;
+  var visibleTasks = tasks.slice();
+  var childCount = tasks.filter(function(task) { return task.parent_id || aufgabenChildIds[task.id]; }).length;
   var countEl = ge(countId);
-  countEl.textContent = childCount > 0 ? (visibleTasks.length + '+' + childCount) : String(visibleTasks.length);
-  countEl.title = childCount > 0 ? (visibleTasks.length + ' Hauptaufgaben, ' + childCount + ' Subtasks') : (visibleTasks.length + ' Hauptaufgaben');
+  countEl.textContent = String(visibleTasks.length);
+  countEl.title = childCount > 0 ? (visibleTasks.length + ' Aufgaben inkl. ' + childCount + ' Subtasks') : (visibleTasks.length + ' Aufgaben');
   if (visibleTasks.length === 0) {
     container.innerHTML = '<div class="kanban-empty">No tasks</div>';
     return;
@@ -2310,6 +3144,14 @@ function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
     var toolInfo = task.tool ? '<span style="color:var(--cyan);font-weight:700;">' + escHtml(task.tool) + '</span> ' : '';
     var typBadge = task.typ ? '<span class="badge badge-' + (task.typ === 'direct' ? 'blue' : task.typ === 'llm_call' ? 'orange' : 'purple') + '">' + task.typ + '</span> ' : '';
     var ersteller = task.erstellt_von ? '<span style="font-size:8px;color:var(--text-dim);">von ' + escHtml(task.erstellt_von) + '</span>' : '';
+    var relationHtml = '';
+    if (task.workflow_id || task.workflow_stage || task.parent_id) {
+      relationHtml += '<div style="font-size:9px;color:var(--text-dim);display:flex;gap:4px 8px;flex-wrap:wrap;margin:2px 0;">';
+      if (task.workflow_id) relationHtml += '<span title="Workflow">wf ' + escHtml(task.workflow_id) + '</span>';
+      if (task.workflow_stage) relationHtml += '<span title="Workflow Stage">stage ' + escHtml(task.workflow_stage) + '</span>';
+      if (task.parent_id) relationHtml += '<span title="Parent Task">parent ' + escHtml(task.parent_id.substring(0, 8)) + '</span>';
+      relationHtml += '</div>';
+    }
     /* Params */
     var paramsHtml = '';
     if (task.params && task.params.length > 0) {
@@ -2336,6 +3178,7 @@ function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
         '<span class="badge badge-' + statusBadgeColor(status) + '">' + status + '</span>' +
       '</div>' +
       paramsHtml +
+      relationHtml +
       '<div style="font-size:10px;color:var(--text);margin:3px 0;line-height:1.4;word-break:break-word;">' + escHtml(anweisung.length > 100 ? anweisung.substring(0, 100) + '...' : anweisung) + '</div>' +
       '<div class="kanban-card-meta">' +
         typBadge +
@@ -2782,6 +3625,7 @@ function renderConfig() {
   renderAvailableModules();
   renderChatLinks();
   renderLlmGems();
+  renderEnhancerOrbs();
   renderModuleCards();
   renderRagPills();
   setTimeout(drawConnections, 100);
@@ -2811,6 +3655,7 @@ function populateWizardSettings(cfg) {
   if (ge('wcfg-provider')) ge('wcfg-provider').value = providerLabel;
   if (ge('wcfg-url'))      ge('wcfg-url').value = llm.url || '';
   if (ge('wcfg-key'))      ge('wcfg-key').value = llm.api_key || '';
+  populateVaultAliasSelect('wcfg-key-vault', 'wcfg-key');
   if (ge('wcfg-model'))    ge('wcfg-model').value = llm.model || '';
   if (ge('wcfg-timeout'))  ge('wcfg-timeout').value = ((llm.timeout_s || 30) * 1000);
   if (ge('wcfg-codegen'))  ge('wcfg-codegen').checked = !!w.allow_code_gen;
@@ -3203,6 +4048,7 @@ function renderAvailableModules() {
   if (!container) return;
   container.innerHTML = '';
   availableModules.forEach(function(m) {
+    if (m.name === 'enhancer') return;
     var pill = document.createElement('div');
     var isPython = m.source === 'python';
     var toolCount = (m.tools || []).length;
@@ -3286,7 +4132,7 @@ function openMateriaPanel(backendId) {
   };
 
   /* Find all modules attached to this backend */
-  var attachedModules = appConfig.module.filter(function(m) { return m.llm_backend === backendId; });
+  var attachedModules = appConfig.module.filter(function(m) { return m.llm_backend === backendId && !isInternalAgentEndpoint(m); });
   var attachedTypes = attachedModules.map(function(m) { return m.typ; });
 
   /* Get all available module types */
@@ -3302,7 +4148,13 @@ function openMateriaPanel(backendId) {
     if (!allTypes.some(function(t) { return t.name === fb.name; })) allTypes.push(fb);
   });
   var seen = {};
-  allTypes = allTypes.filter(function(t) { if (seen[t.name]) return false; seen[t.name]=true; return true; });
+  allTypes = allTypes.filter(function(t) {
+    if (t.name === 'enhancer') return false;
+    if (t.name === 'llm_worker') return false;
+    if (seen[t.name]) return false;
+    seen[t.name]=true;
+    return true;
+  });
 
   /* Render materia orbs */
   var grid = ge('materia-modules');
@@ -3335,7 +4187,8 @@ function openMateriaPanel(backendId) {
   /* Render agent links */
   var linksGrid = ge('materia-links');
   linksGrid.innerHTML = '';
-  appConfig.llm_backends.forEach(function(other) {
+  var linkBackends = linkableLlmBackends();
+  linkBackends.forEach(function(other) {
     if (other.id === backendId) return;
 
     var thisModules = appConfig.module.filter(function(m) { return m.llm_backend === backendId; });
@@ -3359,7 +4212,7 @@ function openMateriaPanel(backendId) {
     var lbl = document.createElement('span');
     lbl.className = 'materia-orb-label';
     lbl.style.color = isLinked ? 'var(--orange)' : 'var(--text-dim)';
-    lbl.textContent = other.name;
+    lbl.textContent = (isInternalLlmBackend(other) ? 'worker: ' : '') + other.name;
 
     chip.appendChild(dot);
     chip.appendChild(lbl);
@@ -3367,7 +4220,7 @@ function openMateriaPanel(backendId) {
     linksGrid.appendChild(chip);
   });
 
-  if (appConfig.llm_backends.length <= 1) {
+  if (linkBackends.filter(function(b) { return b.id !== backendId; }).length === 0) {
     linksGrid.innerHTML = '<span style="font-size:10px;color:var(--text-dim);font-style:italic;">No other agents to link</span>';
   }
 
@@ -3443,6 +4296,7 @@ function toggleMateria(backendId, moduleType, attach) {
     });
   }
   openMateriaPanel(backendId);
+  renderEnhancerOrbs();
   renderModuleCards();
   renderChatLinks();
   setTimeout(drawConnections, 50);
@@ -3468,13 +4322,14 @@ function toggleAgentLink(fromBackendId, toBackendId, link) {
   });
 
   openMateriaPanel(fromBackendId);
+  renderEnhancerOrbs();
   renderModuleCards();
   setTimeout(drawConnections, 50);
   autoSave('module');
 }
 
 function updateMateriaPerms(backendId) {
-  var modules = appConfig.module.filter(function(m) { return m.llm_backend === backendId; });
+  var modules = appConfig.module.filter(function(m) { return m.llm_backend === backendId && !isInternalAgentEndpoint(m); });
   var types = modules.map(function(m) { return m.typ; });
   var links = [];
   modules.forEach(function(m) { (m.linked_modules || []).forEach(function(l) { if (links.indexOf(l)<0) links.push(l); }); });
@@ -3518,8 +4373,9 @@ function llmStyleVars(id) {
 function moduleRenderEntries() {
   var entries = [];
   var used = {};
-  (appConfig.llm_backends || []).forEach(function(backend) {
-    var mods = (appConfig.module || []).filter(function(m) { return m.llm_backend === backend.id; });
+  var modsAll = normalModules();
+  visibleLlmBackends().forEach(function(backend) {
+    var mods = modsAll.filter(function(m) { return m.llm_backend === backend.id; });
     if (!mods.length) return;
     entries.push({kind: 'group', backend: backend, modules: mods});
     mods.forEach(function(m) {
@@ -3527,7 +4383,7 @@ function moduleRenderEntries() {
       entries.push({kind: 'module', module: m, idx: appConfig.module.indexOf(m)});
     });
   });
-  var unassigned = (appConfig.module || []).filter(function(m) { return !used[m.id]; });
+  var unassigned = modsAll.filter(function(m) { return !used[m.id]; });
   if (unassigned.length) {
     entries.push({kind: 'group', backend: null, modules: unassigned});
     unassigned.forEach(function(m) {
@@ -3540,7 +4396,8 @@ function moduleRenderEntries() {
 function renderLlmGems() {
   var row = ge('llm-gems-row');
   row.innerHTML = '';
-  (appConfig.llm_backends || []).forEach(function(b, idx) {
+  visibleLlmBackends().forEach(function(b) {
+    var idx = appConfig.llm_backends.indexOf(b);
     var color = llmColor(b.id);
     var item = document.createElement('div');
     item.className = 'llm-gem-item' + (activeMateriaBackend === b.id ? ' gem-active' : '');
@@ -3562,6 +4419,93 @@ function renderLlmGems() {
     openNewLlmGem();
   });
   row.appendChild(addBtn);
+}
+
+function renderEnhancerOrbs() {
+  var row = ge('enhancer-orbs-row');
+  if (!row || !appConfig) return;
+  row.innerHTML = '';
+  enhancerModules().forEach(function(m) {
+    var idx = (appConfig.module || []).indexOf(m);
+    var mode = enhancerMode(m);
+    var modeClass = safeCssName(mode);
+    var item = document.createElement('div');
+    item.className = 'enhancer-orb-item';
+    item.setAttribute('data-mod-idx', idx);
+    item.setAttribute('data-enh-id', m.id);
+    item.title = [
+      (m.display_name || m.id),
+      'ID: ' + m.id,
+      'Mode: ' + mode,
+      'LLM: ' + (m.llm_backend || 'nicht gesetzt')
+    ].join('\n');
+    item.innerHTML =
+      '<div class="enhancer-mini-orb mode-' + escHtml(modeClass) + '">' + escHtml(enhancerModeIcon(mode)) + '</div>' +
+      '<div class="enhancer-mini-name">' + escHtml(m.display_name || m.id) + '</div>' +
+      '<div class="enhancer-mini-mode">' + escHtml(mode) + '</div>';
+    item.addEventListener('click', function(e) {
+      e.stopPropagation();
+      loadAvailableModules().then(function() { editModule(idx); }).catch(function() { editModule(idx); });
+    });
+    row.appendChild(item);
+  });
+
+  var addBtn = document.createElement('button');
+  addBtn.className = 'add-enhancer-btn';
+  addBtn.textContent = '+';
+  addBtn.title = 'Enhancer anlegen';
+  addBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    createEnhancerModule();
+  });
+  row.appendChild(addBtn);
+}
+
+function createEnhancerModule() {
+  if (!appConfig) return;
+  if (!appConfig.module) appConfig.module = [];
+  ensureRagPool('Enhancer', 'Enhancer');
+  var id = uniqueModuleId('enhancer.pipeline');
+  var entry = {
+    id: id,
+    name: id,
+    display_name: 'Pipeline Enhancer',
+    typ: 'enhancer',
+    llm_backend: '',
+    backup_llm: null,
+    berechtigungen: [],
+    linked_modules: [],
+    input_enhancers: [],
+    output_enhancers: [],
+    combined_enhancers: [],
+    persistent: true,
+    timeout_s: 60,
+    retry: 0,
+    settings: {
+      enhancer_mode: 'observe',
+      enhancer_prompt: 'Analysiere den Kontext. Gib JSON mit action, text, notes, flags, reason zurueck. Bewahre negative Constraints wie keine Recherche, ohne Tools, Sprache, Laenge und Format strikt.',
+      enhancer_fail_policy: 'fail_open',
+      enhancer_store_rag: true,
+      enhancer_rag_pool: 'Enhancer',
+      enhancer_inject_context: true,
+      enhancer_max_output_chars: 6000,
+      enhancer_timeout_s: 60
+    },
+    identity: {
+      bot_name: 'Enhancer',
+      greeting: '',
+      system_prompt: 'Du bist ein Pipeline-Enhancer. Antworte ausschliesslich als JSON mit action, text, notes, flags und reason.'
+    },
+    rag_pool: 'Enhancer'
+  };
+  appConfig.module.push(entry);
+  var idx = appConfig.module.length - 1;
+  renderEnhancerOrbs();
+  renderModuleCards();
+  renderRagPills();
+  setTimeout(drawConnections, 50);
+  autoSave('all');
+  loadAvailableModules().then(function() { editModule(idx); }).catch(function() { editModule(idx); });
 }
 
 function renderModuleCards() {
@@ -3603,6 +4547,10 @@ function renderModuleCards() {
     var linkLabels = (m.linked_modules && m.linked_modules.length)
       ? m.linked_modules.map(function(l) {
           var linkedMod = appConfig.module.find(function(mm) { return mm.id === l; });
+          if (linkedMod && isInternalAgentEndpoint(linkedMod)) {
+            var linkedBackend = llmById(linkedMod.llm_backend);
+            return linkedBackend ? ('agent: ' + linkedBackend.name) : 'agent endpoint';
+          }
           return linkedMod ? linkedMod.display_name : l;
         })
       : [];
@@ -3611,6 +4559,15 @@ function renderModuleCards() {
           return '<span style="background:rgba(0,170,255,0.1);border:1px solid rgba(0,170,255,0.25);padding:2px 6px;border-radius:3px;font-size:10px;color:var(--cyan);">' + escHtml(label) + '</span>';
         }).join(' ')
       : '<span style="color:var(--text-dim);font-size:10px;">No links</span>';
+    var enhancerLabels = []
+      .concat((m.input_enhancers || []).map(function(id) { return 'IN:' + id; }))
+      .concat((m.output_enhancers || []).map(function(id) { return 'OUT:' + id; }))
+      .concat((m.combined_enhancers || []).map(function(id) { return 'COM:' + id; }));
+    var enhancerHtml = enhancerLabels.length
+      ? enhancerLabels.map(function(label) {
+          return '<span style="background:rgba(180,120,255,0.12);border:1px solid rgba(180,120,255,0.28);padding:2px 6px;border-radius:3px;font-size:10px;color:var(--purple);">' + escHtml(label) + '</span>';
+        }).join(' ')
+      : '<span style="color:var(--text-dim);font-size:10px;">No enhancers</span>';
     var persistent = m.persistent === false
       ? '<span style="background:var(--orange-dim);color:var(--text);padding:1px 6px;border-radius:3px;font-size:10px;margin-left:4px;">TEMP</span>'
       : '';
@@ -3641,6 +4598,7 @@ function renderModuleCards() {
       'RAG: ' + escHtml(ragName || 'none') + '<br>' +
       'Tools: ' + escHtml(toolSummary) + '<br>' +
       'Links: ' + escHtml(linkLabels.length ? linkLabels.join(', ') : 'none') + '<br>' +
+      'Enhancers: ' + escHtml(enhancerLabels.length ? enhancerLabels.join(', ') : 'none') + '<br>' +
       '<span class="muted">Click to expand settings.</span>';
     card.title = [
       m.display_name + ' (' + m.id + ')',
@@ -3648,7 +4606,8 @@ function renderModuleCards() {
       'LLM: ' + (llmName || 'not connected'),
       'RAG: ' + (ragName || 'none'),
       'Tools: ' + toolSummary,
-      'Links: ' + (linkLabels.length ? linkLabels.join(', ') : 'none')
+      'Links: ' + (linkLabels.length ? linkLabels.join(', ') : 'none'),
+      'Enhancers: ' + (enhancerLabels.length ? enhancerLabels.join(', ') : 'none')
     ].join('\n');
 
     card.innerHTML =
@@ -3680,6 +4639,7 @@ function renderModuleCards() {
         toolsHtml +
         '<div class="mod-card-meta">timeout: ' + m.timeout_s + 's &middot; retry: ' + m.retry + budget + '</div>' +
         '<div style="margin-top:6px;"><span style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-dim);">Links: </span>' + links + persistent + '</div>' +
+        '<div style="margin-top:6px;"><span style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-dim);">Enhancers: </span>' + enhancerHtml + '</div>' +
         '<div class="mod-card-actions"><button class="btn btn-sm" data-edit-mod="' + idx + '">Edit</button>' +
         '<button class="btn btn-sm" data-cap-mod="' + escHtml(m.id) + '" title="Was darf + was kann dieser Agent konkret?" style="font-size:10px;">Details</button>' +
         '<button class="btn btn-sm" data-prompt-mod="' + escHtml(m.id) + '" title="Preview System Prompt" style="font-size:10px;">Prompt</button>' +
@@ -3711,6 +4671,9 @@ function renderModuleCards() {
     ge('mod-perm-aufgaben').checked = true;
     ge('mod-perm-spawn').checked = false;
     ge('mod-perm-rag').checked = false;
+    ge('mod-input-enhancers').value = '';
+    ge('mod-output-enhancers').value = '';
+    ge('mod-combined-enhancers').value = '';
     updateDerivedPerms();
     ge('mod-token-budget').value = '';
     ge('mod-max-concurrent').value = 1;
@@ -3791,11 +4754,11 @@ function showSocketDropdown(anchorEl, modIdx, socketType) {
       if (socketType === 'primary') appConfig.module[modIdx].llm_backend = '';
       else appConfig.module[modIdx].backup_llm = null;
       dd.classList.remove('open');
-      renderModuleCards(); setTimeout(drawConnections, 50); autoSave('module');
+      renderEnhancerOrbs(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('module');
     });
     dd.appendChild(noneItem);
 
-    (appConfig.llm_backends || []).forEach(function(b) {
+    visibleLlmBackends().forEach(function(b) {
       var item = document.createElement('div');
       item.className = 'socket-dropdown-item';
       var currentVal = socketType === 'primary' ? mod.llm_backend : mod.backup_llm;
@@ -3805,7 +4768,7 @@ function showSocketDropdown(anchorEl, modIdx, socketType) {
         if (socketType === 'primary') appConfig.module[modIdx].llm_backend = b.id;
         else appConfig.module[modIdx].backup_llm = b.id;
         dd.classList.remove('open');
-        renderModuleCards(); setTimeout(drawConnections, 50); autoSave('module');
+        renderEnhancerOrbs(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('module');
       });
       dd.appendChild(item);
     });
@@ -3901,6 +4864,32 @@ function drawConnections() {
         }
       }
     }
+
+    var enhancerIds = [];
+    (m.input_enhancers || []).forEach(function(id) { if (enhancerIds.indexOf(id) < 0) enhancerIds.push(id); });
+    (m.output_enhancers || []).forEach(function(id) { if (enhancerIds.indexOf(id) < 0) enhancerIds.push(id); });
+    (m.combined_enhancers || []).forEach(function(id) { if (enhancerIds.indexOf(id) < 0) enhancerIds.push(id); });
+    enhancerIds.forEach(function(enhId, enhIdx) {
+      var orbItem = null;
+      qsa('.enhancer-orb-item').forEach(function(el) {
+        if (el.dataset.enhId === enhId) orbItem = el;
+      });
+      if (!orbItem) return;
+      var orb = orbItem.querySelector('.enhancer-mini-orb');
+      if (!orb) return;
+      var o = orb.getBoundingClientRect();
+      var c = card.getBoundingClientRect();
+      var x1e = o.left + o.width/2 - boardRect.left;
+      var y1e = o.bottom - boardRect.top;
+      var spread = Math.min(34, c.width * 0.22);
+      var offset = enhancerIds.length > 1 ? ((enhIdx / Math.max(1, enhancerIds.length - 1)) - 0.5) * spread : 0;
+      var x2e = c.left + c.width/2 + offset - boardRect.left;
+      var y2e = c.top - boardRect.top;
+      var cy1e = y1e + (y2e-y1e)*0.32;
+      var cy2e = y2e - (y2e-y1e)*0.28;
+      lines += '<path d="M'+x1e+','+y1e+' C'+x1e+','+cy1e+' '+x2e+','+cy2e+' '+x2e+','+y2e+'" fill="none" stroke="rgba(180,120,255,0.50)" stroke-width="1.5" stroke-dasharray="3,3"/>';
+      lines += '<path d="M'+x1e+','+y1e+' C'+x1e+','+cy1e+' '+x2e+','+cy2e+' '+x2e+','+y2e+'" fill="none" stroke="rgba(180,120,255,0.10)" stroke-width="5" stroke-dasharray="3,3"/>';
+    });
 
     if (m.rag_pool) {
       var pill = document.querySelector('.rag-pill[data-rag-id="' + m.rag_pool + '"]');
@@ -4108,6 +5097,7 @@ function editLlm(idx) {
   ge('llm-name').value = b.name; ge('llm-typ').value = providerFromBackend(b);
   ge('llm-url').value = b.url; ge('llm-model').value = b.model;
   ge('llm-apikey').value = b.api_key || ''; ge('llm-timeout').value = b.timeout_s;
+  populateVaultAliasSelect('llm-apikey-vault', 'llm-apikey');
   ge('llm-max-tokens').value = b.max_tokens || '';
   setLlmReasoningForm(b);
   setLlmCostCapForm(b.cost_cap || null);
@@ -4129,6 +5119,7 @@ function openNewLlmGem() {
   ge('llm-url').value = '';
   ge('llm-model').value = '';
   ge('llm-apikey').value = '';
+  populateVaultAliasSelect('llm-apikey-vault', 'llm-apikey');
   ge('llm-timeout').value = 120;
   ge('llm-max-tokens').value = '';
   setLlmReasoningForm(null);
@@ -4263,14 +5254,14 @@ function isKnownProviderDefaultUrl(url) {
   });
 }
 
-function updateLlmProviderUi(forceDefault) {
+function updateLlmProviderUi(forceDefault, allowEmptyDefault) {
   var provider = ge('llm-typ').value;
   var urlEl = ge('llm-url');
   var modelEl = ge('llm-model');
   var current = urlEl.value.trim();
   var next = LLM_PROVIDER_DEFAULT_URLS[provider] || '';
   urlEl.placeholder = LLM_PROVIDER_PLACEHOLDERS[provider] || 'https://host.example/v1';
-  if (forceDefault || !current || isKnownProviderDefaultUrl(current)) urlEl.value = next;
+  if (forceDefault || !current || (isKnownProviderDefaultUrl(current) && (next || allowEmptyDefault))) urlEl.value = next;
   if (modelEl && LLM_PROVIDER_DEFAULT_MODELS[provider] && (forceDefault || !modelEl.value.trim())) {
     modelEl.value = LLM_PROVIDER_DEFAULT_MODELS[provider];
   }
@@ -4281,7 +5272,7 @@ function updateLlmProviderUi(forceDefault) {
   clearLlmModelPicker();
 }
 
-ge('llm-typ').addEventListener('change', function() { updateLlmProviderUi(false); });
+ge('llm-typ').addEventListener('change', function() { updateLlmProviderUi(false, true); });
 
 ge('llm-submit').addEventListener('click', function() {
   var provider = ge('llm-typ').value;
@@ -4319,7 +5310,7 @@ ge('llm-submit').addEventListener('click', function() {
     appConfig.llm_backends[editingLlmIdx] = entry;
   }
   closeModal('modal-llm');
-  renderLlmGems(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('llm');
+  renderLlmGems(); renderEnhancerOrbs(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('llm');
 });
 
 ge('llm-test').addEventListener('click', function() {
@@ -4354,7 +5345,7 @@ ge('llm-delete').addEventListener('click', function() {
   if (editingLlmIdx >= 0 && confirm('Delete this LLM gem?')) {
     appConfig.llm_backends.splice(editingLlmIdx, 1);
     closeModal('modal-llm');
-    renderLlmGems(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('llm');
+    renderLlmGems(); renderEnhancerOrbs(); renderModuleCards(); setTimeout(drawConnections, 50); autoSave('llm');
   }
 });
 
@@ -4436,6 +5427,9 @@ function finishWizard() {
     backup_llm: null,
     berechtigungen: ['aufgaben', 'rag.shared'],
     linked_modules: [],
+    input_enhancers: [],
+    output_enhancers: [],
+    combined_enhancers: [],
     persistent: true,
     timeout_s: 120,
     retry: 0,
@@ -4447,6 +5441,7 @@ function finishWizard() {
 
   closeModal('modal-agent-wizard');
   renderLlmGems();
+  renderEnhancerOrbs();
   renderModuleCards();
   setTimeout(drawConnections, 50);
   autoSave('all');
@@ -4467,6 +5462,22 @@ function updateModTypInfo() {
   /* Identity nur fuer Chat-Module zeigen */
   var identSec = ge('mod-identity-section');
   if (identSec) identSec.style.display = (typ === 'chat') ? 'block' : 'none';
+  var enhancerSec = ge('mod-enhancer-slots');
+  if (enhancerSec) enhancerSec.style.display = (typ === 'chat') ? 'block' : 'none';
+  var enhancerAssignSec = ge('mod-enhancer-assignment');
+  if (enhancerAssignSec) enhancerAssignSec.style.display = (typ === 'enhancer') ? 'block' : 'none';
+  var linkSec = ge('mod-link-section');
+  if (linkSec) linkSec.style.display = (typ === 'enhancer') ? 'none' : 'block';
+  var permSec = ge('mod-perm-section');
+  if (permSec) permSec.style.display = (typ === 'enhancer') ? 'none' : 'flex';
+  var derivedSec = ge('mod-derived-perms');
+  if (derivedSec) derivedSec.style.display = (typ === 'enhancer') ? 'none' : 'block';
+  if (typ === 'enhancer' && ge('mod-link-grid')) {
+    ge('mod-link-grid').innerHTML = '';
+    ge('mod-link-grid').dataset.derivedPerms = '';
+  }
+  if (typ === 'chat') renderEnhancerSlotPicker();
+  if (typ === 'enhancer') renderEnhancerAssignment();
 }
 
 ge('mod-typ').addEventListener('change', function() {
@@ -4483,12 +5494,16 @@ ge('mod-typ').addEventListener('change', function() {
 ge('mod-perm-aufgaben').addEventListener('change', updateDerivedPerms);
 ge('mod-perm-spawn').addEventListener('change', updateDerivedPerms);
 ge('mod-perm-rag').addEventListener('change', updateDerivedPerms);
+['mod-input-enhancers', 'mod-output-enhancers', 'mod-combined-enhancers'].forEach(function(id) {
+  var el = ge(id);
+  if (el) el.addEventListener('input', renderEnhancerSlotPicker);
+});
 
 function editModule(idx) {
   editingModIdx = idx;
   var m = appConfig.module[idx];
   ge('modal-module-title').textContent = 'Instanz bearbeiten: ' + m.display_name;
-  populateModuleTypDropdown();
+  populateModuleTypDropdown(m.typ === 'enhancer', m.typ === 'enhancer');
   populateLlmDropdown();
   ge('mod-id').value = m.id; ge('mod-id').disabled = true;
   ge('mod-display-name').value = m.display_name;
@@ -4501,6 +5516,9 @@ function editModule(idx) {
   ge('mod-perm-aufgaben').checked = perms.indexOf('aufgaben') >= 0;
   ge('mod-perm-spawn').checked = perms.indexOf('agent.spawn') >= 0;
   ge('mod-perm-rag').checked = perms.some(function(p) { return p.startsWith('rag.'); });
+  ge('mod-input-enhancers').value = joinModuleIdList(m.input_enhancers || []);
+  ge('mod-output-enhancers').value = joinModuleIdList(m.output_enhancers || []);
+  ge('mod-combined-enhancers').value = joinModuleIdList(m.combined_enhancers || []);
   updateDerivedPerms();
   ge('mod-token-budget').value = m.token_budget || '';
   ge('mod-max-concurrent').value = m.max_concurrent_tasks || 1;
@@ -4528,8 +5546,9 @@ function editModule(idx) {
 }
 
 ge('module-submit').addEventListener('click', function() {
-  var perms = (ge('mod-link-grid').dataset.derivedPerms || '').split(',').filter(Boolean);
   var typ = ge('mod-typ').value;
+  var isEnhancer = typ === 'enhancer';
+  var perms = isEnhancer ? [] : (ge('mod-link-grid').dataset.derivedPerms || '').split(',').filter(Boolean);
   var newSettings = collectSettings(typ);
   var oldSettings = editingModIdx >= 0 ? (appConfig.module[editingModIdx].settings || {}) : {};
   var mergedSettings = {};
@@ -4539,7 +5558,7 @@ ge('module-submit').addEventListener('click', function() {
   var entry = {
     id: id, name: id,
     display_name: ge('mod-display-name').value.trim() || id, typ: typ,
-    llm_backend: ge('mod-llm-backend').value || (appConfig.llm_backends[0] ? appConfig.llm_backends[0].id : ''),
+    llm_backend: ge('mod-llm-backend').value || (typ === 'chat' && appConfig.llm_backends[0] ? appConfig.llm_backends[0].id : ''),
     backup_llm: editingModIdx >= 0 ? appConfig.module[editingModIdx].backup_llm : null,
     berechtigungen: perms,
     timeout_s: parseInt(ge('mod-timeout').value) || 30,
@@ -4551,7 +5570,10 @@ ge('module-submit').addEventListener('click', function() {
       system_prompt: ge('mod-system-prompt').value.trim() || 'Du bist ein hilfreicher Assistent.',
     },
     rag_pool: editingModIdx >= 0 ? appConfig.module[editingModIdx].rag_pool : null,
-    linked_modules: getSelectedLinks(),
+    linked_modules: isEnhancer ? [] : getSelectedLinks(),
+    input_enhancers: typ === 'chat' ? parseModuleIdList(ge('mod-input-enhancers').value) : [],
+    output_enhancers: typ === 'chat' ? parseModuleIdList(ge('mod-output-enhancers').value) : [],
+    combined_enhancers: typ === 'chat' ? parseModuleIdList(ge('mod-combined-enhancers').value) : [],
     persistent: editingModIdx >= 0 ? (appConfig.module[editingModIdx].persistent !== false) : true,
     spawned_by: editingModIdx >= 0 ? appConfig.module[editingModIdx].spawned_by : null,
     spawn_ttl_s: editingModIdx >= 0 ? appConfig.module[editingModIdx].spawn_ttl_s : null,
@@ -4569,7 +5591,7 @@ ge('module-submit').addEventListener('click', function() {
     appConfig.module[editingModIdx] = entry;
   }
   closeModal('modal-module');
-  renderModuleCards(); setTimeout(drawConnections, 50);
+  renderEnhancerOrbs(); renderModuleCards(); setTimeout(drawConnections, 50);
 
   // Python-Module: Settings auch in modules/{typ}/config.json speichern
   var modDef = getModuleDef(typ);
@@ -4585,7 +5607,7 @@ ge('module-delete').addEventListener('click', function() {
   if (editingModIdx >= 0 && confirm('Delete this module?')) {
     appConfig.module.splice(editingModIdx, 1);
     closeModal('modal-module');
-    renderModuleCards(); populateChatModules(); setTimeout(drawConnections, 50); autoSave('module');
+    renderEnhancerOrbs(); renderModuleCards(); populateChatModules(); setTimeout(drawConnections, 50); autoSave('module');
   }
 });
 
@@ -4656,6 +5678,8 @@ function _doSave() {
 
   apiFetch('GET', '/api/config').then(function(latest) {
     if (!scopes.all && !scopes.llm) payload.llm_backends = latest.llm_backends || [];
+    if (!scopes.vault) payload.api_key_vault = latest.api_key_vault || [];
+    if (!scopes.vault) payload.credential_vault = latest.credential_vault || [];
     if (!scopes.all && !scopes.module) payload.module = latest.module || [];
     if (!scopes.all && !scopes.rag) payload.rag_pools = latest.rag_pools || [];
     return postConfig(payload);
@@ -5079,8 +6103,10 @@ loadConfig().then(function() {
   return loadAvailableModules();
 }).then(function() {
   if (appConfig) {
+    renderEnhancerOrbs();
     renderModuleCards();
     renderAvailableModules();
+    setTimeout(drawConnections, 50);
   }
 });
 

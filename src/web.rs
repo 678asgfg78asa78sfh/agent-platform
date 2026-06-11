@@ -15,10 +15,13 @@ use tokio::sync::RwLock;
 use tokio_stream::StreamExt;
 
 const MAX_CHAT_TOOL_RESULT_CHARS: usize = 7000;
+const MAX_PREPARED_BLOCKS_TOOL_RESULT_CHARS: usize = 16000;
+const MAX_CAPABILITIES_TOOL_RESULT_CHARS: usize = 1200;
 const MAX_CHAT_TASK_RESULT_CHARS: usize = 20000;
 const MAX_MALFORMED_TOOL_RETRIES: u32 = 3;
 const MAX_CHAT_TOOL_HISTORY_ARG_CHARS: usize = 1200;
 const MAX_FINAL_SYNTHESIS_EVIDENCE_CHARS: usize = 22000;
+const MAX_ERROR_RECOVERY_EVIDENCE_CHARS: usize = 5000;
 const MAX_FINAL_SYNTHESIS_TOOL_RESULT_CHARS: usize = 1400;
 
 /// Token-Usage Tracking
@@ -163,23 +166,65 @@ fn model_ids(models: &[LlmModelInfo]) -> Vec<String> {
     models.iter().map(|m| m.id.clone()).collect()
 }
 
+fn message_content_plain_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                    return Some(text.to_string());
+                }
+                match item.get("type").and_then(|v| v.as_str()) {
+                    Some("image_url") | Some("input_image") | Some("image") => {
+                        Some("[image]".to_string())
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        serde_json::Value::Object(obj) => obj
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| content.to_string()),
+        serde_json::Value::Null => String::new(),
+        _ => content.to_string(),
+    }
+}
+
+fn message_plain_text(message: &serde_json::Value) -> String {
+    message
+        .get("content")
+        .map(message_content_plain_text)
+        .unwrap_or_default()
+}
+
 fn estimate_message_tokens(messages: &[serde_json::Value]) -> u64 {
     let chars: usize = messages
         .iter()
         .filter_map(|m| m.get("content"))
-        .map(|content| match content {
-            serde_json::Value::String(s) => s.len(),
-            other => other.to_string().len(),
-        })
+        .map(|content| message_content_plain_text(content).len())
         .sum();
     ((chars + 3) / 4).max(1) as u64
 }
 
 fn chat_tool_result_for_llm(ok: bool, data: &str) -> String {
-    let body = if data.chars().count() > MAX_CHAT_TOOL_RESULT_CHARS {
+    let trimmed = data.trim_start();
+    let max_chars = if trimmed.starts_with("DEEPDIVE_BLOCKS") {
+        MAX_PREPARED_BLOCKS_TOOL_RESULT_CHARS
+    } else if trimmed.starts_with("Verfuegbare Tools fuer")
+        || trimmed.starts_with("AGENT_CAPABILITIES")
+    {
+        MAX_CAPABILITIES_TOOL_RESULT_CHARS
+    } else {
+        MAX_CHAT_TOOL_RESULT_CHARS
+    };
+    let body = if data.chars().count() > max_chars {
         format!(
             "{}...[gekuerzt; vollstaendiges Ergebnis im Aufgaben-Board]",
-            util::safe_truncate(data, MAX_CHAT_TOOL_RESULT_CHARS)
+            util::safe_truncate(data, max_chars)
         )
     } else {
         data.to_string()
@@ -418,14 +463,59 @@ fn final_synthesis_messages(
 ) -> Vec<serde_json::Value> {
     let evidence = compact_chat_evidence(messages, max_evidence_chars);
     let instruction = if needs_deepdive {
-        "Das Tool-Rundenlimit ist erreicht. Nutze keine Tools. Erstelle aus der folgenden Tool-Evidenz einen belastbaren DeepDive-Bericht mit aktuellem Stand, wichtigsten Fundstellen, Timeline/Chronologie, Kausalkette, Unsicherheiten und einem <quellen>-Block mit exakten URLs/Fundorten."
+        "Das Tool-Rundenlimit ist erreicht. Nutze keine Tools. Erstelle aus der folgenden Tool-Evidenz einen belastbaren DeepDive-Bericht. Wenn DEEPDIVE_BLOCKS vorhanden ist, nutze dessen QUELLEN_BLOCK, TIMELINE_BLOCK, CLAIMS_BLOCK, CAUSALITY_BLOCK, SUBCRAWL_PLAN_BLOCK, SUBCRAWL_RESULTS_BLOCK, BRANCHING_CONTEXT_BLOCK, CONTRAST_BLOCK und LEADS_BLOCK als feste Bausteine. Ziel ist keine eigene Meinung, sondern Informationslage, Ereignisse, Akteure, Claims, Leads, Kausalitaetsbehauptungen, Subcrawl-Seiteninformationen, Branching-Kontext/Missing Links und Perspektivenkontrast aufzubereiten. Pflichtstruktur: Aktueller Stand, Timeline/Chronologie, Akteure, Claims/Belege, Kausalketten/Mechanismen, Subcrawls/Sidestories, vorgeschlagene Anschluss-Crawls, Branching/Missing Links, Perspektivenkontrast nach Sprache/Land, Widersprueche/Unsicherheiten, offene Leads, danach exakt ein <quellen>-Block. Jede Quellenzeile braucht URL, Titel/Outlet falls vorhanden, Stand/Abrufzeit oder RAG-ID, und wofuer sie genutzt wurde. Nutze nur URLs/Fundorte aus der Tool-Evidenz und behaupte keine neuen Quellen."
     } else {
         "Das Tool-Rundenlimit ist erreicht. Nutze keine Tools. Erstelle aus der folgenden Tool-Evidenz die beste moegliche Antwort und markiere unvollstaendige Punkte klar."
     };
     vec![
-        serde_json::json!({"role": "system", "content": "Du bist im finalen Synthese-Modus. Du darfst keine Tools verwenden und keine neuen Recherchen behaupten. Arbeite nur mit der gelieferten Tool-Evidenz."}),
+        serde_json::json!({"role": "system", "content": "Du bist im finalen Synthese-Modus. Du darfst keine Tools verwenden und keine neuen Recherchen behaupten. Arbeite nur mit der gelieferten Tool-Evidenz. Bei DeepDive-Antworten ist der <quellen>-Block Pflicht und muss echte URLs aus der Evidenz enthalten. Social-/Kommentar-Funde sind Leads oder Meinungen, keine Beweise."}),
         serde_json::json!({"role": "user", "content": format!("Originale Anfrage:\n{}\n\n{}\n\nTool-Evidenz:\n{}", last_user_msg, instruction, evidence)}),
     ]
+}
+
+fn last_assistant_text(messages: &[serde_json::Value]) -> Option<String> {
+    messages.iter().rev().find_map(|message| {
+        if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+            return None;
+        }
+        let text = message_plain_text(message);
+        let text = strip_tool_tags(&text).trim().to_string();
+        if text.is_empty() { None } else { Some(text) }
+    })
+}
+
+fn llm_error_recovery_answer(
+    error: &str,
+    sub_task_count: usize,
+    messages: &[serde_json::Value],
+) -> String {
+    let previous = last_assistant_text(messages);
+    let evidence = compact_chat_evidence(messages, MAX_ERROR_RECOVERY_EVIDENCE_CHARS);
+    let mut lines = vec![
+        format!(
+            "[{} Aufgabe(n) erstellt, Abschluss-LLM fehlgeschlagen]",
+            sub_task_count
+        ),
+        String::new(),
+        format!(
+            "Der Quellenabruf war bereits durch, aber der abschliessende LLM-Call ist fehlgeschlagen: {}",
+            error
+        ),
+    ];
+    if let Some(draft) = previous {
+        lines.extend([
+            String::new(),
+            "Letzter verwertbarer Entwurf vor dem Fehler:".into(),
+            draft,
+        ]);
+    } else {
+        lines.extend([
+            String::new(),
+            "Auszug aus den vorhandenen Tool-Ergebnissen:".into(),
+            evidence,
+        ]);
+    }
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone)]
@@ -445,30 +535,31 @@ struct DeepdiveProgress {
     source_note_ok: usize,
     rag_save_ok: usize,
     rag_search_ok: usize,
+    pack_ok: usize,
+    blocks_ok: usize,
     last_evidence_round: usize,
     last_rag_round: usize,
+    last_pack_round: usize,
+    last_blocks_round: usize,
 }
 
 fn is_deepdive_request(text: &str) -> bool {
     let lower = text.to_lowercase();
+    if rejects_research_tools(&lower) {
+        return false;
+    }
     let currentish = [
         "aktuell",
         "heute",
-        "gerade",
         "news",
         "nachrichten",
         "neuigkeiten",
+        "neues",
         "letzte stunde",
         "neuste",
         "neueste",
         "stand der dinge",
         "aktueller stand",
-        "quelle",
-        "quellen",
-        "web",
-        "internet",
-        "kommentar",
-        "kommentare",
         "ereignis",
         "ereignisse",
     ]
@@ -508,7 +599,133 @@ fn is_deepdive_request(text: &str) -> bool {
     }
     let wants_breadth =
         lower.contains("alles") || lower.contains("so viel") || lower.contains("was du kannst");
-    asks_research && wants_breadth && currentish
+    asks_research && wants_breadth
+}
+
+fn rejects_research_tools(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "keine recherche",
+        "keine externe recherche",
+        "keine online-recherche",
+        "keine online recherche",
+        "ohne recherche",
+        "ohne externe recherche",
+        "ohne online-recherche",
+        "ohne online recherche",
+        "nicht recherch",
+        "keine websuche",
+        "keine externe websuche",
+        "ohne websuche",
+        "ohne externe websuche",
+        "nicht suchen",
+        "keine suche",
+        "keine tools",
+        "ohne tools",
+        "kein tool",
+        "kein deepdive",
+        "kein deep dive",
+        "ohne deepdive",
+        "ohne deep dive",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn rejects_all_tools(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    ["keine tools", "ohne tools", "kein tool", "ohne tool"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn is_light_research_request(text: &str) -> bool {
+    if rejects_research_tools(text) {
+        return false;
+    }
+    let lower = text.to_lowercase();
+    [
+        "recherch",
+        "such",
+        "suche",
+        "prüf",
+        "pruef",
+        "check",
+        "finde",
+        "google",
+        "verify",
+        "validier",
+        "fakten",
+        "stimmt das",
+        "belege",
+        "quelle",
+        "quellen",
+        "web",
+        "internet",
+        "reddit",
+        "twitter",
+        "x.com",
+        "youtube",
+        "rss",
+        "ebay",
+        "preis",
+        "preise",
+        "coingecko",
+        "kurs",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+}
+
+fn chat_should_enable_tools(text: &str) -> bool {
+    if rejects_all_tools(text) {
+        return false;
+    }
+    if is_deepdive_request(text) || is_light_research_request(text) {
+        return true;
+    }
+    let lower = text.to_lowercase();
+    [
+        "code",
+        "coding",
+        "bug",
+        "fix",
+        "datei",
+        "file",
+        "repo",
+        "git",
+        "commit",
+        "modul",
+        "implement",
+        "baue",
+        "bau ",
+        "rechne",
+        "berechne",
+        "math",
+        "kalender",
+        "datum",
+        "wieviel",
+        "wie viel",
+        "notify",
+        "notification",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+}
+
+fn is_research_tool_name(tool_name: &str) -> bool {
+    let name = tool_name.trim();
+    name.starts_with("deepdive.")
+        || name.starts_with("duckduckgo.")
+        || name.starts_with("tavily.")
+        || name.starts_with("grok_search.")
+        || name.starts_with("reddit_scraper.")
+        || name.starts_with("x_search.")
+        || name.starts_with("x_comments.")
+        || matches!(
+            name,
+            "web.search" | "http.get" | "browser.fetch" | "rag.suchen"
+        )
 }
 
 fn deepdive_topic_hint(text: &str) -> String {
@@ -533,6 +750,40 @@ fn deepdive_topic_hint(text: &str) -> String {
     text.trim().chars().take(120).collect::<String>()
 }
 
+fn preferred_deepdive_tool(text: &str) -> &'static str {
+    let lower = text.to_lowercase();
+    let wants_full = [
+        "deepdive",
+        "deep dive",
+        "ausführlich",
+        "ausfuehrlich",
+        "kausal",
+        "kausalität",
+        "kausalitaet",
+        "zusammenhang",
+        "zusammenhänge",
+        "zusammenhaenge",
+        "andere sprachen",
+        "mehrsprachig",
+        "perspektiven",
+        "kontrast",
+        "viele quellen",
+        "harte widerspruch",
+        "alles dazu",
+        "such alles",
+        "alles was",
+        "timeline",
+        "chronologie",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
+    if wants_full {
+        "deepdive.crawl"
+    } else {
+        "deepdive.quick"
+    }
+}
+
 fn observe_deepdive_progress(
     progress: &mut DeepdiveProgress,
     tool_name: &str,
@@ -543,9 +794,17 @@ fn observe_deepdive_progress(
         return;
     }
     match tool_name {
-        "deepdive.crawl" => {
+        "deepdive.crawl" | "deepdive.quick" => {
             progress.crawl_ok += 1;
             progress.last_evidence_round = round;
+        }
+        "deepdive.pack" => {
+            progress.pack_ok += 1;
+            progress.last_pack_round = round;
+        }
+        "deepdive.blocks" => {
+            progress.blocks_ok += 1;
+            progress.last_blocks_round = round;
         }
         "rss_verwaltung.fuer_deepdive" | "rss_verwaltung.fetch" | "rss_verwaltung.ingest_rag" => {
             progress.rss_evidence_ok += 1;
@@ -585,20 +844,47 @@ fn deepdive_gate_feedback(
         && progress.fetch_ok >= 3
         && (progress.source_note_ok >= 2 || progress.rag_save_ok >= 1);
     if progress.crawl_ok == 0 && !enough_manual && !enough_rss {
+        let tool = preferred_deepdive_tool(user_text);
         return Some(format!(
-            "DEEPDIVE-CHECK: Die Anfrage verlangt breites Web-Crawling. Du bist noch nicht tief genug. Antworte jetzt AUSSCHLIESSLICH mit diesem Toolcall: <tool>deepdive.crawl({})</tool>",
-            topic
+            "DEEPDIVE-CHECK: Die Anfrage verlangt frische Quellen. Du bist noch nicht tief genug. Antworte jetzt AUSSCHLIESSLICH mit diesem Toolcall: <tool>{}({})</tool>",
+            tool, topic
         ));
     }
-    if progress.rag_search_ok == 0 || progress.last_rag_round < progress.last_evidence_round {
-        let rag_query = progress
-            .crawl_id
-            .as_ref()
-            .map(|id| format!("{} {}", id, topic))
-            .unwrap_or(topic);
+    let has_current_pack =
+        progress.pack_ok > 0 && progress.last_pack_round >= progress.last_evidence_round;
+    let has_current_rag =
+        progress.rag_search_ok > 0 && progress.last_rag_round >= progress.last_evidence_round;
+    if !has_current_pack && !has_current_rag {
+        if let Some(crawl_id) = progress.crawl_id.as_ref() {
+            return Some(format!(
+                "DEEPDIVE-CHECK: Quellen wurden verarbeitet, aber die Synthese braucht das kompakte Crawl-Paket. Antworte jetzt AUSSCHLIESSLICH mit diesem Toolcall: <tool>deepdive.pack({})</tool>",
+                crawl_id
+            ));
+        }
+        if progress.crawl_ok > 0 {
+            return Some(format!(
+                "DEEPDIVE-CHECK: Quellen wurden verarbeitet, aber die Synthese braucht das kompakte DeepDive-Paket. Antworte jetzt AUSSCHLIESSLICH mit diesem Toolcall: <tool>deepdive.pack({})</tool>",
+                topic
+            ));
+        }
+        let rag_query = topic;
         return Some(format!(
             "DEEPDIVE-CHECK: Quellen wurden verarbeitet, aber die Synthese muss aus dem RAG kommen. Antworte jetzt AUSSCHLIESSLICH mit diesem Toolcall: <tool>rag.suchen({})</tool>",
             rag_query
+        ));
+    }
+    let has_current_blocks =
+        progress.blocks_ok > 0 && progress.last_blocks_round >= progress.last_pack_round;
+    if has_current_pack && !has_current_blocks {
+        if let Some(crawl_id) = progress.crawl_id.as_ref() {
+            return Some(format!(
+                "DEEPDIVE-CHECK: Das Pack ist da, aber die Synthese braucht vorbereitete Research-Bausteine. Antworte jetzt AUSSCHLIESSLICH mit diesem Toolcall: <tool>deepdive.blocks({})</tool>",
+                crawl_id
+            ));
+        }
+        return Some(format!(
+            "DEEPDIVE-CHECK: Das Pack ist da, aber die Synthese braucht vorbereitete Research-Bausteine. Antworte jetzt AUSSCHLIESSLICH mit diesem Toolcall: <tool>deepdive.blocks({})</tool>",
+            topic
         ));
     }
     let final_lower = final_text.to_lowercase();
@@ -639,6 +925,9 @@ fn deepdive_gate_feedback(
     }
     let wants_deepdive_shape = user_lower.contains("deepdive")
         || user_lower.contains("alles")
+        || user_lower.contains("kausal")
+        || user_lower.contains("zusammenh")
+        || user_lower.contains("perspektiv")
         || user_lower.contains("aktuell")
         || user_lower.contains("news")
         || user_lower.contains("ereignis");
@@ -647,11 +936,40 @@ fn deepdive_gate_feedback(
         || final_lower.contains("kaus")
         || final_lower.contains("ursache")
         || final_lower.contains("folge")
+        || final_lower.contains("akteur")
+        || final_lower.contains("perspektiven")
+        || final_lower.contains("widerspr")
         || final_lower.contains("hintergrund")
         || final_lower.contains("warum");
     if wants_deepdive_shape && !has_time_or_causal_shape {
         return Some(
-            "DEEPDIVE-CHECK: Die Antwort hat Quellen, aber kein DeepDive-Lagebild. Antworte jetzt OHNE weiteren Toolcall neu mit: aktueller Stand, Timeline/Chronologie, Kausalkette/warum die Ereignisse zusammenhaengen, Unsicherheiten, und <quellen> mit exakten URLs.".to_string()
+            "DEEPDIVE-CHECK: Die Antwort hat Quellen, aber kein DeepDive-Lagebild. Antworte jetzt OHNE weiteren Toolcall neu mit: aktueller Stand, Timeline/Chronologie, Akteure, Claims/Belege, Kausalkette/Mechanismen, Perspektivenkontrast nach Sprache/Land, Widersprueche/Unsicherheiten, offene Leads, und <quellen> mit exakten URLs.".to_string()
+        );
+    }
+    let has_branching_shape = final_lower.contains("branch")
+        || final_lower.contains("missing link")
+        || final_lower.contains("missing-link")
+        || final_lower.contains("seitenast")
+        || final_lower.contains("akteursnetz")
+        || final_lower.contains("umfeld")
+        || final_lower.contains("verbindung")
+        || final_lower.contains("lieferkette")
+        || final_lower.contains("konkurrent");
+    if wants_deepdive_shape && !has_branching_shape {
+        return Some(
+            "DEEPDIVE-CHECK: Die Antwort ist noch zu linear. Antworte jetzt OHNE weiteren Toolcall neu und fuege eine eigene Sektion 'Branching / Missing Links' ein. Nutze BRANCHING_CONTEXT_BLOCK aktiv: Akteursumfeld, Nachbarbegriffe, Konkurrenten/Lieferketten, betroffene Laender und offene Kausalitaets-Leads. Wenn Branches keine Treffer hatten, benenne das als Recherche-Luecke.".to_string()
+        );
+    }
+    let has_subcrawl_shape = final_lower.contains("subcrawl")
+        || final_lower.contains("side-crawl")
+        || final_lower.contains("side crawl")
+        || final_lower.contains("sidestory")
+        || final_lower.contains("side-info")
+        || final_lower.contains("nebenthema")
+        || final_lower.contains("nebenstrang");
+    if wants_deepdive_shape && !has_subcrawl_shape {
+        return Some(
+            "DEEPDIVE-CHECK: Die Antwort nutzt die Subcrawl-Planung nicht sichtbar. Antworte jetzt OHNE weiteren Toolcall neu und fuege eine eigene Sektion 'Subcrawls / Side-Infos' ein: welche Subcrawl-Themen wurden ausgefuehrt, welche Anschluss-Crawls wurden nur vorgeschlagen, warum waren sie kausal wertvoll, und welche Quellen stuetzen sie.".to_string()
         );
     }
     None
@@ -847,6 +1165,503 @@ fn cap_task_message(hit: &LlmCapHit) -> String {
     )
 }
 
+#[derive(Debug, Clone, Default)]
+struct EnhancerRun {
+    text: Option<String>,
+    annotations: Vec<String>,
+    blocked: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct EnhancerDecision {
+    action: String,
+    text: Option<String>,
+    notes: Option<String>,
+    reason: Option<String>,
+    flags: Vec<String>,
+}
+
+fn enhancer_mode(m: &ModulConfig) -> String {
+    m.settings
+        .enhancer_mode
+        .as_deref()
+        .unwrap_or("observe")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn enhancer_fail_policy(m: &ModulConfig) -> String {
+    m.settings
+        .enhancer_fail_policy
+        .as_deref()
+        .unwrap_or("fail_open")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn enhancer_rag_pool(m: &ModulConfig) -> String {
+    m.settings
+        .enhancer_rag_pool
+        .as_deref()
+        .or(m.rag_pool.as_deref())
+        .unwrap_or("Enhancer")
+        .trim()
+        .to_string()
+}
+
+fn enhancer_store_rag(m: &ModulConfig) -> bool {
+    m.settings.enhancer_store_rag.unwrap_or(true)
+}
+
+fn enhancer_inject_context(m: &ModulConfig) -> bool {
+    m.settings.enhancer_inject_context.unwrap_or(true)
+}
+
+fn enhancer_allows_action(mode: &str, action: &str) -> bool {
+    match mode {
+        "observe" => matches!(action, "pass" | "annotate" | "side_effect_only"),
+        "filter" => matches!(
+            action,
+            "pass" | "annotate" | "block" | "cancel" | "side_effect_only"
+        ),
+        "rewrite" | "translate" | "quality" => {
+            matches!(action, "pass" | "annotate" | "replace" | "side_effect_only")
+        }
+        "gateway" => matches!(
+            action,
+            "pass" | "annotate" | "replace" | "block" | "cancel" | "side_effect_only"
+        ),
+        _ => matches!(action, "pass" | "annotate" | "side_effect_only"),
+    }
+}
+
+fn parse_enhancer_decision(raw: &str) -> Result<EnhancerDecision, String> {
+    let text = raw.trim();
+    let json_text = if text.starts_with('{') {
+        text.to_string()
+    } else if let (Some(start), Some(end)) = (text.find('{'), text.rfind('}')) {
+        text[start..=end].to_string()
+    } else {
+        return Err("Enhancer lieferte kein JSON-Objekt".into());
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&json_text).map_err(|e| format!("Enhancer JSON parse: {e}"))?;
+    let action = value
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pass")
+        .trim()
+        .to_ascii_lowercase();
+    let flags = value
+        .get("flags")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(EnhancerDecision {
+        action,
+        text: value
+            .get("text")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        notes: value
+            .get("notes")
+            .or_else(|| value.get("annotation"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        reason: value
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        flags,
+    })
+}
+
+fn enhancer_stage_slots(chat_modul: &ModulConfig, stage: &str) -> Vec<String> {
+    match stage {
+        "input" => chat_modul.input_enhancers.clone(),
+        "output" => {
+            let mut slots = chat_modul.output_enhancers.clone();
+            slots.extend(chat_modul.combined_enhancers.clone());
+            slots
+        }
+        _ => vec![],
+    }
+}
+
+fn update_last_user_message_text(messages: &mut serde_json::Value, text: &str) {
+    let Some(arr) = messages.as_array_mut() else {
+        return;
+    };
+    let Some(last) = arr
+        .iter_mut()
+        .rev()
+        .find(|m| m.get("role").and_then(|v| v.as_str()) == Some("user"))
+    else {
+        return;
+    };
+    if last.get("content").and_then(|v| v.as_str()).is_some() {
+        last["content"] = serde_json::json!(text);
+        return;
+    }
+    if let Some(items) = last.get_mut("content").and_then(|v| v.as_array_mut()) {
+        if let Some(item) = items.iter_mut().find(|item| {
+            item.get("type").and_then(|v| v.as_str()) == Some("text")
+                || item.get("text").and_then(|v| v.as_str()).is_some()
+        }) {
+            if let Some(obj) = item.as_object_mut() {
+                obj.insert("type".into(), serde_json::json!("text"));
+                obj.insert("text".into(), serde_json::json!(text));
+                return;
+            }
+        }
+        items.insert(0, serde_json::json!({"type":"text","text": text}));
+        return;
+    }
+    last["content"] = serde_json::json!(text);
+}
+
+async fn enhancer_memory_excerpt(
+    state: &Arc<AppState>,
+    enhancer: &ModulConfig,
+    query: &str,
+) -> String {
+    if !enhancer_store_rag(enhancer) || query.trim().is_empty() {
+        return String::new();
+    }
+    let pool = enhancer_rag_pool(enhancer);
+    let result = crate::modules::rag::suchen(&state.pipeline.base, &pool, query, None).await;
+    if result.success {
+        util::safe_truncate(&result.data, 3500).to_string()
+    } else {
+        String::new()
+    }
+}
+
+async fn store_enhancer_note(
+    state: &Arc<AppState>,
+    chat_modul_id: &str,
+    enhancer: &ModulConfig,
+    stage: &str,
+    original_input: &str,
+    current_input: &str,
+    output_text: Option<&str>,
+    decision: &EnhancerDecision,
+) {
+    if !enhancer_store_rag(enhancer) {
+        return;
+    }
+    let note = format!(
+        "ENHANCER_RAG_NOTE\ncaptured_at_utc: {}\nchat_modul_id: {}\nenhancer_id: {}\nstage: {}\nmode: {}\naction: {}\nflags: {}\nreason: {}\noriginal_input:\n{}\ncurrent_input:\n{}\noutput_text:\n{}\nnotes:\n{}",
+        chrono::Utc::now().to_rfc3339(),
+        chat_modul_id,
+        enhancer.id,
+        stage,
+        enhancer_mode(enhancer),
+        decision.action,
+        decision.flags.join(", "),
+        decision.reason.as_deref().unwrap_or(""),
+        util::safe_truncate(original_input, 4000),
+        util::safe_truncate(current_input, 4000),
+        util::safe_truncate(output_text.unwrap_or(""), 6000),
+        util::safe_truncate(decision.notes.as_deref().unwrap_or(""), 6000),
+    );
+    let pool = enhancer_rag_pool(enhancer);
+    let _ = crate::modules::rag::speichern(&state.pipeline.base, &pool, &note, None, None).await;
+}
+
+async fn run_one_enhancer(
+    state: &Arc<AppState>,
+    config: &AgentConfig,
+    chat_modul: &ModulConfig,
+    enhancer: &ModulConfig,
+    stage: &str,
+    original_input: &str,
+    current_input: &str,
+    output_text: Option<&str>,
+    effective_input: Option<&str>,
+    messages: Option<&[serde_json::Value]>,
+) -> Result<EnhancerDecision, String> {
+    let backend_id = enhancer.llm_backend.trim();
+    if backend_id.is_empty() {
+        return Err(format!("Enhancer '{}' hat kein llm_backend", enhancer.id));
+    }
+    let identity = util::resolve_identity(enhancer, config);
+    let mode = enhancer_mode(enhancer);
+    let effective_input = effective_input.unwrap_or(current_input);
+    let memory_query = if stage == "output" {
+        format!("{}\n{}", effective_input, output_text.unwrap_or(""))
+    } else {
+        current_input.to_string()
+    };
+    let memory = enhancer_memory_excerpt(state, enhancer, &memory_query).await;
+    let evidence = messages
+        .map(|m| compact_chat_evidence(m, 7000))
+        .unwrap_or_default();
+    let context = serde_json::json!({
+        "stage": stage,
+        "mode": mode,
+        "chat_modul_id": chat_modul.id,
+        "enhancer_id": enhancer.id,
+        "original_input": original_input,
+        "effective_input": effective_input,
+        "current_pipeline_text": current_input,
+        "current_input": current_input,
+        "output_text": output_text.unwrap_or(""),
+        "conversation_evidence": evidence,
+        "enhancer_memory_excerpt": memory,
+    });
+    let contract = "Du bist ein Pipeline-Enhancer. Du bist NICHT der Hauptagent. \
+Du bewertest oder transformierst nur den angegebenen Pipeline-Schritt. \
+Antworte AUSSCHLIESSLICH als JSON-Objekt: \
+{\"action\":\"pass|replace|block|cancel|annotate|side_effect_only\",\"text\":\"optional neuer Input oder Output\",\"notes\":\"interne Analyse/Memory\",\"flags\":[\"...\"],\"reason\":\"kurz\"}. \
+stage=input liegt NACH User-Input und VOR Verarbeitung. stage=output liegt NACH Verarbeitung und VOR Ausgabe. \
+Erfinde keine Fakten; wenn du nur lernen/beobachten sollst, action=side_effect_only oder annotate.";
+    let preservation = "Bewahre zwingend die negativen Constraints des Users. \
+Wenn der User keine Recherche, keine Websuche, keine Tools, kurze Antwort, Sprache, Format oder Laenge vorgibt, \
+darfst du diese Constraints nicht entfernen, abschwaechen oder umformulieren, sodass sie verloren gehen.";
+    let custom = enhancer
+        .settings
+        .enhancer_prompt
+        .as_deref()
+        .unwrap_or("")
+        .trim();
+    let system = format!(
+        "{}\n\n{}\n\n{}\n\n{}",
+        identity.system_prompt, contract, preservation, custom
+    );
+    let prompt = serde_json::to_string_pretty(&context).unwrap_or_else(|_| context.to_string());
+    let enhancer_messages = vec![
+        serde_json::json!({"role":"system","content":system}),
+        serde_json::json!({"role":"user","content":prompt}),
+    ];
+    check_llm_cap(
+        &state.pipeline.store.pool,
+        config,
+        backend_id,
+        &enhancer_messages,
+        false,
+    )
+    .await
+    .map_err(|hit| hit.message())?;
+    while let Some(wait) = state.llm.reserve_rate_slot_or_wait(backend_id).await {
+        tokio::time::sleep(wait).await;
+    }
+    let model_str = model_for_backend(config, backend_id);
+    let timeout_s = enhancer
+        .settings
+        .enhancer_timeout_s
+        .unwrap_or(enhancer.timeout_s)
+        .max(1);
+    let (response, raw_data) = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_s),
+        state.llm.chat_with_tools(
+            backend_id,
+            enhancer.backup_llm.as_deref(),
+            &enhancer_messages,
+            &[],
+        ),
+    )
+    .await
+    .map_err(|_| format!("Enhancer '{}' Timeout nach {}s", enhancer.id, timeout_s))??;
+    track_tokens(
+        &state.pipeline.store.pool,
+        &state.tokens,
+        config,
+        backend_id,
+        &model_str,
+        &enhancer.id,
+        &raw_data,
+    )
+    .await;
+    parse_enhancer_decision(&strip_tool_tags(&response))
+}
+
+async fn apply_chat_enhancers(
+    state: &Arc<AppState>,
+    config: &AgentConfig,
+    chat_modul: Option<&ModulConfig>,
+    stage: &str,
+    original_input: &str,
+    current_text: &str,
+    output_text: Option<&str>,
+    effective_input: Option<&str>,
+    messages: Option<&[serde_json::Value]>,
+) -> EnhancerRun {
+    let Some(chat_modul) = chat_modul else {
+        return EnhancerRun::default();
+    };
+    let mut text = current_text.to_string();
+    let mut annotations = vec![];
+    let slots = enhancer_stage_slots(chat_modul, stage);
+    for slot in slots {
+        let Some(enhancer) = config
+            .module
+            .iter()
+            .find(|m| (m.id == slot || m.name == slot) && m.typ == "enhancer")
+            .cloned()
+        else {
+            state.pipeline.log(
+                &chat_modul.id,
+                None,
+                LogTyp::Warning,
+                &format!(
+                    "Enhancer-Slot '{}' nicht gefunden oder nicht typ=enhancer",
+                    slot
+                ),
+            );
+            continue;
+        };
+        let decision = match run_one_enhancer(
+            state,
+            config,
+            chat_modul,
+            &enhancer,
+            stage,
+            original_input,
+            &text,
+            output_text,
+            effective_input,
+            messages,
+        )
+        .await
+        {
+            Ok(mut decision) => {
+                let mode = enhancer_mode(&enhancer);
+                if !enhancer_allows_action(&mode, &decision.action) {
+                    decision.reason = Some(format!(
+                        "Action '{}' im Enhancer-Mode '{}' nicht erlaubt; auf pass gesetzt",
+                        decision.action, mode
+                    ));
+                    decision.action = "pass".into();
+                }
+                decision
+            }
+            Err(err) => {
+                let fail_closed = enhancer_fail_policy(&enhancer) == "fail_closed";
+                let action = if fail_closed { "block" } else { "pass" };
+                EnhancerDecision {
+                    action: action.into(),
+                    reason: Some(format!("Enhancer '{}' Fehler: {}", enhancer.id, err)),
+                    ..Default::default()
+                }
+            }
+        };
+        store_enhancer_note(
+            state,
+            &chat_modul.id,
+            &enhancer,
+            stage,
+            original_input,
+            &text,
+            output_text,
+            &decision,
+        )
+        .await;
+        state.pipeline.log(
+            &chat_modul.id,
+            None,
+            LogTyp::Info,
+            &format!(
+                "Enhancer {} stage={} action={} reason={}",
+                enhancer.id,
+                stage,
+                decision.action,
+                util::safe_truncate(decision.reason.as_deref().unwrap_or(""), 160)
+            ),
+        );
+        match decision.action.as_str() {
+            "replace" => {
+                if let Some(new_text) = decision.text.as_ref().filter(|s| !s.trim().is_empty()) {
+                    text = util::safe_truncate(
+                        new_text,
+                        enhancer.settings.enhancer_max_output_chars.unwrap_or(6000) as usize,
+                    )
+                    .to_string();
+                }
+            }
+            "block" | "cancel" => {
+                let reason = decision
+                    .reason
+                    .clone()
+                    .or(decision.notes.clone())
+                    .unwrap_or_else(|| {
+                        format!("Enhancer '{}' hat {} gesetzt", enhancer.id, decision.action)
+                    });
+                return EnhancerRun {
+                    text: Some(text),
+                    annotations,
+                    blocked: Some(reason),
+                };
+            }
+            "annotate" | "side_effect_only" | "pass" => {
+                if enhancer_inject_context(&enhancer) {
+                    if let Some(note) = decision.notes.as_ref().filter(|s| !s.trim().is_empty()) {
+                        annotations.push(format!(
+                            "{}: {}",
+                            enhancer.id,
+                            util::safe_truncate(note, 1200)
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    EnhancerRun {
+        text: Some(text),
+        annotations,
+        blocked: None,
+    }
+}
+
+async fn apply_output_enhancers_to_text(
+    state: &Arc<AppState>,
+    config: &AgentConfig,
+    chat_modul: Option<&ModulConfig>,
+    original_input: &str,
+    effective_input: &str,
+    final_text: &str,
+    messages: &[serde_json::Value],
+) -> String {
+    let run = apply_chat_enhancers(
+        state,
+        config,
+        chat_modul,
+        "output",
+        original_input,
+        final_text,
+        Some(final_text),
+        Some(effective_input),
+        Some(messages),
+    )
+    .await;
+    if let Some(reason) = run.blocked {
+        return format!("Ausgabe vom Enhancer blockiert: {}", reason);
+    }
+    let mut text = run.text.unwrap_or_else(|| final_text.to_string());
+    if !run.annotations.is_empty() {
+        state.pipeline.log(
+            chat_modul.map(|m| m.id.as_str()).unwrap_or("chat"),
+            None,
+            LogTyp::Info,
+            &format!(
+                "Output-Enhancer Annotationen fuer Input '{}': {}",
+                util::safe_truncate(effective_input, 120),
+                util::safe_truncate(&run.annotations.join(" | "), 240)
+            ),
+        );
+    }
+    if text.trim().is_empty() {
+        text = final_text.to_string();
+    }
+    text
+}
+
 pub struct AppState {
     pub pipeline: Arc<Pipeline>,
     pub config: Arc<RwLock<AgentConfig>>,
@@ -896,6 +1711,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/config", axum::routing::get(get_config))
         .route("/api/config", axum::routing::post(save_config))
+        .route("/api/key-vault", axum::routing::get(get_key_vault))
+        .route("/api/key-vault", axum::routing::post(save_key_vault))
+        .route(
+            "/api/credential-vault",
+            axum::routing::get(get_credential_vault),
+        )
+        .route(
+            "/api/credential-vault",
+            axum::routing::post(save_credential_vault),
+        )
         .route(
             "/api/config/backups",
             axum::routing::get(list_config_backups),
@@ -1169,6 +1994,27 @@ async fn get_config(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(val)
 }
 
+fn write_config_with_rotating_backup(
+    path: &std::path::Path,
+    cfg: &AgentConfig,
+) -> Result<(), String> {
+    let cfg_json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+
+    // Rotating backup: config.json.bak-1 (most recent) to bak-3 (oldest) before overwriting.
+    // Prevents accidental key-wipe from a bad UI save; user can restore from backup manually.
+    if path.exists() {
+        let b3 = path.with_extension("json.bak-3");
+        let b2 = path.with_extension("json.bak-2");
+        let b1 = path.with_extension("json.bak-1");
+        let _ = std::fs::remove_file(&b3);
+        let _ = std::fs::rename(&b2, &b3);
+        let _ = std::fs::rename(&b1, &b2);
+        let _ = std::fs::copy(path, &b1);
+    }
+
+    util::atomic_write(path, cfg_json.as_bytes()).map_err(|e| e.to_string())
+}
+
 async fn save_config(
     State(s): State<Arc<AppState>>,
     Json(mut incoming): Json<serde_json::Value>,
@@ -1203,6 +2049,13 @@ async fn save_config(
     if !scoped_save("llm") {
         incoming["llm_backends"] = existing["llm_backends"].clone();
     }
+    if !save_scope.iter().any(|s| s == "vault") {
+        incoming["api_key_vault"] = existing["api_key_vault"].clone();
+        incoming["credential_vault"] = existing
+            .get("credential_vault")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+    }
     if !scoped_save("module") {
         incoming["module"] = existing["module"].clone();
     }
@@ -1230,24 +2083,7 @@ async fn save_config(
     util::normalize_same_llm_links(&mut cfg);
 
     let path = s.pipeline.base.join("config.json");
-    let cfg_json = match serde_json::to_string_pretty(&cfg) {
-        Ok(j) => j,
-        Err(e) => return Json(serde_json::json!({"ok": false, "error": e.to_string()})),
-    };
-
-    // Rotating backup: config.json.bak-1 (most recent) to bak-3 (oldest) before overwriting.
-    // Prevents accidental key-wipe from a bad UI save; user can restore from backup manually.
-    if path.exists() {
-        let b3 = path.with_extension("json.bak-3");
-        let b2 = path.with_extension("json.bak-2");
-        let b1 = path.with_extension("json.bak-1");
-        let _ = std::fs::remove_file(&b3);
-        let _ = std::fs::rename(&b2, &b3);
-        let _ = std::fs::rename(&b1, &b2);
-        let _ = std::fs::copy(&path, &b1);
-    }
-
-    match util::atomic_write(&path, cfg_json.as_bytes()) {
+    match write_config_with_rotating_backup(&path, &cfg) {
         Ok(_) => {
             *s.config.write().await = cfg.clone();
             s.pipeline.log(
@@ -1261,6 +2097,509 @@ async fn save_config(
             Json(serde_json::json!({"ok": true}))
         }
         Err(e) => Json(serde_json::json!({"ok": false, "error": e.to_string()})),
+    }
+}
+
+fn normalize_api_vault_id(raw: &str) -> Option<String> {
+    let id = raw.trim().strip_prefix("api.").unwrap_or(raw.trim());
+    safe_id(id)
+}
+
+fn value_references_alias(value: &str, alias: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed == alias || trimmed == format!("${{{}}}", alias)
+}
+
+fn collect_alias_refs(value: &serde_json::Value, alias: &str, path: &str, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                collect_alias_refs(child, alias, &child_path, out);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for (idx, child) in arr.iter().enumerate() {
+                let child_path = if path.is_empty() {
+                    idx.to_string()
+                } else {
+                    format!("{}.{}", path, idx)
+                };
+                collect_alias_refs(child, alias, &child_path, out);
+            }
+        }
+        serde_json::Value::String(s) if value_references_alias(s, alias) => {
+            out.push(path.to_string());
+        }
+        _ => {}
+    }
+}
+
+fn key_vault_payload(
+    cfg: &AgentConfig,
+    pool: &crate::store::SqlitePool,
+    modules_dir: Option<&std::path::Path>,
+) -> serde_json::Value {
+    let entries: Vec<serde_json::Value> = cfg
+        .api_key_vault
+        .iter()
+        .map(|entry| {
+            let alias = util::api_key_vault_alias(&entry.id);
+            let mut modules = Vec::new();
+            for m in &cfg.module {
+                let mut paths = Vec::new();
+                if let Ok(settings) = serde_json::to_value(&m.settings) {
+                    collect_alias_refs(&settings, &alias, "", &mut paths);
+                }
+                if !paths.is_empty() {
+                    modules.push(serde_json::json!({
+                        "id": m.id,
+                        "name": m.display_name,
+                        "typ": m.typ,
+                        "paths": paths,
+                    }));
+                }
+            }
+            if let Some(modules_dir) = modules_dir {
+                if let Ok(entries) = std::fs::read_dir(modules_dir) {
+                    for dir in entries.flatten().filter(|e| e.path().is_dir()) {
+                        let name = dir.file_name().to_string_lossy().to_string();
+                        let cfg_path = dir.path().join("config.json");
+                        let Ok(raw) = std::fs::read_to_string(&cfg_path) else {
+                            continue;
+                        };
+                        let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                            continue;
+                        };
+                        let mut paths = Vec::new();
+                        collect_alias_refs(&value, &alias, "config", &mut paths);
+                        if !paths.is_empty() {
+                            modules.push(serde_json::json!({
+                                "id": name,
+                                "name": format!("{} config", name),
+                                "typ": "module_config",
+                                "paths": paths,
+                            }));
+                        }
+                    }
+                }
+            }
+
+            let mut llm_backends = Vec::new();
+            for b in &cfg.llm_backends {
+                if b.api_key
+                    .as_deref()
+                    .map(|key| value_references_alias(key, &alias))
+                    .unwrap_or(false)
+                {
+                    let calls =
+                        crate::store::token_calls_count_by_backend(pool, &b.id).unwrap_or(0);
+                    llm_backends.push(serde_json::json!({
+                        "id": b.id,
+                        "name": b.name,
+                        "model": b.model,
+                        "calls": calls,
+                    }));
+                }
+            }
+            let mut wizard_refs = Vec::new();
+            if let Some(wizard) = &cfg.wizard {
+                if wizard
+                    .llm
+                    .api_key
+                    .as_deref()
+                    .map(|key| value_references_alias(key, &alias))
+                    .unwrap_or(false)
+                {
+                    wizard_refs.push(serde_json::json!({
+                        "id": wizard.llm.id,
+                        "name": wizard.llm.name,
+                        "model": wizard.llm.model,
+                    }));
+                }
+            }
+
+            let audit_like = format!("%\"alias\":\"{}\"%", alias);
+            let recorded_calls = crate::store::audit_count_action_detail_like(
+                pool,
+                "api_vault.use",
+                &audit_like,
+            )
+            .unwrap_or(0);
+            let llm_audit_like = format!("%\"alias\":\"{}\",\"tool\":\"llm.chat\"%", alias);
+            let recorded_llm_calls = crate::store::audit_count_action_detail_like(
+                pool,
+                "api_vault.use",
+                &llm_audit_like,
+            )
+            .unwrap_or(0);
+            let tool_calls = recorded_calls.saturating_sub(recorded_llm_calls);
+            let llm_calls = llm_backends
+                .iter()
+                .map(|b| b.get("calls").and_then(|v| v.as_u64()).unwrap_or(0))
+                .sum::<u64>();
+
+            serde_json::json!({
+                "id": entry.id,
+                "alias": alias,
+                "name": entry.name,
+                "provider": entry.provider,
+                "notes": entry.notes,
+                "has_secret": entry.secret.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false),
+                "created_at": entry.created_at,
+                "updated_at": entry.updated_at,
+                "modules": modules,
+                "llm_backends": llm_backends,
+                "wizard": wizard_refs,
+                "tool_calls": tool_calls,
+                "llm_calls": llm_calls,
+                "call_count": tool_calls + llm_calls,
+            })
+        })
+        .collect();
+    serde_json::json!({"entries": entries})
+}
+
+async fn get_key_vault(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let cfg = s.config.read().await;
+    let project_root = s.pipeline.base.parent().unwrap_or(&s.pipeline.base);
+    let modules_dir = project_root.join("modules");
+    Json(key_vault_payload(
+        &cfg,
+        &s.pipeline.store.pool,
+        Some(&modules_dir),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct ApiKeyVaultSaveBody {
+    entries: Vec<ApiKeyVaultEntry>,
+}
+
+async fn save_key_vault(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<ApiKeyVaultSaveBody>,
+) -> Json<serde_json::Value> {
+    let _write_guard = s.pipeline.config_write_lock.lock().await;
+    let mut cfg = s.config.read().await.clone();
+    let mut existing: std::collections::HashMap<String, ApiKeyVaultEntry> = cfg
+        .api_key_vault
+        .iter()
+        .cloned()
+        .map(|entry| (entry.id.clone(), entry))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let now = chrono::Utc::now().timestamp();
+    let mut next_entries = Vec::new();
+
+    for mut entry in body.entries {
+        let Some(id) = normalize_api_vault_id(&entry.id) else {
+            return Json(serde_json::json!({"ok": false, "error": "ungueltige Vault-ID"}));
+        };
+        if !seen.insert(id.clone()) {
+            return Json(
+                serde_json::json!({"ok": false, "error": format!("doppelte Vault-ID: {}", id)}),
+            );
+        }
+        let previous = existing.remove(&id);
+        let raw_secret = entry.secret.take().unwrap_or_default();
+        let secret = if raw_secret.trim().is_empty() || raw_secret == "***REDACTED***" {
+            previous.as_ref().and_then(|p| p.secret.clone())
+        } else {
+            Some(raw_secret)
+        };
+        let created_at = previous
+            .as_ref()
+            .and_then(|p| p.created_at)
+            .or(entry.created_at)
+            .or(Some(now));
+        next_entries.push(ApiKeyVaultEntry {
+            id,
+            name: if entry.name.trim().is_empty() {
+                entry
+                    .id
+                    .trim()
+                    .strip_prefix("api.")
+                    .unwrap_or(entry.id.trim())
+                    .to_string()
+            } else {
+                entry.name.trim().to_string()
+            },
+            provider: entry
+                .provider
+                .take()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            secret,
+            notes: entry
+                .notes
+                .take()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            created_at,
+            updated_at: Some(now),
+        });
+    }
+
+    cfg.api_key_vault = next_entries;
+    let path = s.pipeline.base.join("config.json");
+    match write_config_with_rotating_backup(&path, &cfg) {
+        Ok(()) => {
+            *s.config.write().await = cfg.clone();
+            s.pipeline
+                .audit("config.api_vault.update", "admin", "API key vault updated");
+            let project_root = s.pipeline.base.parent().unwrap_or(&s.pipeline.base);
+            let modules_dir = project_root.join("modules");
+            Json(serde_json::json!({
+                "ok": true,
+                "vault": key_vault_payload(&cfg, &s.pipeline.store.pool, Some(&modules_dir))
+            }))
+        }
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e})),
+    }
+}
+
+fn credential_vault_payload(
+    cfg: &AgentConfig,
+    pool: &crate::store::SqlitePool,
+    modules_dir: Option<&std::path::Path>,
+) -> serde_json::Value {
+    let entries: Vec<serde_json::Value> = cfg
+        .credential_vault
+        .iter()
+        .map(|entry| {
+            let fields: Vec<serde_json::Value> = entry
+                .fields
+                .iter()
+                .map(|field| {
+                    let canonical = util::credential_vault_alias(&entry.id, &field.key);
+                    let bare = util::credential_vault_bare_alias(&entry.id, &field.key);
+                    let mut modules = Vec::new();
+                    for m in &cfg.module {
+                        let mut paths = Vec::new();
+                        if let Ok(settings) = serde_json::to_value(&m.settings) {
+                            collect_alias_refs(&settings, &canonical, "", &mut paths);
+                            collect_alias_refs(&settings, &bare, "", &mut paths);
+                        }
+                        paths.sort();
+                        paths.dedup();
+                        if !paths.is_empty() {
+                            modules.push(serde_json::json!({
+                                "id": m.id,
+                                "name": m.display_name,
+                                "typ": m.typ,
+                                "paths": paths,
+                            }));
+                        }
+                    }
+                    if let Some(modules_dir) = modules_dir {
+                        if let Ok(entries) = std::fs::read_dir(modules_dir) {
+                            for dir in entries.flatten().filter(|e| e.path().is_dir()) {
+                                let name = dir.file_name().to_string_lossy().to_string();
+                                let cfg_path = dir.path().join("config.json");
+                                let Ok(raw) = std::fs::read_to_string(&cfg_path) else {
+                                    continue;
+                                };
+                                let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw)
+                                else {
+                                    continue;
+                                };
+                                let mut paths = Vec::new();
+                                collect_alias_refs(&value, &canonical, "config", &mut paths);
+                                collect_alias_refs(&value, &bare, "config", &mut paths);
+                                paths.sort();
+                                paths.dedup();
+                                if !paths.is_empty() {
+                                    modules.push(serde_json::json!({
+                                        "id": name,
+                                        "name": format!("{} config", name),
+                                        "typ": "module_config",
+                                        "paths": paths,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+
+                    let audit_like = format!(
+                        "%\"vault_id\":\"{}\",\"field\":\"{}\"%",
+                        entry.id, field.key
+                    );
+                    let call_count = crate::store::audit_count_action_detail_like(
+                        pool,
+                        "credential_vault.use",
+                        &audit_like,
+                    )
+                    .unwrap_or(0);
+                    serde_json::json!({
+                        "key": field.key,
+                        "alias": canonical,
+                        "bare_alias": bare,
+                        "secret": field.secret,
+                        "has_value": field.value.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false),
+                        "value": if field.secret { "" } else { field.value.as_deref().unwrap_or("") },
+                        "modules": modules,
+                        "call_count": call_count,
+                    })
+                })
+                .collect();
+            let call_count = fields
+                .iter()
+                .map(|f| f.get("call_count").and_then(|v| v.as_u64()).unwrap_or(0))
+                .sum::<u64>();
+            serde_json::json!({
+                "id": entry.id,
+                "name": entry.name,
+                "kind": entry.kind,
+                "notes": entry.notes,
+                "created_at": entry.created_at,
+                "updated_at": entry.updated_at,
+                "fields": fields,
+                "call_count": call_count,
+            })
+        })
+        .collect();
+    serde_json::json!({"entries": entries})
+}
+
+async fn get_credential_vault(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let cfg = s.config.read().await;
+    let project_root = s.pipeline.base.parent().unwrap_or(&s.pipeline.base);
+    let modules_dir = project_root.join("modules");
+    Json(credential_vault_payload(
+        &cfg,
+        &s.pipeline.store.pool,
+        Some(&modules_dir),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+struct CredentialVaultSaveBody {
+    entries: Vec<CredentialVaultEntry>,
+}
+
+async fn save_credential_vault(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<CredentialVaultSaveBody>,
+) -> Json<serde_json::Value> {
+    let _write_guard = s.pipeline.config_write_lock.lock().await;
+    let mut cfg = s.config.read().await.clone();
+    let mut existing: std::collections::HashMap<String, CredentialVaultEntry> = cfg
+        .credential_vault
+        .iter()
+        .cloned()
+        .map(|entry| (entry.id.clone(), entry))
+        .collect();
+    let mut seen_entries = std::collections::HashSet::new();
+    let now = chrono::Utc::now().timestamp();
+    let mut next_entries = Vec::new();
+
+    for mut entry in body.entries {
+        let Some(id) = safe_id(
+            entry
+                .id
+                .trim()
+                .strip_prefix("cred.")
+                .unwrap_or(entry.id.trim()),
+        ) else {
+            return Json(
+                serde_json::json!({"ok": false, "error": "ungueltige Credential-Vault-ID"}),
+            );
+        };
+        if !seen_entries.insert(id.clone()) {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("doppelte Credential-Vault-ID: {}", id)
+            }));
+        }
+        let previous = existing.remove(&id);
+        let prev_fields: std::collections::HashMap<String, CredentialVaultField> = previous
+            .as_ref()
+            .map(|p| {
+                p.fields
+                    .iter()
+                    .cloned()
+                    .map(|field| (field.key.clone(), field))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut seen_fields = std::collections::HashSet::new();
+        let mut fields = Vec::new();
+        for mut field in entry.fields {
+            let Some(key) = safe_id(field.key.trim()) else {
+                return Json(
+                    serde_json::json!({"ok": false, "error": "ungueltiger Credential-Feldname"}),
+                );
+            };
+            if !seen_fields.insert(key.clone()) {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("doppeltes Credential-Feld: {}.{}", id, key)
+                }));
+            }
+            let previous_field = prev_fields.get(&key);
+            let raw_value = field.value.take().unwrap_or_default();
+            let value = if raw_value.trim().is_empty() || raw_value == "***REDACTED***" {
+                previous_field.and_then(|p| p.value.clone())
+            } else {
+                Some(raw_value)
+            };
+            fields.push(CredentialVaultField {
+                key,
+                value,
+                secret: field.secret,
+            });
+        }
+        let created_at = previous
+            .as_ref()
+            .and_then(|p| p.created_at)
+            .or(entry.created_at)
+            .or(Some(now));
+        next_entries.push(CredentialVaultEntry {
+            id,
+            name: if entry.name.trim().is_empty() {
+                entry.id.trim().to_string()
+            } else {
+                entry.name.trim().to_string()
+            },
+            kind: entry
+                .kind
+                .take()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            fields,
+            notes: entry
+                .notes
+                .take()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            created_at,
+            updated_at: Some(now),
+        });
+    }
+
+    cfg.credential_vault = next_entries;
+    let path = s.pipeline.base.join("config.json");
+    match write_config_with_rotating_backup(&path, &cfg) {
+        Ok(()) => {
+            *s.config.write().await = cfg.clone();
+            s.pipeline.audit(
+                "config.credential_vault.update",
+                "admin",
+                "Credential vault updated",
+            );
+            let project_root = s.pipeline.base.parent().unwrap_or(&s.pipeline.base);
+            let modules_dir = project_root.join("modules");
+            Json(serde_json::json!({
+                "ok": true,
+                "vault": credential_vault_payload(&cfg, &s.pipeline.store.pool, Some(&modules_dir))
+            }))
+        }
+        Err(e) => Json(serde_json::json!({"ok": false, "error": e})),
     }
 }
 
@@ -1586,7 +2925,8 @@ async fn chat(
             .unwrap_or_else(|_| axum::response::Response::new(Body::empty()));
     }
 
-    let user_messages = body["messages"].clone();
+    let mut user_messages = body["messages"].clone();
+    let original_user_messages = user_messages.clone();
     let modul_id_raw = body["modul"].as_str().unwrap_or("").to_string();
     let convo_id = body["convo_id"].as_str().and_then(safe_id);
     let modul_id = if modul_id_raw.is_empty() {
@@ -1673,29 +3013,89 @@ async fn chat(
 
     let py_mods_snap: Vec<crate::loader::PyModuleMeta> = s.py_modules.read().await.clone();
 
+    let original_last_user_msg = user_messages
+        .as_array()
+        .and_then(|a| a.last())
+        .map(message_plain_text)
+        .unwrap_or_default();
+    let mut last_user_msg = original_last_user_msg.clone();
+    let input_enhancement = apply_chat_enhancers(
+        &s,
+        &config_snapshot,
+        modul_for_tools.as_ref(),
+        "input",
+        &original_last_user_msg,
+        &last_user_msg,
+        None,
+        None,
+        None,
+    )
+    .await;
+    if let Some(blocked) = input_enhancement.blocked {
+        let msg = format!("Eingabe vom Enhancer blockiert: {}", blocked);
+        persist_chat_assistant_result(
+            &s.pipeline,
+            &modul_id,
+            convo_id.as_deref(),
+            &original_user_messages,
+            &msg,
+        );
+        return single_chat_stream_response(&msg);
+    }
+    if let Some(enhanced_text) = input_enhancement.text.as_ref() {
+        if enhanced_text != &last_user_msg {
+            update_last_user_message_text(&mut user_messages, enhanced_text);
+            last_user_msg = enhanced_text.clone();
+        }
+    }
+
     let mut messages: Vec<serde_json::Value> = vec![];
     if !system_prompt.is_empty() {
-        messages.push(serde_json::json!({"role": "system", "content": system_prompt}));
+        let enhancer_context = if input_enhancement.annotations.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nENHANCER_CONTEXT:\n{}",
+                input_enhancement
+                    .annotations
+                    .iter()
+                    .map(|s| format!("- {}", s))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+        messages.push(serde_json::json!({"role": "system", "content": format!("{}{}", system_prompt, enhancer_context)}));
     }
     if let Some(arr) = user_messages.as_array() {
         messages.extend(arr.clone());
     }
 
-    // OpenAI Function Calling: Tools als JSON-Schema
-    let openai_tools = if let Some(ref m) = modul_for_tools {
-        let py_mods = s.py_modules.read().await;
-        tools::tools_as_openai_json(m, &py_mods)
+    // OpenAI Function Calling: Tools nur zuschalten, wenn die Anfrage sie
+    // wahrscheinlich braucht. Reiner Chat bleibt sonst durch riesige Tool-
+    // Schemas unnoetig langsam.
+    let original_rejects_all_tools = rejects_all_tools(&original_last_user_msg);
+    let original_rejects_research = rejects_research_tools(&original_last_user_msg);
+    let enhanced_wants_research =
+        is_deepdive_request(&last_user_msg) || is_light_research_request(&last_user_msg);
+    let enable_tools = chat_should_enable_tools(&last_user_msg)
+        && !original_rejects_all_tools
+        && !(original_rejects_research && enhanced_wants_research);
+    let openai_tools = if enable_tools {
+        if let Some(ref m) = modul_for_tools {
+            let py_mods = s.py_modules.read().await;
+            tools::tools_as_openai_json(m, &py_mods)
+        } else {
+            vec![]
+        }
     } else {
+        s.pipeline.log(
+            &modul_id,
+            None,
+            LogTyp::Info,
+            "Tool-Gate: Tools fuer leichte Chat-Anfrage deaktiviert",
+        );
         vec![]
     };
-
-    // Letzter User-Text fuer Aufgaben-Logging
-    let last_user_msg = user_messages
-        .as_array()
-        .and_then(|a| a.last())
-        .and_then(|m| m["content"].as_str())
-        .unwrap_or("")
-        .to_string();
 
     // Haupt-Aufgabe erstellen (damit JEDER Chat-Request trackbar ist)
     let mut main_aufgabe = Aufgabe::llm_call(
@@ -1712,6 +3112,7 @@ async fn chat(
     main_aufgabe.status = AufgabeStatus::Gestartet;
     main_aufgabe.gestartet = Some(chrono::Utc::now());
     let main_id = main_aufgabe.id.clone();
+    let main_route = main_aufgabe.zurueck_an.clone();
     let _ = s.pipeline.speichern(&main_aufgabe);
 
     // Channel for streaming status updates and final answer
@@ -1720,7 +3121,8 @@ async fn chat(
     // Spawn the tool-loop in a background task
     let state = s.clone();
     let convo_id_for_persist = convo_id.clone();
-    let seed_messages_for_persist = user_messages.clone();
+    let seed_messages_for_persist = original_user_messages.clone();
+    let original_last_user_msg_for_enhancers = original_last_user_msg.clone();
     tokio::spawn(async move {
         let t_start = std::time::Instant::now();
         let mut tool_rounds = 0;
@@ -1730,9 +3132,11 @@ async fn chat(
         let modul_id_str = modul_id.as_str();
         let mut guardrail_retries: u32 = 0;
         let mut malformed_tool_retries: u32 = 0;
+        let mut rejected_research_tool_retries: u32 = 0;
         let mut used_fallback = false;
         let mut backend_id = backend_id;
-        let needs_deepdive = is_deepdive_request(&last_user_msg);
+        let needs_deepdive = is_deepdive_request(&last_user_msg)
+            && !rejects_research_tools(&original_last_user_msg_for_enhancers);
         let mut deepdive_progress = DeepdiveProgress::default();
         let mut deepdive_gate_retries: u32 = 0;
 
@@ -1814,8 +3218,8 @@ async fn chat(
                             .iter()
                             .rev()
                             .find(|m| m["role"] == "user")
-                            .and_then(|m| m["content"].as_str())
-                            .map(|s| s.to_string());
+                            .map(message_plain_text)
+                            .filter(|s| !s.trim().is_empty());
                         let max_retries_for_backend = gcfg
                             .per_backend_overrides
                             .get(&backend_id)
@@ -1912,6 +3316,14 @@ async fn chat(
                                     tx.send(serde_json::json!({"type":"status","message":format!("Guardrail hard-fail: {}", codes.join(", "))}).to_string()).await.ok();
                                     break;
                                 } else {
+                                    // Fehlversuch zuerst in die History — das Feedback
+                                    // bezieht sich sonst auf eine fuer das Modell
+                                    // unsichtbare Antwort.
+                                    if !response.trim().is_empty() {
+                                        messages.push(serde_json::json!({
+                                            "role": "assistant", "content": &response
+                                        }));
+                                    }
                                     let feedback = crate::guardrail::synth_feedback_user_message(
                                         &errors,
                                         max_retries_for_backend,
@@ -1929,188 +3341,162 @@ async fn chat(
                     // ── End guardrail ──────────────────────────────────────
 
                     // Erst OpenAI tool_calls checken (Schema-basierte Param-Order wenn
-                    // Modul bekannt), dann Fallback auf <tool> XML-Tags.
-                    let tool_call = if raw_data != serde_json::Value::Null {
-                        let tmp_name = tools::parse_openai_tool_call(&raw_data).map(|(n, _)| n);
-                        match (tmp_name, modul_for_tools.as_ref()) {
-                            (Some(name), Some(m)) => {
-                                let schema = tools::schema_required_for(&name, m, &py_mods_snap);
-                                tools::parse_openai_tool_call_with_schema(
-                                    &raw_data,
-                                    schema.as_deref(),
-                                )
-                            }
-                            (Some(_), None) => tools::parse_openai_tool_call(&raw_data),
-                            (None, _) => None,
-                        }
-                    } else {
-                        None
+                    // Modul bekannt), dann Fallback auf <tool> XML-Tags. Es werden ALLE
+                    // Calls der Runde uebernommen — DeepSeek V4/Grok/Qwen3 senden
+                    // regelmaessig mehrere parallele Calls; nur calls[0] auszufuehren
+                    // hiess: Rest verworfen plus eine Extra-LLM-Runde pro Tool.
+                    let mut parsed_calls: Vec<tools::ParsedOpenAiCall> =
+                        if raw_data != serde_json::Value::Null {
+                            tools::parse_openai_tool_calls_multi(&raw_data, |name| {
+                                modul_for_tools.as_ref().and_then(|m| {
+                                    tools::schema_required_for(name, m, &py_mods_snap)
+                                })
+                            })
+                        } else {
+                            Vec::new()
+                        };
+                    if parsed_calls.is_empty()
+                        && let Some((name, params)) = tools::parse_tool_call(&response)
+                    {
+                        let arguments_json = tool_arguments_json_for_history(
+                            &name,
+                            &params,
+                            modul_for_tools.as_ref(),
+                            &py_mods_snap,
+                        );
+                        parsed_calls.push(tools::ParsedOpenAiCall {
+                            id: "call_fallback_tag".into(),
+                            name,
+                            params,
+                            arguments_json,
+                        });
                     }
-                    .or_else(|| tools::parse_tool_call(&response));
 
-                    if let Some((mut tool_name, mut params)) = tool_call {
-                        let enough_manual = deepdive_progress.search_ok >= 2
-                            && deepdive_progress.fetch_ok >= 3
-                            && deepdive_progress.source_note_ok >= 2;
-                        if needs_deepdive
-                            && deepdive_progress.crawl_ok == 0
-                            && deepdive_progress.rss_evidence_ok == 0
-                            && !enough_manual
-                            && tool_name == "rag.suchen"
-                        {
-                            let topic = deepdive_topic_hint(&last_user_msg);
+                    if !parsed_calls.is_empty() {
+                        // Research-Reject-Gate: greift, wenn IRGENDEIN Call ein
+                        // Recherche-Tool ist und der Nutzer explizit keine Recherche
+                        // wollte — dann wird die ganze Runde verworfen.
+                        let rejected_research_name = if rejects_research_tools(&last_user_msg) {
+                            parsed_calls
+                                .iter()
+                                .find(|c| is_research_tool_name(&c.name))
+                                .map(|c| c.name.clone())
+                        } else {
+                            None
+                        };
+                        if let Some(tool_name) = rejected_research_name {
+                            rejected_research_tool_retries += 1;
                             state.pipeline.log(
                                 modul_id_str,
                                 Some(&main_id),
                                 LogTyp::Warning,
                                 &format!(
-                                    "DeepDive-Gate ersetzt verfruehtes rag.suchen durch deepdive.crawl({})",
-                                    topic
+                                    "Recherche-Tool '{}' blockiert, weil Nutzer keine Recherche/Tools wollte",
+                                    tool_name
                                 ),
                             );
-                            tool_name = "deepdive.crawl".to_string();
-                            params = vec![topic];
-                        } else if needs_deepdive
-                            && tool_name == "rag.suchen"
-                            && deepdive_progress.crawl_ok > 0
-                        {
-                            if let Some(crawl_id) = deepdive_progress.crawl_id.as_ref() {
-                                let current = params.first().cloned().unwrap_or_default();
-                                if !current.contains(crawl_id) {
-                                    let topic = if current.trim().is_empty() {
-                                        deepdive_topic_hint(&last_user_msg)
-                                    } else {
-                                        current
-                                    };
-                                    params = vec![format!("{} {}", crawl_id, topic)];
+                            if rejected_research_tool_retries > 1 {
+                                let final_text = strip_tool_tags(&response);
+                                let final_text = if final_text.trim().is_empty() {
+                                    "OK".to_string()
+                                } else {
+                                    final_text
+                                };
+                                if let Ok(Some(mut a)) = state.pipeline.laden_by_id(&main_id) {
+                                    a.ergebnis = Some(
+                                        util::safe_truncate(
+                                            &final_text,
+                                            MAX_CHAT_TASK_RESULT_CHARS,
+                                        )
+                                        .to_string(),
+                                    );
+                                    let _ =
+                                        state.pipeline.verschieben(&mut a, AufgabeStatus::Success);
+                                }
+                                persist_chat_assistant_result(
+                                    &state.pipeline,
+                                    modul_id_str,
+                                    convo_id_for_persist.as_deref(),
+                                    &seed_messages_for_persist,
+                                    &final_text,
+                                );
+                                for chunk in final_text.chars().collect::<Vec<_>>().chunks(20) {
+                                    let text: String = chunk.iter().collect();
+                                    tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":text},"done":false}).to_string()).await.ok();
+                                }
+                                tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":""},"done":true,"eval_count":final_text.len()}).to_string()).await.ok();
+                                return;
+                            }
+                            messages.push(
+                                serde_json::json!({"role": "assistant", "content": response}),
+                            );
+                            messages.push(serde_json::json!({"role": "user", "content":
+                                "STOPP — der Nutzer hat ausdrücklich KEINE Recherche/Tools/Websuche gewünscht. \
+                                 Ignoriere den Toolcall. Antworte direkt, kurz und ohne Tool."}));
+                            tool_rounds += 1;
+                            continue;
+                        }
+                        // DeepDive-Gates ersetzen gezielt EINEN verfruehten rag.suchen-
+                        // Call; bei Multi-Call-Runden laufen die Calls unveraendert.
+                        if parsed_calls.len() == 1 {
+                            let enough_manual = deepdive_progress.search_ok >= 2
+                                && deepdive_progress.fetch_ok >= 3
+                                && deepdive_progress.source_note_ok >= 2;
+                            let single = &mut parsed_calls[0];
+                            if needs_deepdive
+                                && deepdive_progress.crawl_ok == 0
+                                && deepdive_progress.rss_evidence_ok == 0
+                                && !enough_manual
+                                && single.name == "rag.suchen"
+                            {
+                                let topic = deepdive_topic_hint(&last_user_msg);
+                                let preferred_tool = preferred_deepdive_tool(&last_user_msg);
+                                state.pipeline.log(
+                                    modul_id_str,
+                                    Some(&main_id),
+                                    LogTyp::Warning,
+                                    &format!(
+                                        "DeepDive-Gate ersetzt verfruehtes rag.suchen durch {}({})",
+                                        preferred_tool, topic
+                                    ),
+                                );
+                                single.name = preferred_tool.to_string();
+                                single.params = vec![topic];
+                            } else if needs_deepdive
+                                && single.name == "rag.suchen"
+                                && deepdive_progress.crawl_ok > 0
+                            {
+                                if let Some(crawl_id) = deepdive_progress.crawl_id.as_ref() {
+                                    let current =
+                                        single.params.first().cloned().unwrap_or_default();
+                                    if !current.contains(crawl_id) {
+                                        let topic = if current.trim().is_empty() {
+                                            deepdive_topic_hint(&last_user_msg)
+                                        } else {
+                                            current
+                                        };
+                                        single.params = vec![format!("{} {}", crawl_id, topic)];
+                                    }
                                 }
                             }
                         }
                         tool_rounds += 1;
 
-                        // Status: Tool wird ausgefuehrt
-                        tx.send(serde_json::json!({"type":"status","message":format!("Tool: {}({})", tool_name, params.join(", "))}).to_string()).await.ok();
+                        // Status: Tools werden ausgefuehrt
+                        for call in &parsed_calls {
+                            tx.send(serde_json::json!({"type":"status","message":format!("Tool: {}({})", call.name, call.params.join(", "))}).to_string()).await.ok();
+                        }
 
-                        // Sub-Aufgabe fuer den Tool-Call
                         let mid = modul_for_tools
                             .as_ref()
                             .map(|m| m.id.as_str())
                             .unwrap_or(modul_id_str);
-                        let mut sub = Aufgabe::direct(
-                            &tool_name,
-                            params.clone(),
-                            mid,
-                            &format!("chat:{}", modul_id_str),
-                            None,
-                            None,
-                        );
-                        sub.parent_id = Some(main_id.clone());
-                        sub.status = AufgabeStatus::Gestartet;
-                        sub.gestartet = Some(chrono::Utc::now());
-                        let sub_id = sub.id.clone();
-                        let _ = state.pipeline.speichern(&sub);
-                        sub_aufgaben.push(sub_id.clone());
 
-                        state.pipeline.log(
-                            modul_id_str,
-                            Some(&main_id),
-                            LogTyp::Info,
-                            &format!(
-                                "Tool: {}({}) [{}]",
-                                tool_name,
-                                params.join(", "),
-                                &sub_id[..8]
-                            ),
-                        );
-
-                        let tool_result =
-                            exec_tool_inline(&state, &tool_name, &params, mid, &config_snapshot)
-                                .await;
-                        let ok = tool_result.0;
-                        observe_deepdive_progress(
-                            &mut deepdive_progress,
-                            &tool_name,
-                            ok,
-                            tool_rounds,
-                        );
-                        if ok && tool_name == "deepdive.crawl" {
-                            deepdive_progress.crawl_id = extract_deepdive_crawl_id(&tool_result.1);
-                        }
-                        if ok {
-                            let recovered = tool_failures
-                                .iter_mut()
-                                .filter(|failure| !failure.recovered)
-                                .map(|failure| {
-                                    failure.recovered = true;
-                                    1usize
-                                })
-                                .sum::<usize>();
-                            if recovered > 0 {
-                                state.pipeline.log(
-                                    modul_id_str,
-                                    Some(&main_id),
-                                    LogTyp::Info,
-                                    &format!(
-                                        "{} offene Tool-Fehler durch spaeteren erfolgreichen Tool-Call behandelt",
-                                        recovered
-                                    ),
-                                );
-                            }
-                        } else {
-                            tool_failures.push(ChatToolFailure {
-                                tool_name: tool_name.clone(),
-                                detail: util::safe_truncate(&tool_result.1, 160).to_string(),
-                                recovered: false,
-                            });
-                        }
-
-                        // Sub-Aufgabe abschliessen
-                        if let Ok(Some(mut a)) = state.pipeline.laden_by_id(&sub_id) {
-                            a.ergebnis = Some(tool_result.1.clone());
-                            let _ = state.pipeline.verschieben(
-                                &mut a,
-                                if ok {
-                                    AufgabeStatus::Success
-                                } else {
-                                    AufgabeStatus::Failed
-                                },
-                            );
-                        }
-
-                        state.pipeline.log(
-                            modul_id_str,
-                            Some(&main_id),
-                            if ok { LogTyp::Success } else { LogTyp::Failed },
-                            &format!(
-                                "Tool {}: {} → {}",
-                                tool_name,
-                                if ok { "OK" } else { "FAIL" },
-                                util::safe_truncate(&tool_result.1, 80)
-                            ),
-                        );
-
-                        // Status: Tool-Ergebnis
-                        tx.send(serde_json::json!({"type":"status","message":format!("{}: {}", if ok {"OK"} else {"FAIL"}, util::safe_truncate(&tool_result.1, 80))}).to_string()).await.ok();
-
-                        // Tool-Result im OpenAI-Format. Preserve provider-specific
-                        // assistant fields such as DeepSeek reasoning_content, but
-                        // only keep the tool call that we actually executed.
-                        let call_id = raw_data
-                            .pointer("/choices/0/message/tool_calls/0/id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("call_0")
-                            .to_string();
-                        let call_id = if call_id == "call_0" {
-                            format!("call_{}", &sub_id[..8])
-                        } else {
-                            call_id
-                        };
-                        let tool_args_json = tool_arguments_json_for_history(
-                            &tool_name,
-                            &params,
-                            modul_for_tools.as_ref(),
-                            &py_mods_snap,
-                        );
+                        // Assistant-History VOR den Tool-Ergebnissen: Original-Message
+                        // behalten (DeepSeek reasoning_content muss nach Tool-Calls
+                        // zurueckgereicht werden), tool_calls normalisiert auf die
+                        // tatsaechlich ausgefuehrten Calls — jede Call-ID bekommt
+                        // genau eine role:"tool"-Antwort.
                         let mut assistant_history = raw_data
                             .pointer("/choices/0/message")
                             .cloned()
@@ -2120,18 +3506,178 @@ async fn chat(
                         if let Some(obj) = assistant_history.as_object_mut() {
                             obj.insert("role".into(), serde_json::json!("assistant"));
                             obj.entry("content").or_insert(serde_json::Value::Null);
-                            obj.insert(
-                                "tool_calls".into(),
-                                serde_json::json!([{
-                                    "id": &call_id,
-                                    "type": "function",
-                                    "function": {"name": &tool_name, "arguments": tool_args_json}
-                                }]),
-                            );
+                            let calls_json: Vec<serde_json::Value> = parsed_calls
+                                .iter()
+                                .map(|c| {
+                                    serde_json::json!({
+                                        "id": c.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": c.name,
+                                            "arguments": tool_arguments_json_for_history(
+                                                &c.name,
+                                                &c.params,
+                                                modul_for_tools.as_ref(),
+                                                &py_mods_snap,
+                                            )
+                                        }
+                                    })
+                                })
+                                .collect();
+                            obj.insert("tool_calls".into(), serde_json::json!(calls_json));
                         }
                         messages.push(assistant_history);
-                        messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call_id,
-                            "content": chat_tool_result_for_llm(ok, &tool_result.1)}));
+
+                        // Sub-Aufgaben anlegen (eine pro Call), dann ausfuehren.
+                        let mut call_sub_ids: Vec<String> =
+                            Vec::with_capacity(parsed_calls.len());
+                        for call in &parsed_calls {
+                            let mut sub = Aufgabe::direct(
+                                &call.name,
+                                call.params.clone(),
+                                mid,
+                                &format!("chat:{}", modul_id_str),
+                                None,
+                                None,
+                            );
+                            sub.parent_id = Some(main_id.clone());
+                            sub.zurueck_an = main_route.clone();
+                            sub.status = AufgabeStatus::Gestartet;
+                            sub.gestartet = Some(chrono::Utc::now());
+                            let sub_id = sub.id.clone();
+                            let _ = state.pipeline.speichern(&sub);
+                            sub_aufgaben.push(sub_id.clone());
+                            state.pipeline.log(
+                                modul_id_str,
+                                Some(&main_id),
+                                LogTyp::Info,
+                                &format!(
+                                    "Tool: {}({}) [{}]",
+                                    call.name,
+                                    call.params.join(", "),
+                                    &sub_id[..8]
+                                ),
+                            );
+                            call_sub_ids.push(sub_id);
+                        }
+
+                        // Read-only Calls (Suchen/Fetches) laufen nebenlaeufig — bei
+                        // Multi-Search-Runden der groesste Latenzgewinn. Alles andere
+                        // strikt sequenziell in Emissions-Reihenfolge.
+                        let parallel = parsed_calls.len() > 1
+                            && parsed_calls
+                                .iter()
+                                .all(|c| tools::is_parallel_safe_tool(&c.name));
+                        let results: Vec<(bool, String)> = if parallel {
+                            let futs = parsed_calls.iter().zip(call_sub_ids.iter()).map(
+                                |(call, sub_id)| {
+                                    exec_tool_inline(
+                                        &state,
+                                        &call.name,
+                                        &call.params,
+                                        mid,
+                                        Some(sub_id),
+                                        &config_snapshot,
+                                    )
+                                },
+                            );
+                            futures_util::future::join_all(futs).await
+                        } else {
+                            let mut seq = Vec::with_capacity(parsed_calls.len());
+                            for (call, sub_id) in parsed_calls.iter().zip(call_sub_ids.iter()) {
+                                seq.push(
+                                    exec_tool_inline(
+                                        &state,
+                                        &call.name,
+                                        &call.params,
+                                        mid,
+                                        Some(sub_id),
+                                        &config_snapshot,
+                                    )
+                                    .await,
+                                );
+                            }
+                            seq
+                        };
+
+                        for ((call, sub_id), tool_result) in parsed_calls
+                            .iter()
+                            .zip(call_sub_ids.iter())
+                            .zip(results.iter())
+                        {
+                            let ok = tool_result.0;
+                            observe_deepdive_progress(
+                                &mut deepdive_progress,
+                                &call.name,
+                                ok,
+                                tool_rounds,
+                            );
+                            if ok
+                                && (call.name == "deepdive.crawl"
+                                    || call.name == "deepdive.quick")
+                            {
+                                deepdive_progress.crawl_id =
+                                    extract_deepdive_crawl_id(&tool_result.1);
+                            }
+                            if ok {
+                                let recovered = tool_failures
+                                    .iter_mut()
+                                    .filter(|failure| !failure.recovered)
+                                    .map(|failure| {
+                                        failure.recovered = true;
+                                        1usize
+                                    })
+                                    .sum::<usize>();
+                                if recovered > 0 {
+                                    state.pipeline.log(
+                                        modul_id_str,
+                                        Some(&main_id),
+                                        LogTyp::Info,
+                                        &format!(
+                                            "{} offene Tool-Fehler durch spaeteren erfolgreichen Tool-Call behandelt",
+                                            recovered
+                                        ),
+                                    );
+                                }
+                            } else {
+                                tool_failures.push(ChatToolFailure {
+                                    tool_name: call.name.clone(),
+                                    detail: util::safe_truncate(&tool_result.1, 160).to_string(),
+                                    recovered: false,
+                                });
+                            }
+
+                            // Sub-Aufgabe abschliessen
+                            if let Ok(Some(mut a)) = state.pipeline.laden_by_id(sub_id) {
+                                a.ergebnis = Some(tool_result.1.clone());
+                                let _ = state.pipeline.verschieben(
+                                    &mut a,
+                                    if ok {
+                                        AufgabeStatus::Success
+                                    } else {
+                                        AufgabeStatus::Failed
+                                    },
+                                );
+                            }
+
+                            state.pipeline.log(
+                                modul_id_str,
+                                Some(&main_id),
+                                if ok { LogTyp::Success } else { LogTyp::Failed },
+                                &format!(
+                                    "Tool {}: {} → {}",
+                                    call.name,
+                                    if ok { "OK" } else { "FAIL" },
+                                    util::safe_truncate(&tool_result.1, 80)
+                                ),
+                            );
+
+                            // Status: Tool-Ergebnis
+                            tx.send(serde_json::json!({"type":"status","message":format!("{}: {}", if ok {"OK"} else {"FAIL"}, util::safe_truncate(&tool_result.1, 80))}).to_string()).await.ok();
+
+                            messages.push(serde_json::json!({"role": "tool", "tool_call_id": &call.id,
+                                "content": chat_tool_result_for_llm(ok, &tool_result.1)}));
+                        }
 
                         // History trimmen: alte Tool-Results kuerzen um Token-Explosion zu vermeiden
                         // Behalte nur die letzten 6 Messages (3 Tool-Rounds) vollstaendig
@@ -2199,39 +3745,25 @@ async fn chat(
                     if sub_aufgaben.is_empty() && tool_rounds == 0 {
                         if needs_deepdive {
                             let topic = deepdive_topic_hint(&last_user_msg);
+                            let preferred_tool = preferred_deepdive_tool(&last_user_msg);
                             messages.push(
                                 serde_json::json!({"role": "assistant", "content": response}),
                             );
                             messages.push(serde_json::json!({"role": "user", "content":
-                                format!("STOPP — DeepDive braucht frische Quellen. Antworte NICHT aus Wissen und lies NICHT zuerst aus dem RAG. Antworte jetzt AUSSCHLIESSLICH mit genau diesem Toolcall: <tool>deepdive.crawl({})</tool>", topic)}));
+                                format!("STOPP — DeepDive braucht frische Quellen. Antworte NICHT aus Wissen und lies NICHT zuerst aus dem RAG. Antworte jetzt AUSSCHLIESSLICH mit genau diesem Toolcall: <tool>{}({})</tool>", preferred_tool, topic)}));
                             tool_rounds += 1;
                             continue;
                         }
-                        let lower = last_user_msg.to_lowercase();
-                        let needs_research = [
-                            "recherch",
-                            "such",
-                            "prüf",
-                            "check",
-                            "finde",
-                            "google",
-                            "verify",
-                            "validier",
-                            "fakten",
-                            "stimmt das",
-                            "belege",
-                            "quelle",
-                        ]
-                        .iter()
-                        .any(|kw| lower.contains(kw));
+                        let needs_research = is_light_research_request(&last_user_msg);
                         if needs_research {
                             messages.push(
                                 serde_json::json!({"role": "assistant", "content": response}),
                             );
                             messages.push(serde_json::json!({"role": "user", "content":
                                 "STOPP — du hast KEIN Tool benutzt! Der User hat explizit nach Recherche gefragt. \
-                                 Du MUSST duckduckgo.search nutzen um im Web zu suchen. Antworte NICHT aus deinem Wissen. \
-                                 Mache MEHRERE Suchen um verschiedene Aspekte abzudecken."}));
+                                 Nutze ein leichtes Such-Tool, z.B. duckduckgo.search oder grok_search.web. \
+                                 Antworte NICHT aus deinem Wissen. Fuer kurze oder Voice-Fragen reicht eine gezielte Suche; \
+                                 mehrere Suchen nur, wenn die erste Suche nichts Belastbares liefert."}));
                             tool_rounds += 1; // Zähle als Round damit wir nicht endlos loopen
                             continue;
                         }
@@ -2322,6 +3854,17 @@ async fn chat(
                         }
                     }
 
+                    final_text = apply_output_enhancers_to_text(
+                        &state,
+                        &config_snapshot,
+                        modul_for_tools.as_ref(),
+                        &original_last_user_msg_for_enhancers,
+                        &last_user_msg,
+                        &final_text,
+                        &messages,
+                    )
+                    .await;
+
                     if let Ok(Some(mut a)) = state.pipeline.laden_by_id(&main_id) {
                         a.ergebnis = Some(
                             util::safe_truncate(&final_text, MAX_CHAT_TASK_RESULT_CHARS)
@@ -2375,14 +3918,69 @@ async fn chat(
                         &model_str,
                     )
                     .await;
-                    // FEHLER — Aufgabe als Failed loggen, NICHT verloren
+                    if !sub_aufgaben.is_empty() {
+                        let mut final_text =
+                            llm_error_recovery_answer(&e, sub_aufgaben.len(), &messages);
+                        final_text = apply_output_enhancers_to_text(
+                            &state,
+                            &config_snapshot,
+                            modul_for_tools.as_ref(),
+                            &original_last_user_msg_for_enhancers,
+                            &last_user_msg,
+                            &final_text,
+                            &messages,
+                        )
+                        .await;
+                        if let Ok(Some(mut a)) = state.pipeline.laden_by_id(&main_id) {
+                            a.ergebnis = Some(
+                                util::safe_truncate(&final_text, MAX_CHAT_TASK_RESULT_CHARS)
+                                    .to_string(),
+                            );
+                            let _ = state.pipeline.verschieben(&mut a, AufgabeStatus::Failed);
+                        }
+                        let total_dur = t_start.elapsed();
+                        state.pipeline.log(
+                            modul_id_str,
+                            Some(&main_id),
+                            LogTyp::Failed,
+                            &format!(
+                                "LLM Fehler nach Tool-Ergebnissen; Teilantwort aus vorhandener Evidenz geliefert: {}",
+                                e
+                            ),
+                        );
+                        persist_chat_assistant_result(
+                            &state.pipeline,
+                            modul_id_str,
+                            convo_id_for_persist.as_deref(),
+                            &seed_messages_for_persist,
+                            &final_text,
+                        );
+                        for chunk in final_text.chars().collect::<Vec<_>>().chunks(20) {
+                            let text: String = chunk.iter().collect();
+                            tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":text},"done":false}).to_string()).await.ok();
+                        }
+                        tx.send(serde_json::json!({"model":"agent","message":{"role":"assistant","content":""},"done":true,"eval_count":final_text.len(),"total_duration":total_dur.as_nanos() as u64}).to_string()).await.ok();
+                        return;
+                    }
+
+                    // FEHLER ohne verwertbare Tool-Ergebnisse — Aufgabe als Failed loggen.
                     state.pipeline.log(
                         modul_id_str,
                         Some(&main_id),
                         LogTyp::Failed,
                         &format!("LLM Fehler: {}", e),
                     );
-                    let err_text = format!("Error: LLM Fehler: {}", e);
+                    let mut err_text = format!("Error: LLM Fehler: {}", e);
+                    err_text = apply_output_enhancers_to_text(
+                        &state,
+                        &config_snapshot,
+                        modul_for_tools.as_ref(),
+                        &original_last_user_msg_for_enhancers,
+                        &last_user_msg,
+                        &err_text,
+                        &messages,
+                    )
+                    .await;
                     if let Ok(Some(mut a)) = state.pipeline.laden_by_id(&main_id) {
                         a.ergebnis = Some(format!("FAILED: {}", e));
                         let _ = state.pipeline.verschieben(&mut a, AufgabeStatus::Failed);
@@ -2502,6 +4100,17 @@ async fn chat(
             }
         }
 
+        final_text = apply_output_enhancers_to_text(
+            &state,
+            &config_snapshot,
+            modul_for_tools.as_ref(),
+            &original_last_user_msg_for_enhancers,
+            &last_user_msg,
+            &final_text,
+            &messages,
+        )
+        .await;
+
         let final_status = if finalizer_ok && unresolved_failures.is_empty() {
             AufgabeStatus::Success
         } else {
@@ -2557,13 +4166,14 @@ async fn chat(
 }
 
 /// Tool inline ausfuehren (Rust oder Python). Delegates to the unified dispatcher.
-/// Kein task_id — Chat-Flow ist synchron und braucht keine Idempotency-
-/// Deduplication (im Gegensatz zum Scheduler-Pfad mit Retry-Logik).
+/// Im Chat-Flow wird die Subtask-ID weitergereicht, damit Side-Effects
+/// idempotent bleiben und aufgaben.erstellen den Chat-Rueckkanal erben kann.
 async fn exec_tool_inline(
     s: &Arc<AppState>,
     tool_name: &str,
     params: &[String],
     modul_id: &str,
+    task_id: Option<&str>,
     config: &AgentConfig,
 ) -> (bool, String) {
     let py_mods = s.py_modules.read().await;
@@ -2571,7 +4181,7 @@ async fn exec_tool_inline(
         tool_name,
         params,
         modul_id,
-        None,
+        task_id,
         &s.pipeline,
         &s.llm,
         &py_mods,
@@ -2740,6 +4350,28 @@ fn error_response(status: u16, msg: &str) -> axum::response::Response<Body> {
         .unwrap_or_else(|_| axum::response::Response::new(Body::empty()))
 }
 
+fn single_chat_stream_response(text: &str) -> axum::response::Response<Body> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(2);
+    let _ = tx.try_send(
+        serde_json::json!({"model":"agent","message":{"role":"assistant","content":text},"done":false})
+            .to_string(),
+    );
+    let _ = tx.try_send(
+        serde_json::json!({"model":"agent","message":{"role":"assistant","content":""},"done":true})
+            .to_string(),
+    );
+    drop(tx);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = Body::from_stream(stream.map(|line| {
+        Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(format!("{}\n", line)))
+    }));
+    axum::response::Response::builder()
+        .header("content-type", "application/x-ndjson")
+        .header("cache-control", "no-cache")
+        .body(body)
+        .unwrap_or_else(|_| axum::response::Response::new(Body::empty()))
+}
+
 // ─── Python Modules ───────────────────────────────
 
 async fn get_py_modules(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -2795,6 +4427,20 @@ async fn get_py_modules(State(s): State<Arc<AppState>>) -> Json<serde_json::Valu
                          "notify_token":{"type":"password","label":"Token","default":""},
                          "notify_topic":{"type":"string","label":"Topic/Chat-ID","default":"agent"}},
             "tools": [{"name":"notify.send","description":"Sendet eine Benachrichtigung","params":["message"]}]
+        }),
+        serde_json::json!({
+            "name": "enhancer", "description": "Pipeline-Enhancer vor/nach Chat-Verarbeitung: beobachten, filtern, Prompts verbessern, uebersetzen, Output pruefen und eigenes RAG fuellen", "version": "built-in", "source": "rust",
+            "settings": {
+                "enhancer_mode":{"type":"select","label":"Mode","default":"observe","options":["observe","filter","rewrite","translate","quality","gateway"]},
+                "enhancer_prompt":{"type":"text","label":"Enhancer Prompt","default":"Analysiere den Kontext. Gib JSON mit action, text, notes, flags, reason zurueck."},
+                "enhancer_fail_policy":{"type":"select","label":"Fail Policy","default":"fail_open","options":["fail_open","fail_closed"]},
+                "enhancer_store_rag":{"type":"bool","label":"In Enhancer-RAG speichern","default":true},
+                "enhancer_rag_pool":{"type":"string","label":"Enhancer RAG Pool","default":"Enhancer"},
+                "enhancer_inject_context":{"type":"bool","label":"Input-Annotation in Kontext injizieren","default":true},
+                "enhancer_max_output_chars":{"type":"number","label":"Max Output-Zeichen","default":6000},
+                "enhancer_timeout_s":{"type":"number","label":"Enhancer Timeout Sekunden","default":60}
+            },
+            "tools": []
         }),
     ];
 
@@ -3043,11 +4689,14 @@ async fn list_llm_models(
         return Json(serde_json::json!({"error": "Ungültige backend-ID", "models": []}));
     };
     let cfg = s.config.read().await;
-    let backend = cfg
+    let mut backend = cfg
         .llm_backends
         .iter()
         .find(|b| b.id == backend_id)
         .cloned();
+    if let Some(ref mut b) = backend {
+        crate::util::resolve_llm_backend_api_alias(b, &cfg);
+    }
     drop(cfg);
 
     let Some(backend) = backend else {
@@ -3270,6 +4919,24 @@ pub async fn track_tokens(
         modul,
     ) {
         tracing::warn!("track_tokens: store commit failed: {}", e);
+    }
+    if let Some(backend) = cfg.llm_backends.iter().find(|b| b.id == backend_id) {
+        if let Some(key) = backend.api_key.as_deref() {
+            if let Some(alias_id) = crate::util::api_key_vault_alias_id(key) {
+                let alias = crate::util::api_key_vault_alias(&alias_id);
+                let _ = crate::store::audit(
+                    store_pool,
+                    "api_vault.use",
+                    backend_id,
+                    &serde_json::json!({
+                        "alias": alias,
+                        "tool": "llm.chat",
+                        "path": format!("llm_backends.{}.api_key", backend_id),
+                    })
+                    .to_string(),
+                );
+            }
+        }
     }
 
     // In-memory UI-Spiegel aktualisieren (async kompatibel). Die SQLite-Werte sind
@@ -3944,6 +5611,9 @@ pub fn draft_from_module(m: &crate::types::ModulConfig) -> DraftAgent {
         retry: Some(m.retry),
         rag_pool: m.rag_pool.clone(),
         linked_modules: m.linked_modules.clone(),
+        input_enhancers: m.input_enhancers.clone(),
+        output_enhancers: m.output_enhancers.clone(),
+        combined_enhancers: m.combined_enhancers.clone(),
         persistent: m.persistent,
         scheduler_interval_ms: m.scheduler_interval_ms,
         max_concurrent_tasks: m.max_concurrent_tasks,
@@ -4194,21 +5864,22 @@ pub async fn wizard_models(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::extract::Query(req): axum::extract::Query<WizardModelsReq>,
 ) -> Result<axum::Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let cfg_snapshot = state.config.read().await.clone();
     let (url, key) = match (req.api_url.clone(), req.api_key.clone()) {
         (Some(u), Some(k)) => (u, k),
-        _ => {
-            let cfg = state.config.read().await;
-            match &cfg.wizard {
-                Some(w) => (w.llm.url.clone(), w.llm.api_key.clone().unwrap_or_default()),
-                None => {
-                    return Err((
-                        axum::http::StatusCode::BAD_REQUEST,
-                        "no api_url/api_key given and no wizard.llm configured".into(),
-                    ));
-                }
+        _ => match &cfg_snapshot.wizard {
+            Some(w) => (w.llm.url.clone(), w.llm.api_key.clone().unwrap_or_default()),
+            None => {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "no api_url/api_key given and no wizard.llm configured".into(),
+                ));
             }
-        }
+        },
     };
+    let key = crate::util::resolve_api_key_alias_string(&key, &cfg_snapshot)
+        .map(|(secret, _)| secret)
+        .unwrap_or(key);
 
     match req.provider.as_str() {
         "Claude" | "Anthropic" => {
@@ -4324,7 +5995,7 @@ pub async fn wizard_test_connection(
     crate::security::validate_llm_backend_url(&typ, &req.api_url)
         .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, e))?;
 
-    let backend = crate::types::LlmBackend {
+    let mut backend = crate::types::LlmBackend {
         id: "wizard-test".into(),
         name: "Wizard-Test".into(),
         typ,
@@ -4338,11 +6009,13 @@ pub async fn wizard_test_connection(
         cost_cap: None,
         max_tool_rounds: None,
         call_rate_limit: None,
+        internal: false,
     };
 
     // Try a minimal ping: single user message "ping"
     let messages = vec![serde_json::json!({"role": "user", "content": "ping"})];
     let cfg_snapshot = state.config.read().await.clone();
+    crate::util::resolve_llm_backend_api_alias(&mut backend, &cfg_snapshot);
     if let Err(msg) = check_daily_budget(
         &state.pipeline.store.pool,
         &state.tokens,
@@ -4527,6 +6200,7 @@ pub async fn quality_benchmark_run(
     if let Some(m) = req.model {
         backend.model = m;
     }
+    crate::util::resolve_llm_backend_api_alias(&mut backend, &cfg_snap);
     let modul_id = req.modul_id.unwrap_or_else(|| {
         cfg_snap
             .module
@@ -4579,7 +6253,7 @@ pub async fn quality_benchmark_compare(
     axum::Json(req): axum::Json<BenchmarkCompareReq>,
 ) -> Result<axum::response::Response, (axum::http::StatusCode, String)> {
     let cfg_snap = state.config.read().await.clone();
-    let ba = cfg_snap
+    let mut ba = cfg_snap
         .llm_backends
         .iter()
         .find(|b| b.id == req.backend_a)
@@ -4588,7 +6262,7 @@ pub async fn quality_benchmark_compare(
             axum::http::StatusCode::NOT_FOUND,
             format!("backend A '{}' not found", req.backend_a),
         ))?;
-    let bb = cfg_snap
+    let mut bb = cfg_snap
         .llm_backends
         .iter()
         .find(|b| b.id == req.backend_b)
@@ -4597,6 +6271,8 @@ pub async fn quality_benchmark_compare(
             axum::http::StatusCode::NOT_FOUND,
             format!("backend B '{}' not found", req.backend_b),
         ))?;
+    crate::util::resolve_llm_backend_api_alias(&mut ba, &cfg_snap);
+    crate::util::resolve_llm_backend_api_alias(&mut bb, &cfg_snap);
     let modul_id = req.modul_id.unwrap_or_else(|| {
         cfg_snap
             .module
@@ -4676,7 +6352,12 @@ async fn setup_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value>
     }))
 }
 
-async fn setup_models(Json(body): Json<crate::types::LlmBackend>) -> Json<serde_json::Value> {
+async fn setup_models(
+    State(s): State<Arc<AppState>>,
+    Json(mut body): Json<crate::types::LlmBackend>,
+) -> Json<serde_json::Value> {
+    let cfg_snapshot = s.config.read().await.clone();
+    crate::util::resolve_llm_backend_api_alias(&mut body, &cfg_snapshot);
     if let Err(e) = crate::security::validate_llm_backend_url(&body.typ, &body.url) {
         return Json(
             serde_json::json!({"ok": false, "error": format!("SSRF-Schutz: {}", e), "models": []}),
@@ -4811,6 +6492,7 @@ async fn setup_test_backend(
     }
     let messages = vec![serde_json::json!({"role": "user", "content": "Reply with exactly: hi"})];
     let cfg_snapshot = s.config.read().await.clone();
+    crate::util::resolve_llm_backend_api_alias(&mut body, &cfg_snapshot);
     if let Err(msg) = check_daily_budget(
         &s.pipeline.store.pool,
         &s.tokens,
@@ -5139,6 +6821,39 @@ mod tests {
     }
 
     #[test]
+    fn message_plain_text_extracts_multimodal_text_without_base64() {
+        let message = serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Bitte analysieren"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+            ]
+        });
+        assert_eq!(message_plain_text(&message), "Bitte analysieren\n[image]");
+        assert_eq!(estimate_message_tokens(&[message]), 7);
+    }
+
+    #[test]
+    fn enhancer_decision_parses_json_inside_model_text() {
+        let decision = parse_enhancer_decision(
+            "kurz:\n{\"action\":\"annotate\",\"notes\":\"ok\",\"flags\":[\"input\"],\"reason\":\"x\"}",
+        )
+        .unwrap();
+        assert_eq!(decision.action, "annotate");
+        assert_eq!(decision.notes.as_deref(), Some("ok"));
+        assert_eq!(decision.flags, vec!["input"]);
+    }
+
+    #[test]
+    fn enhancer_modes_restrict_pipeline_actions() {
+        assert!(enhancer_allows_action("observe", "annotate"));
+        assert!(!enhancer_allows_action("observe", "replace"));
+        assert!(enhancer_allows_action("rewrite", "replace"));
+        assert!(!enhancer_allows_action("rewrite", "block"));
+        assert!(enhancer_allows_action("gateway", "cancel"));
+    }
+
+    #[test]
     fn model_info_marks_openrouter_free_models() {
         let by_suffix = serde_json::json!({"id": "qwen/qwen3-coder:free", "name": "Qwen Coder"});
         let info = model_info_from_openai_value(&by_suffix).unwrap();
@@ -5184,6 +6899,18 @@ mod tests {
     }
 
     #[test]
+    fn chat_tool_result_for_llm_caps_capabilities_result_more_aggressively() {
+        let large = format!(
+            "AGENT_CAPABILITIES\n{}",
+            "tool.name() description\n".repeat(MAX_CHAT_TOOL_RESULT_CHARS)
+        );
+        let result = chat_tool_result_for_llm(true, &large);
+        assert!(result.starts_with("SUCCESS: AGENT_CAPABILITIES"));
+        assert!(result.contains("gekuerzt"));
+        assert!(result.chars().count() < MAX_CHAT_TOOL_RESULT_CHARS);
+    }
+
+    #[test]
     fn chat_tool_result_for_llm_tells_model_to_handle_failures() {
         let result = chat_tool_result_for_llm(false, "Datei existiert nicht");
         assert!(result.starts_with("FAILED: "));
@@ -5207,6 +6934,9 @@ mod tests {
             identity: ModulIdentity::default(),
             rag_pool: Some("DeepDive".into()),
             linked_modules: vec![],
+            input_enhancers: vec![],
+            output_enhancers: vec![],
+            combined_enhancers: vec![],
             persistent: true,
             spawned_by: None,
             spawn_ttl_s: None,
@@ -5347,15 +7077,73 @@ mod tests {
     }
 
     #[test]
-    fn deepdive_gate_requires_rag_after_crawl() {
-        let mut progress = DeepdiveProgress::default();
-        observe_deepdive_progress(&mut progress, "deepdive.crawl", true, 1);
-        let feedback = deepdive_gate_feedback(&progress, "Deepdive zu Friedrich Merz", "").unwrap();
-        assert!(feedback.contains("rag.suchen(Friedrich Merz)"));
+    fn simple_search_without_current_or_deepdive_is_not_forced_deepdive() {
+        assert!(!is_deepdive_request("such mal nach Ryzen 5 3600"));
+        assert!(!is_deepdive_request(
+            "such mal im web nach Road to Vostok weapons guide"
+        ));
+        assert!(!is_deepdive_request(
+            "VOICE_INPUT transkribiert aus Telegram:\nIch spiele gerade Road to Vostok und bin am Start, such kurz raus wie ich Waffen finde"
+        ));
+        assert_eq!(
+            preferred_deepdive_tool("such mal nach Ryzen 5 3600"),
+            "deepdive.quick"
+        );
     }
 
     #[test]
-    fn deepdive_gate_uses_crawl_id_for_rag() {
+    fn explicit_no_research_blocks_deepdive_detection() {
+        assert!(!is_deepdive_request(
+            "Antworte exakt mit OK, keine Recherche."
+        ));
+        assert!(!is_deepdive_request(
+            "Erklaere Pipeline-Enhancer kurz, keine externe Recherche."
+        ));
+        assert!(rejects_research_tools(
+            "Bitte ohne externe Recherche antworten"
+        ));
+        assert!(rejects_research_tools("Bitte ohne Tools antworten"));
+        assert!(!chat_should_enable_tools(
+            "Antworte exakt mit OK, keine Recherche."
+        ));
+        assert!(is_research_tool_name("deepdive.quick"));
+        assert!(is_research_tool_name("duckduckgo.search"));
+        assert!(!is_research_tool_name("math_tools.calculate"));
+    }
+
+    #[test]
+    fn casual_chat_does_not_load_tool_schemas() {
+        assert!(!chat_should_enable_tools("wie gehts dir heute?"));
+        assert!(!chat_should_enable_tools(
+            "VOICE_INPUT transkribiert aus Telegram:\nAlso verstehe ich das richtig, ich muss wieder zur Huette zurueck?"
+        ));
+        assert!(chat_should_enable_tools(
+            "such mal im web nach Ryzen 5 3600"
+        ));
+        assert!(chat_should_enable_tools("fix bitte den bug im modul"));
+        assert!(chat_should_enable_tools("rechne 12 mal 7"));
+    }
+
+    #[test]
+    fn explicit_causal_or_multilingual_deepdive_uses_full_crawl() {
+        assert_eq!(
+            preferred_deepdive_tool(
+                "DeepDive Japan Aufruestung mit Kausalitaeten und anderen Sprachen"
+            ),
+            "deepdive.crawl"
+        );
+    }
+
+    #[test]
+    fn deepdive_gate_requires_pack_after_crawl() {
+        let mut progress = DeepdiveProgress::default();
+        observe_deepdive_progress(&mut progress, "deepdive.crawl", true, 1);
+        let feedback = deepdive_gate_feedback(&progress, "Deepdive zu Friedrich Merz", "").unwrap();
+        assert!(feedback.contains("deepdive.pack(Friedrich Merz)"));
+    }
+
+    #[test]
+    fn deepdive_gate_uses_crawl_id_for_pack() {
         let progress = DeepdiveProgress {
             crawl_ok: 1,
             crawl_id: Some("dd-20260507T010203Z-abcdef12".into()),
@@ -5363,25 +7151,48 @@ mod tests {
             ..Default::default()
         };
         let feedback = deepdive_gate_feedback(&progress, "Deepdive zu Friedrich Merz", "").unwrap();
-        assert!(feedback.contains("rag.suchen(dd-20260507T010203Z-abcdef12 Friedrich Merz)"));
+        assert!(feedback.contains("deepdive.pack(dd-20260507T010203Z-abcdef12)"));
     }
 
     #[test]
-    fn deepdive_gate_allows_crawl_plus_rag() {
+    fn deepdive_gate_allows_crawl_plus_pack() {
         let mut progress = DeepdiveProgress::default();
         observe_deepdive_progress(&mut progress, "deepdive.crawl", true, 1);
-        observe_deepdive_progress(&mut progress, "rag.suchen", true, 2);
-        let final_text = "Lagebild mit Timeline und Hintergrund...\n<quellen>\n- fundort: https://example.test/source\n</quellen>";
+        observe_deepdive_progress(&mut progress, "deepdive.pack", true, 2);
+        observe_deepdive_progress(&mut progress, "deepdive.blocks", true, 3);
+        let final_text = "Lagebild mit Timeline, Hintergrund, Subcrawls / Side-Infos und Branching / Missing Links...\n<quellen>\n- fundort: https://example.test/source\n</quellen>";
         assert!(
             deepdive_gate_feedback(&progress, "Deepdive zu Friedrich Merz", final_text).is_none()
         );
     }
 
     #[test]
+    fn deepdive_gate_rejects_linear_answer_without_branching() {
+        let mut progress = DeepdiveProgress::default();
+        observe_deepdive_progress(&mut progress, "deepdive.crawl", true, 1);
+        observe_deepdive_progress(&mut progress, "deepdive.pack", true, 2);
+        observe_deepdive_progress(&mut progress, "deepdive.blocks", true, 3);
+        let final_text = "Lagebild mit Timeline und Hintergrund...\n<quellen>\n- fundort: https://example.test/source\n</quellen>";
+        let feedback =
+            deepdive_gate_feedback(&progress, "Deepdive zu Friedrich Merz", final_text).unwrap();
+        assert!(feedback.contains("zu linear"));
+    }
+
+    #[test]
+    fn deepdive_gate_requires_blocks_after_pack() {
+        let mut progress = DeepdiveProgress::default();
+        observe_deepdive_progress(&mut progress, "deepdive.crawl", true, 1);
+        observe_deepdive_progress(&mut progress, "deepdive.pack", true, 2);
+        let feedback = deepdive_gate_feedback(&progress, "Deepdive zu Friedrich Merz", "").unwrap();
+        assert!(feedback.contains("deepdive.blocks(Friedrich Merz)"));
+    }
+
+    #[test]
     fn deepdive_gate_requires_exact_source_block() {
         let mut progress = DeepdiveProgress::default();
         observe_deepdive_progress(&mut progress, "deepdive.crawl", true, 1);
-        observe_deepdive_progress(&mut progress, "rag.suchen", true, 2);
+        observe_deepdive_progress(&mut progress, "deepdive.pack", true, 2);
+        observe_deepdive_progress(&mut progress, "deepdive.blocks", true, 3);
         let feedback =
             deepdive_gate_feedback(&progress, "Deepdive zu Friedrich Merz", "Quelle: FAZ").unwrap();
         assert!(feedback.contains("<quellen>"));
@@ -5391,7 +7202,8 @@ mod tests {
     fn deepdive_gate_rejects_source_pool_only_answer() {
         let mut progress = DeepdiveProgress::default();
         observe_deepdive_progress(&mut progress, "deepdive.crawl", true, 1);
-        observe_deepdive_progress(&mut progress, "rag.suchen", true, 2);
+        observe_deepdive_progress(&mut progress, "deepdive.pack", true, 2);
+        observe_deepdive_progress(&mut progress, "deepdive.blocks", true, 3);
         let final_text = "Die spezifischen Details der Ereignisse sind nicht im vorliegenden Auszug der RAG-Daten enthalten.\n<quellen>\nhttps://example.test\n</quellen>";
         let feedback = deepdive_gate_feedback(
             &progress,
@@ -5406,7 +7218,8 @@ mod tests {
     fn deepdive_gate_requires_lagebild_shape_for_broad_deepdive() {
         let mut progress = DeepdiveProgress::default();
         observe_deepdive_progress(&mut progress, "deepdive.crawl", true, 1);
-        observe_deepdive_progress(&mut progress, "rag.suchen", true, 2);
+        observe_deepdive_progress(&mut progress, "deepdive.pack", true, 2);
+        observe_deepdive_progress(&mut progress, "deepdive.blocks", true, 3);
         let final_text =
             "Stand: Quellen wurden gelesen.\n<quellen>\nhttps://example.test\n</quellen>";
         let feedback =

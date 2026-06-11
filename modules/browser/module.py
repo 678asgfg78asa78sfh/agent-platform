@@ -170,6 +170,17 @@ def handle_tool(tool_name, params, config):
         if not page_html.strip():
             page_html, engine_note = _fetch_with_urllib(normalized_url, timeout_s), "urllib fallback"
         return _format_page(normalized_url, page_html, max_chars, engine_note)
+    except socket.gaierror as exc:
+        return {
+            "success": True,
+            "data": (
+                f"URL_UNAVAILABLE\n"
+                f"URL: {url}\n"
+                f"Reason: DNS lookup failed ({exc}).\n"
+                "Hinweis: Die Quelle wurde versucht, ist aber aktuell nicht aufloesbar. "
+                "Nicht als Beleg nutzen; mit anderen Quellen fortfahren."
+            ),
+        }
     except Exception as exc:
         return {"success": False, "data": f"Browser fetch fehlgeschlagen: {exc}"}
 

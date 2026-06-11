@@ -156,7 +156,15 @@ pub async fn cleanup_expired(data_root: &std::path::Path, timeout_secs: u64) -> 
 
 // ─── Commit validation ─────────────────────────────
 
-const KNOWN_TYPES: &[&str] = &["chat", "filesystem", "websearch", "shell", "notify", "cron"];
+const KNOWN_TYPES: &[&str] = &[
+    "chat",
+    "filesystem",
+    "websearch",
+    "shell",
+    "notify",
+    "cron",
+    "enhancer",
+];
 
 pub fn validate_for_commit(
     draft: &DraftAgent,
@@ -222,7 +230,8 @@ pub fn validate_for_commit(
         _ => {}
     }
 
-    // 3. llm_backend required for chat
+    // 3. llm_backend required for chat. Enhancers are pipeline slots and may
+    // stay unbound until the user explicitly chooses their worker/backend.
     if draft.typ.as_deref() == Some("chat") {
         match draft.llm_backend.as_deref() {
             None | Some("") => errs.push(ValidationError {
@@ -236,6 +245,14 @@ pub fn validate_for_commit(
                 human_message_de: format!("LLM-Backend '{}' ist nicht konfiguriert.", b),
             }),
             _ => {}
+        }
+    } else if let Some(b) = draft.llm_backend.as_deref().filter(|b| !b.is_empty()) {
+        if !cfg.llm_backends.iter().any(|x| x.id == b) {
+            errs.push(ValidationError {
+                field: "llm_backend".into(),
+                code: "unknown_backend".into(),
+                human_message_de: format!("LLM-Backend '{}' ist nicht konfiguriert.", b),
+            });
         }
     }
 
@@ -276,6 +293,31 @@ pub fn validate_for_commit(
                 code: "unknown_module".into(),
                 human_message_de: format!("Verlinktes Modul '{}' existiert nicht.", lm),
             });
+        }
+    }
+
+    for (field, slots) in [
+        ("input_enhancers", &draft.input_enhancers),
+        ("output_enhancers", &draft.output_enhancers),
+        ("combined_enhancers", &draft.combined_enhancers),
+    ] {
+        for slot in slots {
+            match cfg.module.iter().find(|m| &m.id == slot || &m.name == slot) {
+                Some(m) if m.typ == "enhancer" => {}
+                Some(m) => errs.push(ValidationError {
+                    field: field.into(),
+                    code: "wrong_type".into(),
+                    human_message_de: format!(
+                        "Enhancer-Slot '{}' zeigt auf Typ '{}', erwartet ist typ=enhancer.",
+                        slot, m.typ
+                    ),
+                }),
+                None => errs.push(ValidationError {
+                    field: field.into(),
+                    code: "unknown_module".into(),
+                    human_message_de: format!("Enhancer-Slot '{}' existiert nicht.", slot),
+                }),
+            }
         }
     }
 
@@ -507,6 +549,9 @@ pub fn apply_propose(
         "token_budget_warning" => draft.token_budget_warning = value.as_u64(),
         "berechtigungen" => draft.berechtigungen = as_string_vec(value)?,
         "linked_modules" => draft.linked_modules = as_string_vec(value)?,
+        "input_enhancers" => draft.input_enhancers = as_string_vec(value)?,
+        "output_enhancers" => draft.output_enhancers = as_string_vec(value)?,
+        "combined_enhancers" => draft.combined_enhancers = as_string_vec(value)?,
         "identity.bot_name" => draft.identity.bot_name = value.as_str().map(str::to_string),
         "identity.display_name" => draft.identity.display_name = value.as_str().map(str::to_string),
         "identity.language" => draft.identity.language = value.as_str().map(str::to_string),
@@ -950,6 +995,9 @@ fn materialize(d: &DraftAgent) -> Result<crate::types::ModulConfig, String> {
         },
         rag_pool: d.rag_pool.clone(),
         linked_modules: d.linked_modules.clone(),
+        input_enhancers: d.input_enhancers.clone(),
+        output_enhancers: d.output_enhancers.clone(),
+        combined_enhancers: d.combined_enhancers.clone(),
         persistent: d.persistent,
         spawned_by: None,
         spawn_ttl_s: None,
@@ -1063,16 +1111,17 @@ impl WizardBackend for RealWizardBackend {
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
     ) -> Result<(String, serde_json::Value), String> {
-        if let (Some(tr), Some(pool)) = (&self.tokens, &self.store_pool) {
-            let cfg = self.config.read().await.clone();
-            let _ = tr;
+        let cfg = self.config.read().await.clone();
+        let mut backend = self.backend.clone();
+        crate::util::resolve_llm_backend_api_alias(&mut backend, &cfg);
+        if let (Some(_tr), Some(pool)) = (&self.tokens, &self.store_pool) {
             crate::web::check_llm_cap(pool, &cfg, &self.backend.id, messages, false)
                 .await
                 .map_err(|hit| hit.message())?;
         }
         let result = self
             .router
-            .chat_with_tools_adhoc(&self.backend, messages, tools)
+            .chat_with_tools_adhoc(&backend, messages, tools)
             .await;
         if let (Some(tr), Some(pool)) = (&self.tokens, &self.store_pool) {
             let cfg = self.config.read().await.clone();
@@ -1961,6 +2010,7 @@ mod tests {
             cost_cap: None,
             max_tool_rounds: None,
             call_rate_limit: None,
+            internal: false,
         });
         cfg
     }
@@ -1982,6 +2032,15 @@ mod tests {
     #[test]
     fn validate_passes_on_minimal_valid_chat() {
         assert!(validate_for_commit(&valid_chat_draft(), &sample_cfg(), &WizardMode::New).is_ok());
+    }
+
+    #[test]
+    fn validate_allows_enhancer_without_llm_backend() {
+        let mut d = valid_chat_draft();
+        d.id = Some("enhancer.review".into());
+        d.typ = Some("enhancer".into());
+        d.llm_backend = None;
+        assert!(validate_for_commit(&d, &sample_cfg(), &WizardMode::New).is_ok());
     }
 
     #[test]
@@ -2043,6 +2102,9 @@ mod tests {
             identity: crate::types::ModulIdentity::default(),
             rag_pool: None,
             linked_modules: vec![],
+            input_enhancers: vec![],
+            output_enhancers: vec![],
+            combined_enhancers: vec![],
             persistent: true,
             spawned_by: None,
             spawn_ttl_s: None,
@@ -2609,6 +2671,7 @@ mod tests {
                 cost_cap: None,
                 max_tool_rounds: None,
                 call_rate_limit: None,
+                internal: false,
             },
             allow_code_gen: false,
             max_rounds_per_session: 30,

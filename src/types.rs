@@ -29,6 +29,58 @@ pub struct LlmBackend {
     /// Optionaler globaler Runtime-Rate-Limiter fuer LLM API-Calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_rate_limit: Option<LlmCallRateLimit>,
+    /// Internal backend used only by pipeline workers, hidden from normal agent UI.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub internal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ApiKeyVaultEntry {
+    /// Stable alias id. Referenced as `api.<id>` from LLM/module settings.
+    pub id: String,
+    /// Human-readable name shown in the admin UI.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CredentialVaultField {
+    /// Field name inside a credential profile, e.g. host, email, password.
+    pub key: String,
+    /// Stored value. Referenced as `<vault_id>.<key>`, `cred.<vault_id>.<key>`, or `${...}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// Whether the UI/API should redact this value.
+    #[serde(default)]
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CredentialVaultEntry {
+    /// Stable profile id. Example: `mail_private`.
+    pub id: String,
+    /// Human-readable name shown in the admin UI.
+    pub name: String,
+    /// Optional type/category, e.g. mail, database, ssh, ftp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<CredentialVaultField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
 }
 
 impl LlmBackend {
@@ -179,6 +231,17 @@ pub struct ModulConfig {
     // ── v1.0 Neue Felder ─────────────────────
     #[serde(default)]
     pub linked_modules: Vec<String>,
+    /// Pipeline-Middleware before the main LLM/tool processing. Values are module IDs
+    /// of `typ=enhancer` instances. These are not normal user tools.
+    #[serde(default)]
+    pub input_enhancers: Vec<String>,
+    /// Pipeline-Middleware after processing but before Webchat/Telegram/API output.
+    #[serde(default)]
+    pub output_enhancers: Vec<String>,
+    /// Enhancers that need both original input and final output. They run in the
+    /// output phase after `output_enhancers`.
+    #[serde(default)]
+    pub combined_enhancers: Vec<String>,
     #[serde(default = "default_true")]
     pub persistent: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,6 +266,10 @@ pub struct ModulConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 // ─── Typspezifische Modul-Settings ────────────────
@@ -298,6 +365,24 @@ pub struct ModulSettings {
     // ── Chat (eigener Port pro Instanz) ──────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>, // z.B. 8091, 8092, ...
+
+    // ── Enhancer ─────────────────────────────────
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancer_mode: Option<String>, // observe | filter | rewrite | translate | quality | gateway
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancer_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancer_fail_policy: Option<String>, // fail_open | fail_closed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancer_store_rag: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancer_rag_pool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancer_inject_context: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancer_max_output_chars: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enhancer_timeout_s: Option<u64>,
 
     // ── Webhook ──────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -405,6 +490,13 @@ pub struct Aufgabe {
     /// innerhalb einer Chat-/LLM-Aufgabe gesetzt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    /// Optionaler Workflow-Kontext fuer Trigger-/Pipeline-Aufgaben. Python-Module
+    /// schreiben diese Felder direkt in payload_json; Rust muss sie erhalten,
+    /// sonst verschwinden sie bei Claim/Status-Transition aus der Kanban-API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_stage: Option<String>,
     #[serde(default)]
     pub cap_override: bool,
 }
@@ -474,6 +566,8 @@ impl Aufgabe {
             erledigt: None,
             history: vec![],
             parent_id: None,
+            workflow_id: None,
+            workflow_stage: None,
             cap_override: false,
         }
     }
@@ -508,6 +602,8 @@ impl Aufgabe {
             erledigt: None,
             history: vec![],
             parent_id: None,
+            workflow_id: None,
+            workflow_stage: None,
             cap_override: false,
         }
     }
@@ -537,6 +633,8 @@ impl Aufgabe {
             erledigt: None,
             history: vec![],
             parent_id: None,
+            workflow_id: None,
+            workflow_stage: None,
             cap_override: false,
         }
     }
@@ -566,6 +664,10 @@ pub struct AgentConfig {
     pub web_port: u16,
     pub cycle_interval_ms: u64,
     pub llm_backends: Vec<LlmBackend>,
+    #[serde(default)]
+    pub api_key_vault: Vec<ApiKeyVaultEntry>,
+    #[serde(default)]
+    pub credential_vault: Vec<CredentialVaultEntry>,
     pub module: Vec<ModulConfig>,
     pub rag_pools: Vec<RagPool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -669,6 +771,8 @@ impl Default for AgentConfig {
             web_port: 8090,
             cycle_interval_ms: 2000,
             llm_backends: vec![],
+            api_key_vault: vec![],
+            credential_vault: vec![],
             module: vec![],
             rag_pools: vec![],
             embedding_backend: None,
@@ -768,6 +872,12 @@ pub struct DraftAgent {
     pub rag_pool: Option<String>,
     #[serde(default)]
     pub linked_modules: Vec<String>,
+    #[serde(default)]
+    pub input_enhancers: Vec<String>,
+    #[serde(default)]
+    pub output_enhancers: Vec<String>,
+    #[serde(default)]
+    pub combined_enhancers: Vec<String>,
     #[serde(default)]
     pub persistent: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

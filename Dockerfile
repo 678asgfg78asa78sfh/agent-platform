@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-bs4 \
         python3-pip \
+        yt-dlp \
+        ffmpeg \
         ca-certificates \
         tini \
     && rm -rf /var/lib/apt/lists/*

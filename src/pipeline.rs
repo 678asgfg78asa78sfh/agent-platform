@@ -195,7 +195,7 @@ impl Pipeline {
         self.laden("gestartet")
     }
     pub fn erledigt(&self) -> Vec<Aufgabe> {
-        match crate::store::task_list_erledigt_recent(&self.store.pool, 100) {
+        match crate::store::task_list_erledigt_recent(&self.store.pool, 500) {
             Ok(r) => Self::decode_rows(r),
             Err(_) => vec![],
         }
@@ -240,6 +240,7 @@ impl Pipeline {
             match self.verschieben(&mut aufgabe, AufgabeStatus::Failed) {
                 Ok(_) => {
                     count += 1;
+                    self.route_restart_failure_to_chat(&aufgabe);
                     self.log(
                         "startup",
                         Some(&aufgabe.id),
@@ -261,6 +262,64 @@ impl Pipeline {
             }
         }
         count
+    }
+
+    fn route_restart_failure_to_chat(&self, aufgabe: &Aufgabe) {
+        let Some(route) = aufgabe.zurueck_an.as_deref() else {
+            return;
+        };
+        let Some((modul_id, Some(convo_id))) = crate::util::parse_chat_route(route) else {
+            return;
+        };
+        let mut convo = self.convo_load(&modul_id, &convo_id).unwrap_or_else(|| {
+            serde_json::json!({
+                "id": convo_id,
+                "title": "Task Ergebnis",
+                "messages": [],
+                "updated": chrono::Utc::now().to_rfc3339(),
+            })
+        });
+        if !convo.get("messages").is_some_and(|v| v.is_array()) {
+            convo["messages"] = serde_json::json!([]);
+        }
+        let body = format!(
+            "[Ergebnis von {}]: {}",
+            aufgabe.modul,
+            aufgabe
+                .ergebnis
+                .as_deref()
+                .unwrap_or("FAILED: Server-Neustart hat die laufende Aufgabe unterbrochen.")
+        );
+        if let Some(messages) = convo["messages"].as_array_mut() {
+            messages.push(serde_json::json!({"role": "assistant", "content": body}));
+        }
+        if convo
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
+        {
+            convo["title"] = serde_json::json!("Task Ergebnis");
+        }
+        convo["updated"] = serde_json::json!(chrono::Utc::now().to_rfc3339());
+        if let Err(e) = self.convo_save(&modul_id, &convo) {
+            self.log(
+                "startup",
+                Some(&aufgabe.id),
+                LogTyp::Warning,
+                &format!("Restart-Recovery Chat-Routing fehlgeschlagen: {}", e),
+            );
+            return;
+        }
+        let source = format!("task:{}", aufgabe.id);
+        let _ = self.notification_add(
+            &modul_id,
+            Some(&convo_id),
+            "system",
+            Some("Aufgabe unterbrochen"),
+            "Eine laufende Aufgabe wurde durch Server-Neustart abgebrochen und in den Chat geschrieben.",
+            Some(&source),
+        );
     }
 
     pub fn cleanup_erledigt(&self, max_count: usize, max_alter_tage: u32) {
