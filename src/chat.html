@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chat</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
+<link rel="apple-touch-icon" href="/assets/icon-192.png">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
@@ -191,6 +193,8 @@ body::after {
 
 <div id="chat-app">
   <div class="chat-topbar">
+    <button class="clear-btn" id="media-btn" title="Medien (Videos/Bilder)" style="font-size:15px;">&#x1F39E;&#xFE0F;</button>
+    <button class="clear-btn" id="video-create-btn" title="Video erzeugen (direkte Pipeline)" style="font-size:15px;">&#x1F3AC;</button>
     <div class="agent-avatar" id="agent-avatar">A</div>
     <span class="agent-name" id="agent-name">Agent</span>
     <span class="agent-sub" id="agent-sub"></span>
@@ -208,6 +212,13 @@ body::after {
       <button class="clear-btn" id="notifications-refresh" style="font-size:10px; padding:2px 6px;">&#x21BB;</button>
     </div>
     <div id="notification-list" class="notification-list"></div>
+  </div>
+  <div id="media-panel" class="panel">
+    <div class="panel-head">
+      <span class="panel-title">Medien — zuletzt erstellt</span>
+      <button class="clear-btn" id="media-refresh" style="font-size:10px; padding:2px 6px;">&#x21BB;</button>
+    </div>
+    <div id="media-list" style="max-height:46dvh;overflow:auto;"></div>
   </div>
   <div id="file-panel" class="panel" style="max-height:250px;">
     <div class="panel-head">
@@ -750,6 +761,151 @@ function deleteFile(path) {
   apiFetch(homeFileUrl(path), {method: 'DELETE'})
     .then(function(r) { return r.json(); })
     .then(function(res) { if (res.ok) loadFileTree(); });
+}
+
+ge('video-create-btn').addEventListener('click', showVideoForm);
+
+function showVideoForm() {
+  var html = '<div id="video-form-modal" style="position:fixed;inset:0;z-index:9000;background:rgba(2,2,10,0.92);display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()">'
+    + '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:18px;width:min(480px,92vw);display:flex;flex-direction:column;gap:10px;font-family:var(--font);">'
+    + '<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;">&#x1F3AC;</span><span style="color:var(--text-bright);font-size:13px;font-weight:700;letter-spacing:1px;">VIDEO ERZEUGEN</span></div>'
+    + '<label style="font-size:10px;color:var(--text-dim);">THEMA / ZWECK</label>'
+    + '<textarea id="vf-query" rows="3" placeholder="z.B. Der globale Wettlauf um Rechenzentren und Strom fuer KI &mdash; wer baut, wer blockiert, wer profitiert" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-family:var(--font);font-size:12px;resize:vertical;"></textarea>'
+    + '<div style="display:flex;gap:10px;">'
+    + '<div style="flex:1;"><label style="font-size:10px;color:var(--text-dim);">MINDESTLAENGE</label>'
+    + '<select id="vf-minutes" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;font-family:var(--font);font-size:12px;">'
+    + '<option value="2">2 Minuten</option><option value="3" selected>3 Minuten</option><option value="5">5 Minuten</option><option value="8">8 Minuten</option><option value="12">12 Minuten</option>'
+    + '</select></div>'
+    + '<div style="flex:1;"><label style="font-size:10px;color:var(--text-dim);">SPRACHE</label>'
+    + '<select id="vf-language" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;font-family:var(--font);font-size:12px;">'
+    + '<option value="de" selected>Deutsch</option><option value="en">Englisch</option><option value="es">Spanisch</option><option value="fr">Franzoesisch</option>'
+    + '</select></div></div>'
+    + '<div style="display:flex;gap:14px;font-size:11px;color:var(--text);">'
+    + '<label style="display:flex;gap:5px;align-items:center;cursor:pointer;"><input type="checkbox" id="vf-shorts"> Shorts schneiden</label>'
+    + '<label style="display:flex;gap:5px;align-items:center;cursor:pointer;" title="Schneller Testlauf: 720p, ohne TTS-Kosten"><input type="checkbox" id="vf-preview"> Preview-Testlauf</label>'
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--text-dim);">Pipeline: DeepDive-Recherche &rarr; Storyboard &rarr; Faktencheck &rarr; Quality-Gate &rarr; KI-Szenenbilder &rarr; TTS &rarr; 1080p-Render. Fortschritt kommt als Chat-Nachricht, Ergebnis unter &#x1F39E;&#xFE0F; Medien.</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;">'
+    + '<button onclick="document.getElementById(\'video-form-modal\').remove()" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:6px;padding:6px 14px;font-size:11px;font-family:var(--font);">Abbrechen</button>'
+    + '<button id="vf-start" style="background:var(--cyan);border:none;color:#04101a;cursor:pointer;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;font-family:var(--font);">Starten</button>'
+    + '</div></div></div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+  ge('vf-start').addEventListener('click', function() {
+    var query = ge('vf-query').value.trim();
+    if (query.length < 8) { ge('vf-query').style.borderColor = 'var(--red)'; return; }
+    var btn = ge('vf-start');
+    btn.disabled = true; btn.textContent = 'startet…';
+    apiFetch('/api/video/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        modul: modulId,
+        query: query,
+        target_minutes: parseFloat(ge('vf-minutes').value),
+        language: ge('vf-language').value,
+        shorts: ge('vf-shorts').checked,
+        preview: ge('vf-preview').checked
+      })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      var m = ge('video-form-modal');
+      if (m) m.remove();
+      appendMsg('assistant', d.error ? ('Video-Start fehlgeschlagen: ' + d.error)
+        : ('\u{1F3AC} Video-Pipeline gestartet (Task ' + (d.task_id || '?').slice(0, 8) + '). ' + (d.message || '')));
+    }).catch(function(e) {
+      btn.disabled = false; btn.textContent = 'Starten';
+      alert('Fehler: ' + e);
+    });
+  });
+}
+
+var mediaLoaded = false;
+ge('media-btn').addEventListener('click', function() {
+  var p = ge('media-panel');
+  var open = p.style.display === 'block';
+  p.style.display = open ? 'none' : 'block';
+  if (!open) loadMedia();
+});
+ge('media-refresh').addEventListener('click', loadMedia);
+
+function fmtBytes(n) {
+  if (n > 1e9) return (n / 1e9).toFixed(1) + ' GB';
+  if (n > 1e6) return (n / 1e6).toFixed(1) + ' MB';
+  return Math.round(n / 1e3) + ' KB';
+}
+
+function fmtDate(ts) {
+  var d = new Date(ts * 1000);
+  return d.toLocaleDateString('de-DE', {day: '2-digit', month: '2-digit', year: 'numeric'});
+}
+
+function fmtTime(ts) {
+  var d = new Date(ts * 1000);
+  return d.toLocaleTimeString('de-DE', {hour: '2-digit', minute: '2-digit'});
+}
+
+function loadMedia() {
+  var list = ge('media-list');
+  list.innerHTML = '<div style="padding:10px;color:var(--text-dim);font-size:11px;">lade…</div>';
+  apiFetch('/api/media/' + modulId).then(function(r) { return r.json(); }).then(function(data) {
+    var items = (data && data.media) || [];
+    if (!items.length) {
+      list.innerHTML = '<div style="padding:10px;color:var(--text-dim);font-size:11px;">Noch keine Medien.</div>';
+      return;
+    }
+    var html = '';
+    var lastDay = '';
+    items.forEach(function(m) {
+      var day = fmtDate(m.mtime);
+      if (day !== lastDay) {
+        html += '<div style="padding:6px 10px 2px;color:var(--cyan);font-size:9px;text-transform:uppercase;letter-spacing:1px;">' + day + '</div>';
+        lastDay = day;
+      }
+      var icon = m.kind === 'video' ? '&#x1F3AC;' : (m.kind === 'audio' ? '&#x1F50A;' : '&#x1F5BC;&#xFE0F;');
+      html += '<div class="media-item" data-path="' + esc(m.path) + '" data-kind="' + m.kind + '" '
+        + 'style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border);">'
+        + '<span style="font-size:15px;">' + icon + '</span>'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text);" title="' + esc(m.path) + '">' + esc(m.name) + '</span>'
+        + '<span style="font-size:9px;color:var(--text-dim);white-space:nowrap;">' + fmtTime(m.mtime) + ' · ' + fmtBytes(m.size) + '</span>'
+        + '</div>';
+    });
+    list.innerHTML = html;
+    list.querySelectorAll('.media-item').forEach(function(el) {
+      el.addEventListener('click', function() {
+        previewMedia(el.getAttribute('data-path'), el.getAttribute('data-kind'));
+      });
+    });
+  }).catch(function() {
+    list.innerHTML = '<div style="padding:10px;color:var(--red);font-size:11px;">Laden fehlgeschlagen.</div>';
+  });
+}
+
+function previewMedia(path, kind) {
+  // Media-Tags senden keine Auth-Header — Datei als Blob mit Token laden.
+  apiFetch(homeFileUrl(path)).then(function(r) { return r.blob(); }).then(function(blob) {
+    var url = URL.createObjectURL(blob);
+    showMediaModal(path, kind, url);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 600000);
+  }).catch(function(e) { alert('Laden fehlgeschlagen: ' + e); });
+}
+
+function showMediaModal(path, kind, url) {
+  var inner;
+  if (kind === 'video') {
+    inner = '<video controls autoplay style="max-width:86vw;max-height:70vh;border-radius:8px;" src="' + url + '"></video>';
+  } else if (kind === 'audio') {
+    inner = '<audio controls autoplay style="width:60vw;" src="' + url + '"></audio>';
+  } else {
+    inner = '<img style="max-width:86vw;max-height:70vh;border-radius:8px;" src="' + url + '">';
+  }
+  var modal = '<div style="position:fixed;inset:0;z-index:9000;background:rgba(2,2,10,0.92);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;" onclick="this.remove()">'
+    + '<div onclick="event.stopPropagation()" style="display:flex;flex-direction:column;align-items:center;gap:8px;">'
+    + inner
+    + '<div style="display:flex;gap:8px;align-items:center;">'
+    + '<span style="color:var(--text-dim);font-size:10px;max-width:50vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(path) + '</span>'
+    + '<button onclick="downloadFile(\'' + esc(path).replace(/'/g, "\\'") + '\')" style="background:none;border:1px solid var(--cyan);color:var(--cyan);cursor:pointer;border-radius:4px;padding:3px 10px;font-size:10px;font-family:var(--font);">Download</button>'
+    + '<button onclick="this.closest(\'div[style*=fixed]\').remove()" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:4px;padding:3px 10px;font-size:10px;font-family:var(--font);">Schliessen</button>'
+    + '</div></div></div>';
+  document.body.insertAdjacentHTML('beforeend', modal);
 }
 
 function homeFileUrl(path) {

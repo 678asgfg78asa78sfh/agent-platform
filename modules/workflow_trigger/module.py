@@ -186,13 +186,15 @@ def deepdive_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
             "tts_voice": first_text(payload, "tts_voice", "voice", "voice_id") or str(config.get("default_tts_voice") or "ara"),
-            "tts_language": first_text(payload, "tts_language", "language", "lang") or str(config.get("default_tts_language") or "de"),
+            "tts_language": first_text(payload, "tts_language", "language", "lang", "sprache") or str(config.get("default_tts_language") or "de"),
             "tts_fast": bool_param(payload.get("tts_fast"), cfg_bool(config, "default_tts_fast", True)),
             "shorts_count": int_param(payload.get("shorts_count") or payload.get("count"), cfg_int(config, "default_shorts_count", 30), 1, 100),
             "shorts_duration_s": float_param(payload.get("shorts_duration_s") or payload.get("short_duration_s"), cfg_float(config, "default_shorts_duration_s", 45.0), 3.0, 180.0),
             "render_out_dir": first_text(payload, "render_out_dir", "video_out_dir") or str(default_render_output_dir(config) / workflow_id),
             "allow_extra_research": bool_param(payload.get("allow_extra_research"), cfg_bool(config, "allow_extra_research", False)),
             "video_style": first_text(payload, "video_style", "renderer", "style") or str(config.get("video_style") or ""),
+            "target_duration_s": float_param(payload.get("target_duration_s") or payload.get("min_duration_s") or (float_param(payload.get("target_minutes"), 0.0, 0.0, 60.0) * 60.0), 0.0, 0.0, 3600.0),
+            "language": (first_text(payload, "language", "lang", "sprache") or "de").lower()[:5],
         },
         "tasks": {},
         "artifacts": {},
@@ -283,13 +285,15 @@ def video_from_report(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
             "tts_voice": first_text(payload, "tts_voice", "voice", "voice_id") or str(config.get("default_tts_voice") or "ara"),
-            "tts_language": first_text(payload, "tts_language", "language", "lang") or str(config.get("default_tts_language") or "de"),
+            "tts_language": first_text(payload, "tts_language", "language", "lang", "sprache") or str(config.get("default_tts_language") or "de"),
             "tts_fast": bool_param(payload.get("tts_fast"), cfg_bool(config, "default_tts_fast", True)),
             "shorts_count": int_param(payload.get("shorts_count") or payload.get("count"), cfg_int(config, "default_shorts_count", 30), 1, 100),
             "shorts_duration_s": float_param(payload.get("shorts_duration_s") or payload.get("short_duration_s"), cfg_float(config, "default_shorts_duration_s", 45.0), 3.0, 180.0),
             "render_out_dir": first_text(payload, "render_out_dir", "video_out_dir") or str(default_render_output_dir(config) / workflow_id),
             "allow_extra_research": bool_param(payload.get("allow_extra_research"), cfg_bool(config, "allow_extra_research", False)),
             "video_style": first_text(payload, "video_style", "renderer", "style") or str(config.get("video_style") or ""),
+            "target_duration_s": float_param(payload.get("target_duration_s") or payload.get("min_duration_s") or (float_param(payload.get("target_minutes"), 0.0, 0.0, 60.0) * 60.0), 0.0, 0.0, 3600.0),
+            "language": (first_text(payload, "language", "lang", "sprache") or "de").lower()[:5],
         },
         "tasks": {},
         "artifacts": {},
@@ -448,7 +452,7 @@ def repair_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
             "tts_voice": first_text(payload, "tts_voice", "voice", "voice_id") or str(config.get("default_tts_voice") or "ara"),
-            "tts_language": first_text(payload, "tts_language", "language", "lang") or str(config.get("default_tts_language") or "de"),
+            "tts_language": first_text(payload, "tts_language", "language", "lang", "sprache") or str(config.get("default_tts_language") or "de"),
             "tts_fast": bool_param(payload.get("tts_fast"), cfg_bool(config, "default_tts_fast", True)),
             "shorts_count": int_param(payload.get("shorts_count") or payload.get("count"), cfg_int(config, "default_shorts_count", 30), 1, 100),
             "shorts_duration_s": float_param(payload.get("shorts_duration_s") or payload.get("short_duration_s"), cfg_float(config, "default_shorts_duration_s", 45.0), 3.0, 180.0),
@@ -1530,8 +1534,22 @@ def normalize_prompt(wf: dict[str, Any], report: str, prepared_context: str = ""
     crawl_id = wf.get("artifacts", {}).get("crawl_id") or extract_crawl_id(report) or ""
     preview = bool(wf.get("options", {}).get("preview"))
     allow_extra = bool(wf.get("options", {}).get("allow_extra_research"))
-    words = "250-500 Woerter fuer Preview" if preview else "900-1800 Woerter fuer Longform"
-    duration = 90 if preview else 360
+    target_s = float_param(wf.get("options", {}).get("target_duration_s"), 0.0, 0.0, 3600.0)
+    if target_s > 0:
+        # Mindestlaenge vom User: Wortbudget aus Sprechtempo (~2.3 W/s),
+        # Range +35% nach oben damit der Normalizer Luft hat.
+        duration = int(target_s)
+        min_words = int(target_s * 2.3)
+        words = f"{min_words}-{int(min_words * 1.35)} Woerter (MINDESTLAENGE {int(target_s)}s gesprochen — nicht kuerzer!)"
+    else:
+        words = "250-500 Woerter fuer Preview" if preview else "900-1800 Woerter fuer Longform"
+        duration = 90 if preview else 360
+    language = str(wf.get("options", {}).get("language") or "de").lower()
+    lang_names = {"de": "Deutsch", "en": "Englisch", "es": "Spanisch", "fr": "Franzoesisch"}
+    lang_rule = (
+        f"- SPRACHE: Das gesamte voice_script, alle Szenentitel, subtitles, bullets und Sprechblasen-Texte auf {lang_names.get(language, language)}. Nur image_prompt bleibt englisch.\n"
+        if language != "de" else ""
+    )
     report_limit = 12000 if preview else 45000
     context_limit = 12000 if preview else 70000
     research_rule = (
@@ -1543,7 +1561,7 @@ def normalize_prompt(wf: dict[str, Any], report: str, prepared_context: str = ""
 
 Wichtig:
 - Das ist NACH dem DeepDive. Du bist kein Recherche-Agent mehr, sondern Produktions-Normalizer.
-{research_rule}- Wenn crawl_id vorhanden ist, nutze die vorbereiteten deepdive.pack/deepdive.blocks-Ausgaben im Prompt.
+{research_rule}{lang_rule}- Wenn crawl_id vorhanden ist, nutze die vorbereiteten deepdive.pack/deepdive.blocks-Ausgaben im Prompt.
 - Mache aus dem Report keinen Markdown-Artikel, sondern ein hoerbares, sachliches deutsches Sprecher-Skript.
 - Voice-Skript: keine URL-Listen, keine Tabellen, keine Quellenklammern, keine Markdown-Formatierung, keine englisch/deutsch-Mischung ausser Eigennamen.
 - Inhaltlich muss die Kausalitaet erhalten bleiben: Akteure, Ereignisse, Zusammenhaenge, Widersprueche, offene Unsicherheit.

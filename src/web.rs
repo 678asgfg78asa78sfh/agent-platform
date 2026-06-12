@@ -1695,6 +1695,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/favicon.ico", axum::routing::get(favicon))
         .route("/", axum::routing::get(index))
+        .route("/assets/icon-192.png", axum::routing::get(icon_192))
         .route("/chat/{modul_id}", axum::routing::get(chat_page))
         .route("/chat/{modul_id}/{rest}", axum::routing::get(chat_page))
         .route("/wizard", axum::routing::get(wizard_page))
@@ -1798,6 +1799,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/templates/{typ}", axum::routing::get(get_template))
         .route("/api/home/{modul_id}", axum::routing::get(list_home))
+        .route("/api/media/{modul_id}", axum::routing::get(list_media))
+        .route("/api/video/start", axum::routing::post(video_start))
         .route(
             "/api/home/{modul_id}/{path}",
             axum::routing::get(read_home_file),
@@ -1895,10 +1898,11 @@ async fn wizard_page() -> Html<&'static str> {
 }
 
 async fn favicon() -> impl IntoResponse {
-    axum::response::Response::builder()
-        .status(204)
-        .body(Body::empty())
-        .unwrap_or_else(|_| axum::response::Response::new(Body::empty()))
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png"),
+         (axum::http::header::CACHE_CONTROL, "public, max-age=86400")],
+        include_bytes!("assets/favicon.png").as_slice(),
+    )
 }
 
 /// Eigenständiger Router für einen Chat-Port — bedient EINE Instanz
@@ -4267,6 +4271,162 @@ async fn get_py_modules(State(s): State<Arc<AppState>>) -> Json<serde_json::Valu
 }
 
 // ─── Home Directory Explorer ──────────────────────
+
+async fn icon_192() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png"),
+         (axum::http::header::CACHE_CONTROL, "public, max-age=86400")],
+        include_bytes!("assets/icon_192.png").as_slice(),
+    )
+}
+
+/// Direkter Video-Pipeline-Start aus der Chat-UI — bewusst OHNE Chat-LLM:
+/// das Formular liefert strukturierte Parameter, wir enqueuen den
+/// workflow_trigger-Toolcall direkt in die Task-Queue. Kein Tool-Listing,
+/// keine Prompt-Interpretation, deterministischer Einstieg.
+async fn video_start(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let query = body["query"].as_str().unwrap_or("").trim().to_string();
+    if query.len() < 8 {
+        return Json(serde_json::json!({"error": "query/Zweck fehlt (min. 8 Zeichen)"}));
+    }
+    let modul = body["modul"]
+        .as_str()
+        .and_then(safe_id)
+        .unwrap_or_else(|| "chat.deepseekdeepseekv4flash".into());
+    let minutes = body["target_minutes"].as_f64().unwrap_or(0.0).clamp(0.0, 60.0);
+    let language = body["language"].as_str().unwrap_or("de").to_lowercase();
+    let preview = body["preview"].as_bool().unwrap_or(false);
+    let shorts = body["shorts"].as_bool().unwrap_or(false);
+
+    let mut params = serde_json::json!({
+        "query": query,
+        "preview": preview,
+        "auto_shorts": shorts,
+        "language": language,
+        "chat_route": format!("chat:{}", modul),
+    });
+    if minutes > 0.0 {
+        params["target_minutes"] = serde_json::json!(minutes);
+    }
+    if preview {
+        params["require_tts"] = serde_json::json!(false);
+        params["allow_silent_audio"] = serde_json::json!(true);
+    }
+
+    let workflow_modul = {
+        let cfg = s.config.read().await;
+        cfg.module
+            .iter()
+            .find(|m| m.typ == "workflow_trigger")
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| "workflow_trigger.default".into())
+    };
+    let mut aufgabe = crate::types::Aufgabe::direct(
+        "workflow_trigger.deepdive_video",
+        vec![params.to_string()],
+        &workflow_modul,
+        &format!("chat:{}", modul),
+        None,
+        None,
+    );
+    aufgabe.zurueck_an = Some(format!("chat:{}", modul));
+    if let Err(e) = s.pipeline.speichern(&aufgabe) {
+        return Json(serde_json::json!({"error": format!("Task anlegen fehlgeschlagen: {e}")}));
+    }
+    s.pipeline.log(
+        &workflow_modul,
+        Some(&aufgabe.id),
+        LogTyp::Info,
+        &format!("Video-Pipeline per UI gestartet: {}", crate::util::safe_truncate(&query, 120)),
+    );
+    Json(serde_json::json!({
+        "started": true,
+        "task_id": aufgabe.id,
+        "workflow_modul": workflow_modul,
+        "message": "Video-Pipeline gestartet. Fortschritt kommt in den Chat, Ergebnis erscheint unter Medien.",
+    }))
+}
+
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "webm", "mov", "png", "jpg", "jpeg", "gif", "webp", "mp3", "wav", "m4a",
+];
+
+/// Juengste Medien-Dateien im Modul-Home (rekursiv, mtime-sortiert) — fuettert
+/// die Medien-Galerie im Chat. Ausgeliefert wird ueber den bestehenden
+/// /api/home/{modul}/{path}-Endpoint.
+async fn list_media(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Path(modul_id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let Some(modul_id) = safe_id(&modul_id) else {
+        return Json(serde_json::json!({"error": "Ungültige modul-ID", "media": []}));
+    };
+    let home = s.pipeline.home_dir(&modul_id);
+    let mut items: Vec<(i64, serde_json::Value)> = vec![];
+    collect_media(&home, &home, 0, &mut items);
+    items.sort_by_key(|(mtime, _)| -*mtime);
+    items.truncate(100);
+    let media: Vec<serde_json::Value> = items.into_iter().map(|(_, v)| v).collect();
+    Json(serde_json::json!({"media": media}))
+}
+
+fn collect_media(
+    base: &std::path::Path,
+    dir: &std::path::Path,
+    depth: u32,
+    out: &mut Vec<(i64, serde_json::Value)>,
+) {
+    if depth > 5 || out.len() > 800 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_media(base, &path, depth + 1, out);
+            continue;
+        }
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if !MEDIA_EXTENSIONS.contains(&ext.as_str()) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let rel = path
+            .strip_prefix(base)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        let kind = match ext.as_str() {
+            "mp4" | "webm" | "mov" => "video",
+            "mp3" | "wav" | "m4a" => "audio",
+            _ => "image",
+        };
+        out.push((
+            mtime,
+            serde_json::json!({
+                "path": rel,
+                "name": path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                "kind": kind,
+                "size": meta.len(),
+                "mtime": mtime,
+            }),
+        ));
+    }
+}
 
 async fn list_home(
     State(s): State<Arc<AppState>>,
