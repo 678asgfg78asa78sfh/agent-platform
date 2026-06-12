@@ -3489,7 +3489,15 @@ async fn chat(
                         &mut messages,
                         &parsed_calls,
                         &results,
-                        chat_tool_result_for_llm,
+                        |ok, data| {
+                            tools::format_tool_result_persisted(
+                                ok,
+                                data,
+                                MAX_CHAT_TOOL_RESULT_CHARS,
+                                &state.pipeline,
+                                mid,
+                            )
+                        },
                     );
 
                     // History trimmen: alte Tool-Results kuerzen (Prefix =

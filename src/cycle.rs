@@ -1843,7 +1843,15 @@ async fn exec_llm(
                     &mut messages,
                     &parsed_calls,
                     &results,
-                    task_tool_result_for_llm,
+                    |ok, data| {
+                        tools::format_tool_result_persisted(
+                            ok,
+                            data,
+                            MAX_TASK_TOOL_RESULT_CHARS,
+                            pipeline,
+                            &task_modul_id,
+                        )
+                    },
                 );
                 mark_activity(&activity);
 

@@ -38,6 +38,15 @@ pub fn tools_for_module(modul: &ModulConfig) -> Vec<ToolDef> {
     let mut tools = vec![];
     let perms = &modul.berechtigungen;
 
+    // Read-Back fuer ausgelagerte grosse Tool-Ergebnisse (Hermes-Adoption):
+    // statt sie hart abzuschneiden, bekommt das LLM Preview + Handle und kann
+    // gezielt nachlesen. Fuer JEDES Modul verfuegbar (liest nur eigene Results).
+    tools.push(ToolDef {
+        name: "toolresult.lesen".into(),
+        description: "Liest einen Ausschnitt eines ausgelagerten grossen Tool-Ergebnisses. Params: handle (aus '[HANDLE: ...]'), ab (Start-Zeichen, optional 0), laenge (optional, default 4000).".into(),
+        params: vec!["handle".into(), "ab".into(), "laenge".into()],
+    });
+
     match modul.typ.as_str() {
         "chat" => {
             tools.push(ToolDef {
@@ -1649,6 +1658,100 @@ fn args_touch_sensitive_paths(args: &[&str]) -> bool {
 /// Effect-Kategorie und wird sauber geschützt. Das vorherige Hardcoded-Liste-
 /// Modell hatte eine Lücke: Python-Tool mail.send wurde weder dedupliziert
 /// noch auditiert (OpenAI-Finding Run SQLite-4).
+/// Persistenz fuer grosse Tool-Ergebnisse: schreibt den vollen Text ins
+/// Modul-Home (.tool_results/<handle>.txt) und gibt den Handle zurueck. So
+/// kann das LLM ueber `toolresult.lesen` gezielt nachlesen, statt am hart
+/// abgeschnittenen Output zu verhungern (Hermes-3-Layer-Budget-Idee).
+fn persist_large_result(pipeline: &Pipeline, modul_id: &str, data: &str) -> Option<String> {
+    let dir = pipeline.home_dir(modul_id).join(".tool_results");
+    std::fs::create_dir_all(&dir).ok()?;
+    let handle = format!(
+        "{}-{}",
+        chrono::Utc::now().format("%H%M%S"),
+        &uuid::Uuid::new_v4().to_string()[..8]
+    );
+    let path = dir.join(format!("{}.txt", handle));
+    std::fs::write(&path, data).ok()?;
+    Some(handle)
+}
+
+fn read_persisted_result(
+    pipeline: &Pipeline,
+    modul_id: &str,
+    handle: &str,
+    from: usize,
+    len: usize,
+) -> (bool, String) {
+    // Handle saeubern (kein Traversal): nur [a-z0-9-]
+    let safe: String = handle
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if safe.is_empty() {
+        return (false, "Ungueltiger handle.".into());
+    }
+    let path = pipeline
+        .home_dir(modul_id)
+        .join(".tool_results")
+        .join(format!("{}.txt", safe));
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return (false, format!("Handle '{}' nicht gefunden (evtl. abgelaufen).", safe));
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let total = chars.len();
+    let start = from.min(total);
+    let end = (start + len.clamp(1, 20_000)).min(total);
+    let slice: String = chars[start..end].iter().collect();
+    let more = if end < total {
+        format!(
+            "\n[... {} weitere Zeichen. Weiterlesen: toolresult.lesen({}, {}, 4000)]",
+            total - end,
+            safe,
+            end
+        )
+    } else {
+        "\n[Ende des Ergebnisses]".into()
+    };
+    (true, format!("[{}..{} von {} Zeichen]\n{}{}", start, end, total, slice, more))
+}
+
+/// Formatiert ein Tool-Ergebnis fuer das LLM. Bei Ueberlaenge wird der volle
+/// Text ausgelagert und durch Preview + Handle ersetzt (lesbar via
+/// toolresult.lesen) — kein Sackgassen-Hinweis mehr.
+pub fn format_tool_result_persisted(
+    ok: bool,
+    data: &str,
+    max_chars: usize,
+    pipeline: &Pipeline,
+    modul_id: &str,
+) -> String {
+    let body = if data.chars().count() > max_chars {
+        match persist_large_result(pipeline, modul_id, data) {
+            Some(handle) => format!(
+                "{}\n\n[HANDLE: {} | {} Zeichen gesamt. Mit toolresult.lesen({}, ab, laenge) gezielt weiterlesen statt denselben grossen Output neu zu laden.]",
+                crate::util::safe_truncate(data, max_chars),
+                handle,
+                data.chars().count(),
+                handle
+            ),
+            None => format!(
+                "{}...[gekuerzt; Auslagern fehlgeschlagen]",
+                crate::util::safe_truncate(data, max_chars)
+            ),
+        }
+    } else {
+        data.to_string()
+    };
+    if ok {
+        format!("SUCCESS: {}", body)
+    } else {
+        format!(
+            "FAILED: {}\nNEXT: Entscheide, ob du mit korrigierten Parametern erneut versuchst, ein anderes Tool nutzt oder dem User den Blocker konkret erklaerst.",
+            body
+        )
+    }
+}
+
 const SCRIPT_TOOL_MARKER: &str = "\u{1}TOOL\u{1}";
 const SCRIPT_MAX_TOOL_CALLS: usize = 25;
 const SCRIPT_TIMEOUT_S: u64 = 180;
@@ -2076,6 +2179,12 @@ async fn exec_tool_unified_inner(
     task_id: Option<&str>,
     args: Option<&serde_json::Value>,
 ) -> (bool, String) {
+    if tool_name == "toolresult.lesen" {
+        let handle = params.first().map(|s| s.trim()).unwrap_or("");
+        let from = params.get(1).and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0);
+        let len = params.get(2).and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(4000);
+        return read_persisted_result(pipeline, modul_id, handle, from, len);
+    }
     // Programmatic Tool Calling: eigener Pfad mit Subprozess + Tool-RPC.
     // Permission wird hier explizit geprueft (nur persistente Module mit
     // 'script'/'script.exec' in den Berechtigungen).
@@ -3137,6 +3246,33 @@ mod tests {
 
         let resolved = resolve_task_target(&cfg, &caller, "Target Agent").unwrap();
         assert_eq!(resolved.id, "chat.target");
+    }
+
+    #[test]
+    fn test_large_result_persists_and_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipeline = Pipeline::new(dir.path()).unwrap();
+        let big = "ZEILE-".repeat(2000); // ~12k chars
+        let out = format_tool_result_persisted(true, &big, 4000, &pipeline, "chat.test");
+        assert!(out.starts_with("SUCCESS:"));
+        assert!(out.contains("[HANDLE:"), "kein Handle: {}", &out[..120]);
+        // Handle extrahieren und nachlesen
+        let handle = out
+            .split("[HANDLE: ")
+            .nth(1)
+            .and_then(|s| s.split(" |").next())
+            .unwrap()
+            .trim();
+        let (ok, slice) = read_persisted_result(&pipeline, "chat.test", handle, 6000, 500);
+        assert!(ok);
+        assert!(slice.contains("6000..6500"));
+        assert!(slice.contains("weitere Zeichen"));
+        // Kleine Ergebnisse bleiben unveraendert (kein Handle)
+        let small = format_tool_result_persisted(true, "kurz", 4000, &pipeline, "chat.test");
+        assert_eq!(small, "SUCCESS: kurz");
+        // Traversal-Schutz
+        let (bad_ok, _) = read_persisted_result(&pipeline, "chat.test", "../../etc/passwd", 0, 10);
+        assert!(!bad_ok);
     }
 
     #[tokio::test]
