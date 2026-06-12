@@ -29,7 +29,11 @@ MODULE = {
     "settings": {
         "enabled": {"type": "bool", "label": "Aktiv", "default": True},
         "python_timeout_s": {"type": "number", "label": "Python Prozess Timeout Sekunden", "default": 900},
-        "provider": {"type": "select", "label": "Provider", "default": "xai", "options": ["xai", "qwen", "minimax", "off"]},
+        "provider": {"type": "select", "label": "Provider", "default": "xai", "options": ["xai", "piper", "qwen", "minimax", "off"]},
+        "piper_tts_url": {"type": "string", "label": "Piper TTS URL", "default": ""},
+        "piper_timeout_s": {"type": "number", "label": "Piper Timeout Sek", "default": 120},
+        "piper_chunk_chars": {"type": "number", "label": "Piper Chunk-Groesse (0=aus)", "default": 600},
+        "qwen_chunk_chars": {"type": "number", "label": "Qwen Chunk-Groesse Satz-fuer-Satz", "default": 220},
         "api_key": {"type": "password", "label": "xAI API Key/Alias", "default": "api.xai"},
         "api_base": {"type": "string", "label": "xAI API Base", "default": "https://api.x.ai"},
         "voice": {"type": "string", "label": "Default Voice", "default": "ara"},
@@ -161,6 +165,8 @@ def _dispatch_tts(provider: str, text: str, out_path: Path, payload: dict[str, A
         synthesize_xai(text, out_path, payload, config)
     elif provider == "qwen":
         synthesize_qwen(text, out_path, payload, config)
+    elif provider == "piper":
+        synthesize_piper(text, out_path, payload, config)
     elif provider == "minimax":
         synthesize_minimax(text, out_path, payload, config)
     else:
@@ -213,12 +219,79 @@ def synthesize_qwen(text: str, out_path: Path, payload: dict[str, Any], config: 
         "response_format": "mp3",
         "speed": float_param(payload.get("speed"), 1.18 if is_fast(payload, config) else 1.0, 0.5, 2.0),
     }
-    # Lokale Qwen-TTS auf schwacher GPU kann bei langen Skripten extrem
-    # langsam sein — harte Obergrenze statt 900s haengen, dann greift der
-    # Fallback. Konfigurierbar via qwen_timeout_s.
+    # Lokale Qwen-TTS auf schwacher GPU ist bei langen Skripten extrem
+    # langsam — daher chunked (Satz fuer Satz) und mit harter Obergrenze pro
+    # Chunk, statt 900s am Stueck zu haengen.
     qwen_to = int_param(config.get("qwen_timeout_s"), 180, 20, 900)
-    content = http_post_json_bytes(url, body, api_key, qwen_to)
-    write_audio_response(content, out_path)
+    chunk_chars = int_param(config.get("qwen_chunk_chars"), 220, 0, 2000)
+    if chunk_chars and len(text) > chunk_chars:
+        synth_chunked(lambda t, op: write_audio_response(
+            http_post_json_bytes(url, {**body, "input": t}, api_key, qwen_to), op),
+            text, out_path, chunk_chars, config)
+    else:
+        write_audio_response(http_post_json_bytes(url, body, api_key, qwen_to), out_path)
+
+
+def synthesize_piper(text: str, out_path: Path, payload: dict[str, Any], config: dict[str, Any]) -> None:
+    url = first_text(payload, "piper_tts_url", "url") or str(config.get("piper_tts_url") or "").strip()
+    if not url:
+        raise RuntimeError("Piper TTS ist nicht konfiguriert: piper_tts_url fehlt")
+    to = int_param(config.get("piper_timeout_s"), 120, 10, 600)
+    chunk_chars = int_param(config.get("piper_chunk_chars"), 600, 0, 4000)
+    if chunk_chars and len(text) > chunk_chars:
+        synth_chunked(lambda t, op: write_audio_response(
+            http_post_json_bytes(url, {"input": t, "response_format": "mp3"}, "", to), op),
+            text, out_path, chunk_chars, config)
+    else:
+        write_audio_response(http_post_json_bytes(url, {"input": text, "response_format": "mp3"}, "", to), out_path)
+
+
+def split_into_chunks(text: str, max_chars: int) -> list[str]:
+    """Satzweise zu Chunks <= max_chars buendeln (dein 'Stueck fuer Stueck')."""
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    chunks: list[str] = []
+    cur = ""
+    for s in sentences:
+        if not s:
+            continue
+        if cur and len(cur) + len(s) + 1 > max_chars:
+            chunks.append(cur)
+            cur = s
+        else:
+            cur = (cur + " " + s).strip()
+    if cur:
+        chunks.append(cur)
+    return chunks or [text]
+
+
+def synth_chunked(synth_one, text: str, out_path: Path, max_chars: int, config: dict[str, Any]) -> None:
+    """Synthetisiert Chunks einzeln und konkateniert die MP3s per ffmpeg."""
+    chunks = split_into_chunks(text, max_chars)
+    tmp_dir = out_path.parent
+    parts: list[Path] = []
+    try:
+        for i, chunk in enumerate(chunks):
+            part = tmp_dir / f".tts_part_{os.getpid()}_{i}.mp3"
+            synth_one(chunk, part)
+            if not part.exists() or part.stat().st_size <= 0:
+                raise RuntimeError(f"Chunk {i+1}/{len(chunks)} lieferte kein Audio")
+            parts.append(part)
+        # ffmpeg concat (re-encode fuer saubere Uebergaenge)
+        listfile = tmp_dir / f".tts_concat_{os.getpid()}.txt"
+        listfile.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
+        ff = ffmpeg_bin(config)
+        proc = subprocess.run(
+            [ff, "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0",
+             "-i", str(listfile), "-codec:a", "libmp3lame", "-b:a", "160k", str(out_path)],
+            cwd=str(tmp_dir), capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            raise RuntimeError(f"Audio-concat fehlgeschlagen: {proc.stderr[-300:]}")
+    finally:
+        for pp in parts:
+            try: pp.unlink()
+            except Exception: pass
+        try: (tmp_dir / f".tts_concat_{os.getpid()}.txt").unlink()
+        except Exception: pass
 
 
 def synthesize_minimax(text: str, out_path: Path, payload: dict[str, Any], config: dict[str, Any]) -> None:
