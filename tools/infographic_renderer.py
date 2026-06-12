@@ -306,6 +306,7 @@ class Renderer:
         self.voice_script = str(assets.get("voice_script") or "")
         self.source_note = str(assets.get("source_line") or "DeepDive-Auswertung | Visualisierung schematisch")
         self.kicker = str(assets.get("kicker") or "BRIEFING")
+        self.music = not bool(getattr(args, "no_music", False)) and bool(assets.get("music", True))
 
     # ── Layout-System: Content-Box zwischen Header und Untertitel-Band ──
     def margin(self) -> int:
@@ -1115,11 +1116,38 @@ class Renderer:
         writer.close()
 
         final = self.out_dir / ("infographic_video_preview.mp4" if self.preview else "infographic_video_1080p.mp4")
-        if audio and audio.exists():
-            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        bed_path: Path | None = None
+        if self.music:
+            try:
+                bed_path = synth_music_bed(total_s, [s.start_s for s in self.scenes],
+                                           self.out_dir / "music_bed.wav")
+            except Exception as exc:
+                print(f"music bed failed: {exc}", file=sys.stderr)
+        if audio and audio.exists() and bed_path:
+            # Stimme + Bett: Bett wird per Sidechain unter der Stimme geduckt.
+            subprocess.run(
+                [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                 "-i", str(silent), "-i", str(audio), "-i", str(bed_path),
+                 "-filter_complex",
+                 "[2:a][1:a]sidechaincompress=threshold=0.02:ratio=10:attack=40:release=500[duck];"
+                 "[1:a][duck]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.9[a]",
+                 "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+                 "-shortest", str(final)],
+                check=True,
+            )
+        elif audio and audio.exists():
             subprocess.run(
                 [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(silent), "-i", str(audio),
                  "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+                 "-shortest", str(final)],
+                check=True,
+            )
+        elif bed_path:
+            # Kein Voiceover (Preview): Bett als Tonspur — wirkt sofort fertiger.
+            subprocess.run(
+                [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(silent), "-i", str(bed_path),
+                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
                  "-shortest", str(final)],
                 check=True,
             )
@@ -1127,6 +1155,64 @@ class Renderer:
             silent.replace(final)
         self.write_sidecars(final, total_s)
         return final
+
+    def make_thumbnail(self) -> Path | None:
+        """YouTube-Thumbnail (1280x720): erstes Szenenbild als Hintergrund,
+        Titel als grosse Headline (shrink-to-fit), Akzent + Brand-Chip."""
+        W, H = 1280, 720
+        img = None
+        for s in self.scenes:
+            if s.image:
+                path = Path(s.image)
+                if not path.is_absolute():
+                    path = ROOT / path
+                try:
+                    src_img = Image.open(path).convert("RGB")
+                    scale = max(W / src_img.width, H / src_img.height)
+                    sw, sh = int(src_img.width * scale), int(src_img.height * scale)
+                    src_img = src_img.resize((sw, sh), Image.LANCZOS)
+                    img = src_img.crop(((sw - W) // 2, (sh - H) // 2, (sw - W) // 2 + W, (sh - H) // 2 + H)).convert("RGBA")
+                    break
+                except Exception:
+                    continue
+        if img is None:
+            col = np.linspace(0, 1, H, dtype=np.float32)[:, None]
+            grad = (np.array(BG_TOP, dtype=np.float32)[None, None, :] * (1 - col[..., None])
+                    + np.array((24, 32, 52), dtype=np.float32)[None, None, :] * col[..., None])
+            img = Image.fromarray(np.repeat(grad, W, axis=1).astype(np.uint8), "RGB").convert("RGBA")
+        d = ImageDraw.Draw(img, "RGBA")
+        # Links-Gradient fuer Textkontrast
+        ov = Image.new("L", (W, 1))
+        for x in range(W):
+            f = 1 - x / W
+            ov.putpixel((x, 0), int(70 + 150 * max(0.0, f - 0.15)))
+        dark = Image.new("RGBA", (W, H), (6, 9, 16, 255))
+        dark.putalpha(ov.resize((W, H)))
+        img.alpha_composite(dark)
+        d = ImageDraw.Draw(img, "RGBA")
+        accent = self.scenes[0].accent if self.scenes else ACCENTS[DEFAULT_ACCENT]
+        # Brand-Chip
+        f_kick = font(34)
+        kw = text_w(d, self.kicker, f_kick)
+        d.rounded_rectangle([54, 48, 54 + kw + 44, 110], radius=12, fill=accent)
+        d.text((76, 60), self.kicker, font=f_kick, fill=(15, 18, 26))
+        # Headline: Titel ggf. am Doppelpunkt/Gedankenstrich kuerzen fuer Punch
+        head = self.title
+        for sep in (" — ", " – ", ": "):
+            if sep in head and len(head) > 38:
+                head = head.split(sep)[0]
+        f_head, lines = fit_text(d, head, 108, W * 0.62, 3, min_size=56)
+        lh = int(f_head.size * 1.12)
+        y = H - 140 - len(lines) * lh
+        for line in lines:
+            # Soft-Shadow fuer Lesbarkeit
+            d.text((58, y + 3), line, font=f_head, fill=(0, 0, 0, 180))
+            d.text((54, y), line, font=f_head, fill=INK)
+            y += lh
+        d.rectangle([54, y + 10, 54 + 220, y + 24], fill=accent)
+        out = self.out_dir / "thumbnail.jpg"
+        img.convert("RGB").save(out, quality=91)
+        return out
 
     def write_sidecars(self, final: Path, total_s: float) -> None:
         storyboard = {
@@ -1147,12 +1233,69 @@ class Renderer:
         }
         for name in ("storyboard_infographic.json", "storyboard_mapled.json"):
             (self.out_dir / name).write_text(json.dumps(storyboard, ensure_ascii=False, indent=2), encoding="utf-8")
+        thumb = None
+        try:
+            thumb = self.make_thumbnail()
+        except Exception as exc:
+            print(f"thumbnail failed: {exc}", file=sys.stderr)
         chapters = "\n".join(
             f"{int(s.start_s // 60):02d}:{int(s.start_s % 60):02d} {s.title}" for s in self.scenes
         )
+        thumb_line = f"\n## Thumbnail\n{thumb.name}\n" if thumb else ""
         (self.out_dir / "youtube_package_infographic.md").write_text(
-            f"# {self.title}\n\n## Kapitel\n{chapters}\n\n## Video\n{final.name}\n", encoding="utf-8"
+            f"# {self.title}\n\n## Kapitel\n{chapters}\n\n## Video\n{final.name}\n{thumb_line}", encoding="utf-8"
         )
+
+
+def synth_music_bed(total_s: float, scene_starts: list[float], out_path: Path, sr: int = 44100) -> Path:
+    """Prozedurales Ambient-Bett (dunkler Drone in A) + kurze Whooshes an
+    Szenengrenzen. Kein Asset, keine Lizenzfrage, deterministisch."""
+    import wave
+
+    n = int(total_s * sr)
+    t = np.arange(n, dtype=np.float32) / sr
+    rng = np.random.default_rng(7)
+    # Drone: Grundton + Quinte + Oktave, leicht verstimmt, langsame LFOs
+    bed = (
+        0.40 * np.sin(2 * np.pi * 55.0 * t)
+        + 0.28 * np.sin(2 * np.pi * 82.41 * t * 1.001)
+        + 0.18 * np.sin(2 * np.pi * 110.0 * t * 0.999)
+        + 0.10 * np.sin(2 * np.pi * 164.81 * t)
+    )
+    lfo = 0.6 + 0.4 * np.sin(2 * np.pi * 0.05 * t + 1.3)
+    shimmer = 0.5 + 0.5 * np.sin(2 * np.pi * 0.013 * t)
+    bed = bed * lfo * (0.7 + 0.3 * shimmer)
+    # "Luft": tiefpass-gefiltertes Rauschen (gleitender Mittelwert)
+    noise = rng.standard_normal(n).astype(np.float32)
+    kernel = np.ones(220, dtype=np.float32) / 220.0
+    air = np.convolve(noise, kernel, mode="same") * 0.5
+    mix = bed * 0.10 + air * 0.05
+    # Whooshes an Szenenstarts (ausser t=0): Rausch-Sweep mit Hann-Huellkurve
+    wn = int(0.55 * sr)
+    env = np.hanning(wn * 2)[:wn].astype(np.float32) ** 1.5
+    for start in scene_starts:
+        if start < 0.3 or start > total_s - 0.5:
+            continue
+        i0 = int((start - 0.25) * sr)
+        if i0 < 0 or i0 + wn > n:
+            continue
+        burst = np.convolve(rng.standard_normal(wn).astype(np.float32),
+                            np.ones(60, dtype=np.float32) / 60.0, mode="same")
+        sweep = np.sin(2 * np.pi * (180 + 320 * np.linspace(0, 1, wn) ** 2) * np.linspace(0, 0.55, wn))
+        mix[i0:i0 + wn] += (burst * 0.5 + sweep.astype(np.float32) * 0.25) * env * 0.16
+    # Fade-In/Out + Klipp-Schutz
+    fade = int(1.2 * sr)
+    if n > 2 * fade:
+        mix[:fade] *= np.linspace(0, 1, fade, dtype=np.float32)
+        mix[-fade:] *= np.linspace(1, 0, fade, dtype=np.float32)
+    mix = np.clip(mix, -0.6, 0.6)
+    pcm = (mix * 32767 * 0.5).astype(np.int16)
+    with wave.open(str(out_path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(pcm.tobytes())
+    return out_path
 
 
 def probe_duration(path: Path) -> float:
@@ -1182,6 +1325,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--height", type=int, default=1080)
     p.add_argument("--supersample", type=int, default=2)
     p.add_argument("--preview", action="store_true")
+    p.add_argument("--no-music", action="store_true", help="Musikbett/Whooshes deaktivieren")
     return p.parse_args()
 
 
