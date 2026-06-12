@@ -13,6 +13,15 @@ fn is_transient_http_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
 }
 
+/// Sende-/Verbindungsfehler von reqwest, die transient sind (Connection-Reset,
+/// DNS-Hickup, Broken Pipe). Diese duerfen NICHT den ganzen Task killen — ein
+/// kurzer Backoff-Retry reicht. Echte Timeouts (langer Call lief wirklich aus)
+/// werden NICHT geretryt, sonst wartet man pro Versuch erneut die volle
+/// Timeout-Dauer.
+fn is_retryable_send_error(e: &reqwest::Error) -> bool {
+    !e.is_timeout() && (e.is_connect() || e.is_request() || e.is_body())
+}
+
 pub fn openai_compat_endpoint(base_url: &str, path: &str) -> String {
     let base = base_url.trim_end_matches('/');
     let path = path.trim_start_matches('/');
@@ -749,13 +758,36 @@ impl LlmRouter {
                     _ => openai_compat_endpoint(&backend.url, "chat/completions"),
                 };
                 for attempt in 1..=OPENAI_COMPAT_TRANSIENT_RETRIES {
-                    let resp = client
+                    let resp = match client
                         .post(&endpoint)
                         .header("Authorization", format!("Bearer {key}"))
                         .json(&body)
                         .send()
                         .await
-                        .map_err(|e| format!("API: {e}"))?;
+                    {
+                        Ok(r) => r,
+                        Err(e) => {
+                            // Verbindungs-/Sende-Fehler sind transient — retry
+                            // statt den ganzen DeepDive/Task wegzuwerfen.
+                            if attempt < OPENAI_COMPAT_TRANSIENT_RETRIES
+                                && is_retryable_send_error(&e)
+                            {
+                                tracing::warn!(
+                                    "LLM backend '{}' send-error (attempt {}/{}): {} — retry",
+                                    backend.id,
+                                    attempt,
+                                    OPENAI_COMPAT_TRANSIENT_RETRIES,
+                                    e
+                                );
+                                tokio::time::sleep(std::time::Duration::from_millis(
+                                    750 * attempt as u64,
+                                ))
+                                .await;
+                                continue;
+                            }
+                            return Err(format!("API: {e}"));
+                        }
+                    };
                     let status = resp.status();
                     let body_text = resp.text().await.unwrap_or_default();
                     if !status.is_success() {
