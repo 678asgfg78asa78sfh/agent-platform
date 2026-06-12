@@ -1749,6 +1749,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/logs/{datum}", axum::routing::get(get_logs))
         .route("/api/status", axum::routing::get(get_status))
         .route("/api/metrics", axum::routing::get(get_metrics))
+        .route("/api/workflows", axum::routing::get(get_workflows))
         .route("/api/modules", axum::routing::get(get_py_modules))
         .route("/api/tokens", axum::routing::get(get_tokens))
         .route(
@@ -4356,6 +4357,74 @@ async fn video_start(
         "workflow_modul": workflow_modul,
         "message": "Video-Pipeline gestartet. Fortschritt kommt in den Chat, Ergebnis erscheint unter Medien.",
     }))
+}
+
+/// Aktive + juengste Pipeline-Workflows (Video-Erstellung) — first-class
+/// Sichtbarkeit: jede laufende Pipeline erscheint mit Titel, Stage und Status,
+/// damit NICHTS unbemerkt im Hintergrund laeuft (Transparenz-Prinzip).
+async fn get_workflows(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let base = &s.pipeline.base;
+    let mut roots: Vec<std::path::PathBuf> = vec![base.join("workflows")];
+    // Modul-Home-Verzeichnisse (default_output_dir kann pro Chat dort liegen)
+    if let Ok(homes) = std::fs::read_dir(base.join("home")) {
+        for h in homes.flatten() {
+            let wf = h.path().join("workflows");
+            if wf.is_dir() {
+                roots.push(wf);
+            }
+        }
+    }
+    let mut items: Vec<serde_json::Value> = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let wf_json = e.path().join("workflow.json");
+            let Ok(text) = std::fs::read_to_string(&wf_json) else {
+                continue;
+            };
+            let Ok(w) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let id = w["id"].as_str().unwrap_or("").to_string();
+            if id.is_empty() || !seen.insert(id.clone()) {
+                continue;
+            }
+            let mtime = std::fs::metadata(&wf_json)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let events = w["events"].as_array().map(|a| a.len()).unwrap_or(0);
+            let last_event = w["events"]
+                .as_array()
+                .and_then(|a| a.last())
+                .and_then(|e| e["detail"].as_str())
+                .unwrap_or("");
+            items.push(serde_json::json!({
+                "id": id,
+                "title": w["title"].as_str().or_else(|| w["query"].as_str()).unwrap_or("Video-Workflow"),
+                "kind": w["kind"].as_str().unwrap_or("video"),
+                "status": w["status"].as_str().unwrap_or("?"),
+                "stage": w["stage"].as_str().unwrap_or("?"),
+                "modul": w["target_modul_id"].as_str().unwrap_or(""),
+                "video": w["artifacts"]["video"].as_str().unwrap_or(""),
+                "last_event": util::safe_truncate(last_event, 140),
+                "steps": events,
+                "updated": mtime,
+            }));
+        }
+    }
+    items.sort_by_key(|v| -(v["updated"].as_i64().unwrap_or(0)));
+    items.truncate(40);
+    let active = items
+        .iter()
+        .filter(|v| matches!(v["status"].as_str(), Some("running") | Some("waiting")))
+        .count();
+    Json(serde_json::json!({"workflows": items, "active": active}))
 }
 
 const MEDIA_EXTENSIONS: &[&str] = &[

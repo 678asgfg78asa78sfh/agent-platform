@@ -989,6 +989,7 @@ body::after {
           <button class="btn btn-sm" id="aufgaben-refresh">&#x21BB; Refresh</button>
         </div>
       </div>
+      <div id="workflow-banner" style="display:none; padding:10px 20px 0;"></div>
       <div id="aufgaben-flow" style="display:none; flex:1; overflow-y:auto; padding:12px 20px;"></div>
       <div class="kanban-board" id="kanban-board-container">
         <div class="kanban-column col-erstellt">
@@ -2947,6 +2948,73 @@ function loadAufgaben() {
   }).catch(function(e) {
     toast('Aufgaben laden fehlgeschlagen: ' + e.message, 'error');
   });
+  loadWorkflows();
+}
+
+var WF_STAGES = [
+  ['deepdive_report', 'Recherche'],
+  ['normalize_report', 'Storyboard'],
+  ['fact_check_assets', 'Faktencheck'],
+  ['review_assets', 'Quality-Gate'],
+  ['repair_assets', 'Reparatur'],
+  ['generate_visuals', 'KI-Bilder'],
+  ['synthesize_audio', 'Vertonung'],
+  ['render_video', 'Render'],
+  ['make_shorts', 'Shorts'],
+  ['done', 'Fertig']
+];
+
+function loadWorkflows() {
+  apiFetch('GET', '/api/workflows').then(function(data) {
+    var wfs = (data && data.workflows) || [];
+    var banner = document.getElementById('workflow-banner');
+    if (!banner) return;
+    // Aktive zuerst, danach die juengsten abgeschlossenen (max 4)
+    var active = wfs.filter(function(w){ return w.status==='running'||w.status==='waiting'; });
+    var recent = wfs.filter(function(w){ return w.status!=='running'&&w.status!=='waiting'; }).slice(0,3);
+    var show = active.concat(recent);
+    if (!show.length) { banner.style.display='none'; banner.innerHTML=''; return; }
+    banner.style.display='block';
+    var html = '<div style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin-bottom:6px;">&#x1F3AC; Video-Pipelines'
+      + (active.length ? ' &mdash; '+active.length+' aktiv' : '') + '</div>';
+    show.forEach(function(w){
+      html += renderWorkflowRow(w);
+    });
+    banner.innerHTML = html;
+  }).catch(function(){});
+}
+
+function renderWorkflowRow(w) {
+  var stageIdx = -1, curLabel = w.stage;
+  for (var i=0;i<WF_STAGES.length;i++){ if(WF_STAGES[i][0]===w.stage){ stageIdx=i; curLabel=WF_STAGES[i][1]; break; } }
+  var done = (w.status==='success');
+  var failed = (w.status==='failed'||w.status==='cancelled'||String(w.stage).indexOf('failed')>=0);
+  var col = failed ? 'var(--red)' : (done ? 'var(--green)' : 'var(--cyan)');
+  var statusTxt = failed ? 'FEHLER' : (done ? 'FERTIG' : (w.status==='waiting' ? 'wartet' : 'laeuft') + ' &middot; ' + esc(curLabel));
+  // Stage-Punkte
+  var dots = '';
+  WF_STAGES.forEach(function(st, i){
+    if (st[0]==='repair_assets') return; // optionale Stage nicht als Standard-Punkt
+    var reached = done || (stageIdx>=0 && i<=stageIdx);
+    var isCur = (stageIdx===i && !done);
+    dots += '<span title="'+esc(st[1])+'" style="width:'+(isCur?'9px':'7px')+';height:'+(isCur?'9px':'7px')+';border-radius:50%;display:inline-block;'
+      + 'background:'+(reached?col:'var(--border)')+';'+(isCur?'box-shadow:0 0 6px '+col+';':'')+'"></span>';
+  });
+  var spin = (!done && !failed) ? '<span style="display:inline-block;width:10px;height:10px;border:2px solid var(--border);border-top-color:'+col+';border-radius:50%;animation:spin 0.9s linear infinite;"></span>' : '';
+  var actions = w.video ? '<button class="btn btn-sm" onclick="previewWfVideo(\''+esc(w.id)+'\')" style="font-size:10px;padding:2px 8px;">&#x25B6; Video</button>' : '';
+  return '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:4px;background:var(--bg-surface);border:1px solid var(--border);border-left:3px solid '+col+';border-radius:6px;">'
+    + spin
+    + '<div style="flex:1;min-width:0;"><div style="font-size:12px;color:var(--text-bright);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(w.title)+'</div>'
+    + '<div style="font-size:9px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(w.last_event||'')+'</div></div>'
+    + '<div style="display:flex;gap:3px;align-items:center;">'+dots+'</div>'
+    + '<span style="font-size:10px;font-weight:700;color:'+col+';white-space:nowrap;min-width:64px;text-align:right;">'+statusTxt+'</span>'
+    + actions
+    + '</div>';
+}
+
+function previewWfVideo(id) {
+  // Video liegt im Modul-Home; ueber Medien-Vorschau im Chat besser, hier simpler Hinweis
+  toast('Video '+id.slice(0,16)+' im Chat unter Medien abrufbar', 'info');
 }
 
 var aufgabenChildMap = {};
