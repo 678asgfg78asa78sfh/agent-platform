@@ -41,6 +41,8 @@ MODULE = {
         "qwen_tts_url": {"type": "string", "label": "Qwen TTS HTTP URL optional", "default": ""},
         "qwen_tts_api_key": {"type": "password", "label": "Qwen TTS API Key optional", "default": ""},
         "qwen_tts_model": {"type": "string", "label": "Qwen TTS Modell", "default": "qwen-tts"},
+        "qwen_timeout_s": {"type": "number", "label": "Qwen TTS Timeout Sek (dann Fallback)", "default": 180},
+        "fallback_provider": {"type": "select", "label": "Fallback-Provider bei Fehler", "default": "xai", "options": ["xai", "minimax", "off"]},
         "qwen_tts_command": {
             "type": "string",
             "label": "Qwen lokaler Command optional",
@@ -116,17 +118,30 @@ def speak(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     if out_path.suffix.lower() != ".mp3":
         out_path = out_path.with_suffix(".mp3")
 
-    if provider == "xai":
-        synthesize_xai(prepared, out_path, payload, config)
-    elif provider == "qwen":
-        synthesize_qwen(prepared, out_path, payload, config)
-    elif provider == "minimax":
-        synthesize_minimax(prepared, out_path, payload, config)
-    else:
-        return fail(f"Unbekannter TTS Provider: {provider}")
-
+    # Fallback-Kette: primaerer Provider, dann (bei Fehler/Timeout) der
+    # konfigurierte Fallback. So killt eine langsame/ausgefallene lokale TTS
+    # (z.B. Qwen auf schwacher GPU bei langen Skripten) nie den ganzen Workflow.
+    fallback = str(config.get("fallback_provider") or payload.get("fallback_provider") or "xai").strip().lower()
+    chain = [provider]
+    if fallback and fallback not in ("off", provider):
+        chain.append(fallback)
+    used_provider = provider
+    errors = []
+    for i, prov in enumerate(chain):
+        try:
+            _dispatch_tts(prov, prepared, out_path, payload, config)
+            if out_path.exists() and out_path.stat().st_size > 0:
+                used_provider = prov
+                break
+            errors.append(f"{prov}: leere Audiodatei")
+        except Exception as exc:
+            errors.append(f"{prov}: {str(exc)[:160]}")
+        if i + 1 < len(chain):
+            # Fallback ankuendigen (geht in den Task-Log/Result)
+            pass
     if not out_path.exists() or out_path.stat().st_size <= 0:
-        return fail(f"TTS lieferte keine Audiodatei: {out_path}")
+        return fail("TTS fehlgeschlagen (inkl. Fallback): " + " | ".join(errors))
+    provider = used_provider
     duration_s = audio_duration(out_path, config) or estimate_duration(prepared)
     return ok(
         {
@@ -139,6 +154,17 @@ def speak(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "chars": len(prepared),
         }
     )
+
+
+def _dispatch_tts(provider: str, text: str, out_path: Path, payload: dict[str, Any], config: dict[str, Any]) -> None:
+    if provider == "xai":
+        synthesize_xai(text, out_path, payload, config)
+    elif provider == "qwen":
+        synthesize_qwen(text, out_path, payload, config)
+    elif provider == "minimax":
+        synthesize_minimax(text, out_path, payload, config)
+    else:
+        raise RuntimeError(f"Unbekannter TTS Provider: {provider}")
 
 
 def synthesize_xai(text: str, out_path: Path, payload: dict[str, Any], config: dict[str, Any]) -> None:
@@ -187,7 +213,11 @@ def synthesize_qwen(text: str, out_path: Path, payload: dict[str, Any], config: 
         "response_format": "mp3",
         "speed": float_param(payload.get("speed"), 1.18 if is_fast(payload, config) else 1.0, 0.5, 2.0),
     }
-    content = http_post_json_bytes(url, body, api_key, timeout_s(config, payload))
+    # Lokale Qwen-TTS auf schwacher GPU kann bei langen Skripten extrem
+    # langsam sein — harte Obergrenze statt 900s haengen, dann greift der
+    # Fallback. Konfigurierbar via qwen_timeout_s.
+    qwen_to = int_param(config.get("qwen_timeout_s"), 180, 20, 900)
+    content = http_post_json_bytes(url, body, api_key, qwen_to)
     write_audio_response(content, out_path)
 
 
