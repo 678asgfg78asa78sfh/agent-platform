@@ -215,14 +215,19 @@ def run_factcheck(
         search_query = build_query(claim["claim"], title or query)
         try:
             evidence = duckduckgo_search(search_query, max_results, timeout_s)
-            fallback_query = ""
-            if not evidence:
+            verdict = evaluate_claim(claim, search_query, evidence)
+            # Zweite Chance mit EN-Fallback-Query: deutsche Komposita finden
+            # englische Quellen nicht — erst wenn BEIDE Suchen nichts stuetzen,
+            # darf der Claim blocken (stabilere Verdicts ueber Runden).
+            if verdict.get("decision") in {"unsupported", "unknown"}:
                 fallback_query = build_fallback_query(claim["claim"], title or query)
                 if fallback_query and fallback_query != search_query:
-                    evidence = duckduckgo_search(fallback_query, max_results, timeout_s)
-                    if evidence:
-                        search_query = f"{search_query} | fallback: {fallback_query}"
-            checked.append(evaluate_claim(claim, search_query, evidence))
+                    more = duckduckgo_search(fallback_query, max_results, timeout_s)
+                    if more:
+                        merged = evidence + [e for e in more if e not in evidence]
+                        combined_label = f"{search_query} | fallback: {fallback_query}"
+                        verdict = evaluate_claim(claim, combined_label, merged)
+            checked.append(verdict)
         except Exception as exc:
             search_errors.append({"claim": claim["claim"], "query": search_query, "error": str(exc)})
             checked.append(
@@ -364,7 +369,9 @@ def split_sentences(text: str) -> list[str]:
 
 def build_query(claim: str, context: str) -> str:
     nums = extract_numbers(claim)
-    terms = key_terms((context + " " + claim) if context else claim, limit=16)
+    # NUR Claim-Terms: der Video-Titel als "Kontext" hat jede Query verschmutzt
+    # (z.B. 'ki-infrastruktur-rennen' in jeder Suche) und die Trefferquote ruiniert.
+    terms = key_terms(claim, limit=16)
     selected = []
     for n in nums[:4]:
         if n not in selected:
@@ -377,12 +384,48 @@ def build_query(claim: str, context: str) -> str:
     return " ".join(selected)[:240] or claim[:200]
 
 
+DE_EN_TERMS = {
+    "exportkontrollen": "export controls",
+    "verschaerften": "tightened",
+    "verschaerft": "tightened",
+    "rechenzentren": "data centers",
+    "rechenzentrum": "data center",
+    "halbleiter": "semiconductors",
+    "stromnetze": "power grid",
+    "subventionen": "subsidies",
+    "zoelle": "tariffs",
+    "lieferkette": "supply chain",
+    "seltene erden": "rare earths",
+    "regierung": "government",
+    "milliarden": "billion",
+    "investitionen": "investment",
+    "kuenstliche intelligenz": "artificial intelligence",
+    "wettlauf": "race",
+}
+
+
+def english_terms(claim: str, limit: int = 8) -> list[str]:
+    lower = normalize_word(claim)
+    out: list[str] = []
+    for de, en in DE_EN_TERMS.items():
+        if de in lower and en not in out:
+            out.append(en)
+        if len(out) >= limit:
+            break
+    # Eigennamen/Akronyme aus dem Claim mitnehmen (USA, TSMC, Nvidia, ...)
+    for m in re.finditer(r"\b[A-Z][A-Za-z]{1,14}\b|\b[A-Z]{2,6}\b", claim):
+        w = m.group(0)
+        if w not in out and len(out) < limit + 4:
+            out.append(w)
+    return out
+
+
 def build_fallback_query(claim: str, context: str) -> str:
     nums = extract_numbers(claim)
     years = [n for n in nums if is_year(n)]
-    terms = key_terms((context + " " + claim) if context else claim, limit=10)
+    terms = key_terms(claim, limit=10)
     lower = normalize_word(claim + " " + context)
-    extra = []
+    extra = english_terms(claim)
     if "asml" in lower:
         extra.extend(["ASML", "annual report", "EUV systems", "shipments"])
     if "chips" in lower and "act" in lower:
@@ -459,6 +502,13 @@ def parse_ddg_lite(raw: str, max_results: int) -> list[dict[str, str]]:
     return results
 
 
+ATTRIBUTION_RE = re.compile(
+    r"(zufolge|laut\s|berichtet|behauptet|unbest(ae|ä)tigt|sch(ae|ä)tzung|angeblich|"
+    r"einem bericht|dem bericht|hei(ss|ß)t es|so der bericht|nach angaben|demnach)",
+    re.I,
+)
+
+
 def evaluate_claim(claim: dict[str, Any], search_query: str, evidence: list[dict[str, str]]) -> dict[str, Any]:
     text = " ".join((e.get("title", "") + " " + e.get("snippet", "") + " " + e.get("url", "")) for e in evidence)
     claim_text = claim["claim"]
@@ -508,6 +558,17 @@ def evaluate_claim(claim: dict[str, Any], search_query: str, evidence: list[dict
         severity = "low" if decision == "verified" else "medium"
         reason = "Themenabgleich ohne harte Zahlen."
 
+    # Bereits zugeschriebene/unbestaetigte Aussagen sind per Normalizer-Vertrag
+    # KEINE harten Fakten — sie duerfen warnen, aber nie blocken.
+    if decision in {"unsupported", "unknown"} and ATTRIBUTION_RE.search(claim_text):
+        decision = "needs_softening"
+        severity = "low"
+        reason = (reason + " | Aussage ist bereits als zugeschriebene/unbestaetigte Quelle formuliert.").strip(" |")
+    # Nur-Jahreszahlen sind keine 'harten Zahlen': Snippets lassen Jahre oft weg.
+    elif decision == "unsupported" and nums and all(is_year(n) for n in nums) and term_ratio >= 0.12:
+        decision = "needs_softening"
+        severity = "medium"
+        reason = (reason + " | Nur Jahresangaben betroffen, Thema wird gefunden.").strip(" |")
     return {
         **claim,
         "search_query": search_query,
