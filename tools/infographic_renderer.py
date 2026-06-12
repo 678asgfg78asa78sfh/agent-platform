@@ -651,6 +651,28 @@ class Renderer:
         l_col = ACCENTS.get(str(left.get("color") or "").lower(), ACCENTS["blue"])
         r_col = ACCENTS.get(str(right.get("color") or "").lower(), ACCENTS["red"])
 
+        # Mit Szenenbild: das KI-Bild IST die Buehne (zeigt die Akteure) —
+        # nur Sprechblasen + Namens-Chips drueber, keine PIL-Figuren.
+        if scene.image:
+            col_w = (x1 - x0) * 0.44
+            l_speak = bool(l_say) and t > 0.7
+            r_speak = bool(r_say) and t > 1.1
+            for x, label, align_right in ((x0, l_label, False), (x1, r_label, True)):
+                f_n, n_lines = fit_text(d, label, int(21 * s), (x1 - x0) * 0.3, 1)
+                lw = text_w(d, n_lines[0], f_n)
+                cx0 = (x1 - lw - 22 * s) if align_right else x0
+                cy = y1 - int(30 * s)
+                d.rounded_rectangle([cx0, cy - 15 * s, cx0 + lw + 22 * s, cy + 15 * s],
+                                    radius=8 * s, fill=(10, 13, 22, 225))
+                d.text((cx0 + 11 * s, cy - 11 * s), n_lines[0], font=f_n, fill=INK)
+            if l_speak:
+                self.draw_speech(d, x0, y0, x0 + col_w * 0.4, y1, l_say,
+                                 ease_out_back((t - 0.7) / 0.4), col_w)
+            if r_speak:
+                self.draw_speech(d, x1 - col_w, y0, x1 - col_w * 0.4, y1, r_say,
+                                 ease_out_back((t - 1.1) / 0.4), col_w)
+            return
+
         # Sprechblasen in festen, getrennten Spalten oben in der Content-Box;
         # Hoehen werden GEMESSEN, die Buehne beginnt erst darunter.
         col_w = (x1 - x0) * 0.44
@@ -1008,6 +1030,36 @@ class Renderer:
         self.limb(d, sh, elb2, hand2, arm_col, arm_w)
         hy = top + head_r + bob + math.sin(t * 5) * g * 1.2 * s
         d.ellipse([x - head_r, hy - head_r, x + head_r, hy + head_r], fill=col)
+        # Gesicht: Augen schauen zum Gegenueber, blinzeln; Mund bewegt sich
+        # beim Sprechen (gesture>0). Haar als dunklere Kappe fuer Charakter.
+        hair = mix(col, (0, 0, 0), 0.38)
+        # Haar als flache Kappe NUR auf dem Oberkopf (nicht ueber die Augen)
+        if facing == 1:
+            d.pieslice([x - head_r, hy - head_r, x + head_r, hy + head_r], 195, 330, fill=hair)
+        else:
+            d.pieslice([x - head_r, hy - head_r, x + head_r, hy + head_r], 210, 345, fill=hair)
+        eye_dx = head_r * 0.34 * facing
+        eye_y = hy + head_r * 0.10
+        blink = (t % 3.7) < 0.13
+        er = head_r * 0.15
+        for off in (eye_dx * 0.4, eye_dx * 1.5):
+            ex = x + off
+            if blink:
+                d.line([ex - er, eye_y, ex + er, eye_y], fill=(15, 18, 26), width=max(1, int(er * 0.7)))
+            else:
+                d.ellipse([ex - er, eye_y - er, ex + er, eye_y + er], fill=(248, 249, 252))
+                pr = er * 0.55
+                px = ex + facing * er * 0.3
+                d.ellipse([px - pr, eye_y - pr, px + pr, eye_y + pr], fill=(15, 18, 26))
+        mouth_x = x + head_r * 0.5 * facing
+        mouth_y = hy + head_r * 0.52
+        if g > 0.05:
+            mh = head_r * (0.07 + 0.09 * abs(math.sin(t * 9)))
+            d.ellipse([mouth_x - head_r * 0.14, mouth_y - mh, mouth_x + head_r * 0.14, mouth_y + mh],
+                      fill=(15, 18, 26))
+        else:
+            d.arc([mouth_x - head_r * 0.2, mouth_y - head_r * 0.18, mouth_x + head_r * 0.2, mouth_y + head_r * 0.14],
+                  20, 160, fill=(15, 18, 26), width=max(1, int(head_r * 0.08)))
 
     def speech_height(self, d, text: str, max_w: float) -> int:
         s = self.ss
