@@ -1802,6 +1802,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/home/{modul_id}", axum::routing::get(list_home))
         .route("/api/media/{modul_id}", axum::routing::get(list_media))
         .route("/api/video/start", axum::routing::post(video_start))
+        .route("/api/image/start", axum::routing::post(image_start))
         .route(
             "/api/home/{modul_id}/{path}",
             axum::routing::get(read_home_file),
@@ -4356,6 +4357,90 @@ async fn video_start(
         "task_id": aufgabe.id,
         "workflow_modul": workflow_modul,
         "message": "Video-Pipeline gestartet. Fortschritt kommt in den Chat, Ergebnis erscheint unter Medien.",
+    }))
+}
+
+/// Bild-Pipeline-Einstieg (analog video_start): erzeugt 1-4 KI-Bilder zu einem
+/// freien Prompt. Laeuft als sichtbarer Scheduler-Task (Transparenz-Prinzip:
+/// nichts startet heimlich), schreibt in die Chat-Medien-Galerie. Auch fuer
+/// externe lokale KI-Agenten als HTTP-Endpoint nutzbar.
+async fn image_start(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let prompt = body["prompt"]
+        .as_str()
+        .or_else(|| body["query"].as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if prompt.len() < 3 {
+        return Json(serde_json::json!({"error": "prompt fehlt (min. 3 Zeichen)"}));
+    }
+    let modul = body["modul"]
+        .as_str()
+        .and_then(safe_id)
+        .unwrap_or_else(|| "chat.deepseekdeepseekv4flash".into());
+    let count = body["count"].as_u64().unwrap_or(1).clamp(1, 4);
+    let aspect = match body["aspect"].as_str().unwrap_or("16:9") {
+        a @ ("16:9" | "1:1" | "9:16" | "4:3" | "3:2") => a.to_string(),
+        _ => "16:9".to_string(),
+    };
+    let no_style = body["no_style"].as_bool().unwrap_or(false);
+    let brand = body["brand"].as_bool().unwrap_or(false);
+
+    // Ausgabe in die Chat-Galerie — das Medien-Panel scannt genau dieses Home.
+    let out_dir = s.pipeline.home_dir(&modul).join("images");
+    let params = serde_json::json!({
+        "prompt": prompt,
+        "count": count,
+        "aspect": aspect,
+        "no_style": no_style,
+        "brand": brand,
+        "out_dir": out_dir.to_string_lossy(),
+        "chat_route": format!("chat:{}", modul),
+    });
+
+    // Laeuft als image_gen-Modul (hat py.image_gen-Permission).
+    let image_modul = {
+        let cfg = s.config.read().await;
+        cfg.module
+            .iter()
+            .find(|m| m.typ == "image_gen")
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| "image_gen.default".into())
+    };
+    let mut aufgabe = crate::types::Aufgabe::direct(
+        "image_gen.request",
+        vec![params.to_string()],
+        &image_modul,
+        &format!("chat:{}", modul),
+        None,
+        None,
+    );
+    // Bildgenerierung + Download dauert laenger als der Direct-Default (30s).
+    aufgabe.timeout_s = 300;
+    aufgabe.retry = 1;
+    aufgabe.zurueck_an = Some(format!("chat:{}", modul));
+    if let Err(e) = s.pipeline.speichern(&aufgabe) {
+        return Json(serde_json::json!({"error": format!("Task anlegen fehlgeschlagen: {e}")}));
+    }
+    s.pipeline.log(
+        &image_modul,
+        Some(&aufgabe.id),
+        LogTyp::Info,
+        &format!(
+            "Bild-Pipeline per UI gestartet ({}× {}): {}",
+            count,
+            aspect,
+            crate::util::safe_truncate(&prompt, 100)
+        ),
+    );
+    Json(serde_json::json!({
+        "started": true,
+        "task_id": aufgabe.id,
+        "count": count,
+        "message": "Bild-Pipeline gestartet. Ergebnis erscheint unter Medien.",
     }))
 }
 

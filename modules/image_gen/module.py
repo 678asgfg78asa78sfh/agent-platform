@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -33,6 +34,23 @@ DEFAULT_STYLE = (
     "lighting, minimalist geometric style, subtle glow, high contrast, "
     "no text, no letters, no words, 16:9 wide composition"
 )
+
+# Frei-Stil fuer generische Bild-Requests (image_gen.request) — kein Marken-Look,
+# nur Qualitaets-Hinweise; der User-Prompt bestimmt den Look.
+FREE_STYLE = (
+    "high quality, sharp focus, detailed, professional lighting, "
+    "no text, no watermark, no letters"
+)
+
+# Komposition/Seitenverhaeltnis als Prompt-Hinweis (xAI Imagine hat keinen
+# size-Parameter — Orientierung wird ueber den Prompt gesteuert).
+ASPECTS = {
+    "16:9": "wide 16:9 horizontal cinematic composition",
+    "1:1": "square 1:1 composition",
+    "9:16": "tall vertical 9:16 portrait composition",
+    "4:3": "4:3 composition",
+    "3:2": "3:2 photographic composition",
+}
 
 MODULE = {
     "name": "image_gen",
@@ -51,8 +69,17 @@ MODULE = {
     },
     "tools": [
         {
+            "name": "image_gen.request",
+            "description": (
+                "Erzeugt 1-4 KI-Bilder zu einem freien Prompt und legt sie in die Medien-Galerie. "
+                "JSON {prompt, count?=1, aspect?=16:9|1:1|9:16|4:3, no_style?, brand?, out_dir?}. "
+                "Default freier Look (brand=true erzwingt den Marken-Stil). Liefert Galerie-Pfade + Kosten."
+            ),
+            "params": ["query_json"],
+        },
+        {
             "name": "image_gen.create",
-            "description": "Erzeugt EIN Bild. JSON {prompt, out_path?, model?, no_style?}. Liefert Pfad (Cache-Hit kostenlos).",
+            "description": "Erzeugt EIN Bild (Marken-Stil, Szenen-Helper). JSON {prompt, out_path?, model?, no_style?}. Liefert Pfad (Cache-Hit kostenlos).",
             "params": ["query_json"],
         },
         {
@@ -73,6 +100,8 @@ def handle_tool(tool_name: str, params: Any, config: dict[str, Any]) -> dict[str
     try:
         if not bool_param(config.get("enabled"), True):
             return fail("image_gen ist deaktiviert.")
+        if tool_name == "image_gen.request":
+            return request(params, config)
         if tool_name == "image_gen.create":
             return create_one(params, config)
         if tool_name == "image_gen.for_assets":
@@ -102,6 +131,90 @@ def create_one(params: Any, config: dict[str, Any]) -> dict[str, Any]:
         path = str(dest)
     return ok({"image": path, "cached": cached, "model": model,
                "cost_usd": 0.0 if cached else float_param(config.get("price_per_image_usd"), 0.02)})
+
+
+def request(params: Any, config: dict[str, Any]) -> dict[str, Any]:
+    """Freier Bild-Request: 1-4 Bilder zu einem Prompt in die Galerie.
+
+    Zielverzeichnis: explizit `out_dir` (vom UI-Task = Chat-Galerie) ODER
+    `<home_dir>/images` (Modul-Home, das die Medien-Galerie scannt). Wird
+    direkt vom Chat-LLM ODER ueber POST /api/image/start aufgerufen.
+    """
+    payload = parse_payload(params)
+    prompt = str(payload.get("prompt") or payload.get("query") or "").strip()
+    if not prompt:
+        return fail('prompt fehlt. Beispiel: {"prompt":"a cozy reading nook at golden hour"}')
+
+    cap = int_param(config.get("max_images_per_call"), 10, 1, 50)
+    count = int_param(payload.get("count"), 1, 1, min(4, cap))
+    no_style = bool_param(payload.get("no_style"), False)
+    brand = bool_param(payload.get("brand"), False)
+    aspect = str(payload.get("aspect") or "16:9").strip()
+    comp = ASPECTS.get(aspect, ASPECTS["16:9"])
+    model = str(payload.get("model") or config.get("model") or "grok-imagine-image")
+
+    out_dir = resolve_path(str(payload.get("out_dir") or ""))
+    if out_dir is None:
+        home = str(config.get("home_dir") or "").strip()
+        base = Path(home) if home else (ROOT / "agent-data")
+        out_dir = base / "images"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stil: brand=Marken-Look, sonst freier Look; in beiden Faellen die
+    # gewuenschte Komposition. no_style schaltet jeden Stil ab.
+    if no_style:
+        style: str | None = ""
+    else:
+        base_style = str(config.get("style_suffix") or DEFAULT_STYLE) if brand else FREE_STYLE
+        style = build_style(base_style, comp)
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    slug = slugify(prompt) or "bild"
+    price = float_param(config.get("price_per_image_usd"), 0.02)
+    images: list[str] = []
+    errors: list[str] = []
+    cost = 0.0
+    for i in range(1, count + 1):
+        # Bei count>1 leichte Varianz, damit Cache-Keys UND Bilder differieren.
+        vseed = "" if count == 1 else f" — variation {i}"
+        path, cached, err = generate_cached(prompt + vseed, model, config, no_style, style_override=style)
+        if err:
+            errors.append(f"Bild {i}: {err}")
+            continue
+        name = f"{slug}-{stamp}.png" if count == 1 else f"{slug}-{stamp}-{i}.png"
+        dest = out_dir / name
+        dest.write_bytes(Path(path).read_bytes())
+        images.append(str(dest))
+        if not cached:
+            cost += price
+
+    if not images:
+        detail = (" " + " | ".join(errors[:3])) if errors else ""
+        return fail("Kein Bild erzeugt." + detail)
+
+    meta = {
+        "prompt": prompt, "model": model, "aspect": aspect, "count": len(images),
+        "brand": brand, "no_style": no_style, "created": stamp,
+        "cost_usd": round(cost, 3), "images": [Path(p).name for p in images],
+    }
+    try:
+        (out_dir / f"{slug}-{stamp}.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    gallery = [r for r in (gallery_rel(p, config) for p in images) if r]
+    return ok({
+        "type": "image_gen.request",
+        "prompt": prompt,
+        "aspect": aspect,
+        "count": len(images),
+        "images": images,
+        "gallery": gallery,
+        "out_dir": str(out_dir),
+        "cost_usd": round(cost, 3),
+        "errors": errors[:3],
+    })
 
 
 def for_assets(params: Any, config: dict[str, Any]) -> dict[str, Any]:
@@ -163,8 +276,14 @@ def for_assets(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     })
 
 
-def generate_cached(prompt: str, model: str, config: dict[str, Any], no_style: bool) -> tuple[str, bool, str]:
-    style = "" if no_style else str(config.get("style_suffix") or DEFAULT_STYLE).strip()
+def generate_cached(prompt: str, model: str, config: dict[str, Any], no_style: bool,
+                    style_override: str | None = None) -> tuple[str, bool, str]:
+    if no_style:
+        style = ""
+    elif style_override is not None:
+        style = str(style_override).strip()
+    else:
+        style = str(config.get("style_suffix") or DEFAULT_STYLE).strip()
     full_prompt = (prompt.rstrip(". ") + ". " + style).strip() if style else prompt
     key = hashlib.sha256(f"{model}|{full_prompt}".encode("utf-8")).hexdigest()[:32]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -233,6 +352,32 @@ def status(config: dict[str, Any]) -> dict[str, Any]:
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
+def slugify(text: str, max_len: int = 32) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", str(text).lower()).strip("-")
+    return s[:max_len].rstrip("-")
+
+
+def build_style(base_style: str, comp: str) -> str:
+    """Komposition robust setzen: bestehende 16:9-Phrase aus dem Basis-Stil
+    entfernen und die gewuenschte anhaengen (sonst widersprechen sie sich)."""
+    base = str(base_style or "").strip()
+    base = re.sub(r",?\s*16:9[^,]*composition\.?", "", base, flags=re.IGNORECASE).strip(" ,.")
+    return f"{base}, {comp}" if base else comp
+
+
+def gallery_rel(abs_path: str, config: dict[str, Any]) -> str | None:
+    """Pfad relativ zum Modul-Home (fuer /api/home/<modul>/<rel>-Anzeige).
+    None, wenn das Bild ausserhalb des Home liegt (UI-Task schreibt in fremdes
+    Chat-Home — dann uebernimmt die server-seitige Medien-Galerie die Anzeige)."""
+    home = str(config.get("home_dir") or "").strip()
+    if not home:
+        return None
+    try:
+        return str(Path(abs_path).relative_to(Path(home)))
+    except Exception:
+        return None
+
+
 def parse_payload(params: Any) -> dict[str, Any]:
     if isinstance(params, dict):
         return params

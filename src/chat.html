@@ -195,6 +195,7 @@ body::after {
   <div class="chat-topbar">
     <button class="clear-btn" id="media-btn" title="Medien (Videos/Bilder)" style="font-size:15px;">&#x1F39E;&#xFE0F;</button>
     <button class="clear-btn" id="video-create-btn" title="Video erzeugen (direkte Pipeline)" style="font-size:15px;">&#x1F3AC;</button>
+    <button class="clear-btn" id="image-create-btn" title="Bild erzeugen (KI-Bild)" style="font-size:15px;">&#x1F3A8;</button>
     <div class="agent-avatar" id="agent-avatar">A</div>
     <span class="agent-name" id="agent-name">Agent</span>
     <span class="agent-sub" id="agent-sub"></span>
@@ -813,6 +814,72 @@ function showVideoForm() {
         : ('\u{1F3AC} Video-Pipeline gestartet (Task ' + (d.task_id || '?').slice(0, 8) + '). ' + (d.message || '')));
     }).catch(function(e) {
       btn.disabled = false; btn.textContent = 'Starten';
+      alert('Fehler: ' + e);
+    });
+  });
+}
+
+ge('image-create-btn').addEventListener('click', showImageForm);
+
+function showImageForm() {
+  var html = '<div id="image-form-modal" style="position:fixed;inset:0;z-index:9000;background:rgba(2,2,10,0.92);display:flex;align-items:center;justify-content:center;" onclick="if(event.target===this)this.remove()">'
+    + '<div style="background:var(--bg-surface);border:1px solid var(--border);border-radius:10px;padding:18px;width:min(480px,92vw);display:flex;flex-direction:column;gap:10px;font-family:var(--font);">'
+    + '<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:18px;">&#x1F3A8;</span><span style="color:var(--text-bright);font-size:13px;font-weight:700;letter-spacing:1px;">BILD ERZEUGEN</span></div>'
+    + '<label style="font-size:10px;color:var(--text-dim);">BILD-BESCHREIBUNG (PROMPT)</label>'
+    + '<textarea id="if-prompt" rows="3" placeholder="z.B. Eine gemuetliche Lese-Ecke am Fenster im goldenen Abendlicht, Pflanzen, warme Farben" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-family:var(--font);font-size:12px;resize:vertical;"></textarea>'
+    + '<div style="display:flex;gap:10px;">'
+    + '<div style="flex:1;"><label style="font-size:10px;color:var(--text-dim);">ANZAHL</label>'
+    + '<select id="if-count" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;font-family:var(--font);font-size:12px;">'
+    + '<option value="1" selected>1 Bild</option><option value="2">2 Varianten</option><option value="3">3 Varianten</option><option value="4">4 Varianten</option>'
+    + '</select></div>'
+    + '<div style="flex:1;"><label style="font-size:10px;color:var(--text-dim);">FORMAT</label>'
+    + '<select id="if-aspect" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;font-family:var(--font);font-size:12px;">'
+    + '<option value="16:9" selected>16:9 Quer</option><option value="1:1">1:1 Quadrat</option><option value="9:16">9:16 Hoch</option><option value="4:3">4:3</option>'
+    + '</select></div></div>'
+    + '<div style="display:flex;gap:14px;font-size:11px;color:var(--text);">'
+    + '<label style="display:flex;gap:5px;align-items:center;cursor:pointer;" title="Marken-Look (dunkelblau/gold, flat vector) statt freiem Stil"><input type="checkbox" id="if-brand"> Marken-Stil</label>'
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--text-dim);">Provider: xAI Grok Imagine (~$0.02/Bild). Laeuft als sichtbarer Task im Scheduler, Ergebnis erscheint unter &#x1F39E;&#xFE0F; Medien.</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;">'
+    + '<button onclick="document.getElementById(\'image-form-modal\').remove()" style="background:none;border:1px solid var(--border);color:var(--text-dim);cursor:pointer;border-radius:6px;padding:6px 14px;font-size:11px;font-family:var(--font);">Abbrechen</button>'
+    + '<button id="if-start" style="background:var(--cyan);border:none;color:#04101a;cursor:pointer;border-radius:6px;padding:6px 16px;font-size:11px;font-weight:700;font-family:var(--font);">Erzeugen</button>'
+    + '</div></div></div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+  ge('if-start').addEventListener('click', function() {
+    var prompt = ge('if-prompt').value.trim();
+    if (prompt.length < 3) { ge('if-prompt').style.borderColor = 'var(--red)'; return; }
+    var btn = ge('if-start');
+    btn.disabled = true; btn.textContent = 'erzeugt…';
+    apiFetch('/api/image/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        modul: modulId,
+        prompt: prompt,
+        count: parseInt(ge('if-count').value, 10),
+        aspect: ge('if-aspect').value,
+        brand: ge('if-brand').checked
+      })
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      var m = ge('image-form-modal');
+      if (m) m.remove();
+      if (d.error) {
+        appendMsg('assistant', 'Bild-Start fehlgeschlagen: ' + d.error);
+        return;
+      }
+      appendMsg('assistant', '\u{1F3A8} Bild-Pipeline gestartet (Task ' + (d.task_id || '?').slice(0, 8) + '). ' + (d.message || ''));
+      // Medien-Panel oeffnen und ein paar Mal nachladen, bis die Bilder da sind.
+      var panel = ge('media-panel');
+      if (panel) panel.style.display = 'block';
+      loadMedia();
+      var tries = 0;
+      var iv = setInterval(function() {
+        tries++;
+        loadMedia();
+        if (tries >= 8) clearInterval(iv);
+      }, 4000);
+    }).catch(function(e) {
+      btn.disabled = false; btn.textContent = 'Erzeugen';
       alert('Fehler: ' + e);
     });
   });
