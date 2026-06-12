@@ -2990,22 +2990,22 @@ function renderWorkflowRow(w) {
   var done = (w.status==='success');
   var failed = (w.status==='failed'||w.status==='cancelled'||String(w.stage).indexOf('failed')>=0);
   var col = failed ? 'var(--red)' : (done ? 'var(--green)' : 'var(--cyan)');
-  var statusTxt = failed ? 'FEHLER' : (done ? 'FERTIG' : (w.status==='waiting' ? 'wartet' : 'laeuft') + ' &middot; ' + esc(curLabel));
+  var statusTxt = failed ? 'FEHLER' : (done ? 'FERTIG' : (w.status==='waiting' ? 'wartet' : 'laeuft') + ' &middot; ' + escHtml(curLabel));
   // Stage-Punkte
   var dots = '';
   WF_STAGES.forEach(function(st, i){
     if (st[0]==='repair_assets') return; // optionale Stage nicht als Standard-Punkt
     var reached = done || (stageIdx>=0 && i<=stageIdx);
     var isCur = (stageIdx===i && !done);
-    dots += '<span title="'+esc(st[1])+'" style="width:'+(isCur?'9px':'7px')+';height:'+(isCur?'9px':'7px')+';border-radius:50%;display:inline-block;'
+    dots += '<span title="'+escHtml(st[1])+'" style="width:'+(isCur?'9px':'7px')+';height:'+(isCur?'9px':'7px')+';border-radius:50%;display:inline-block;'
       + 'background:'+(reached?col:'var(--border)')+';'+(isCur?'box-shadow:0 0 6px '+col+';':'')+'"></span>';
   });
   var spin = (!done && !failed) ? '<span style="display:inline-block;width:10px;height:10px;border:2px solid var(--border);border-top-color:'+col+';border-radius:50%;animation:spin 0.9s linear infinite;"></span>' : '';
-  var actions = w.video ? '<button class="btn btn-sm" onclick="previewWfVideo(\''+esc(w.id)+'\')" style="font-size:10px;padding:2px 8px;">&#x25B6; Video</button>' : '';
+  var actions = w.video ? '<button class="btn btn-sm" onclick="previewWfVideo(\''+escHtml(w.id)+'\')" style="font-size:10px;padding:2px 8px;">&#x25B6; Video</button>' : '';
   return '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;margin-bottom:4px;background:var(--bg-surface);border:1px solid var(--border);border-left:3px solid '+col+';border-radius:6px;">'
     + spin
-    + '<div style="flex:1;min-width:0;"><div style="font-size:12px;color:var(--text-bright);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(w.title)+'</div>'
-    + '<div style="font-size:9px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(w.last_event||'')+'</div></div>'
+    + '<div style="flex:1;min-width:0;"><div style="font-size:12px;color:var(--text-bright);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escHtml(w.title)+'</div>'
+    + '<div style="font-size:9px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+escHtml(w.last_event||'')+'</div></div>'
     + '<div style="display:flex;gap:3px;align-items:center;">'+dots+'</div>'
     + '<span style="font-size:10px;font-weight:700;color:'+col+';white-space:nowrap;min-width:64px;text-align:right;">'+statusTxt+'</span>'
     + actions
