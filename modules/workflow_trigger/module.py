@@ -663,6 +663,8 @@ def start_factcheck_task(wf: dict[str, Any], config: dict[str, Any], assets: dic
         "assets_path": assets_path,
         "script_path": script_path,
         "source_notes": assets.get("source_notes") or [],
+        "deepdive_report_path": str(artifacts.get("deepdive_report") or ""),
+        "deepdive_context_path": str(artifacts.get("deepdive_context") or ""),
         "max_claims": int_param(wf.get("options", {}).get("fact_check_max_claims"), cfg_int(config, "fact_check_max_claims", 14), 1, 60),
         "min_score": int_param(wf.get("options", {}).get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100),
     }

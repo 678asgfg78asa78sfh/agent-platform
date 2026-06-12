@@ -178,6 +178,20 @@ def factcheck_video_assets(params: Any, config: dict[str, Any]) -> dict[str, Any
     source_notes = payload.get("source_notes")
     if source_notes is None and assets:
         source_notes = assets.get("source_notes")
+    # Primaerquelle: der DeepDive-Report (gecrawlte Belege). Claims, die hier
+    # gut abgedeckt sind, sind durch die eigene Recherche gestuetzt — die
+    # Websuche ist nur SEKUNDAERE Bestaetigung. Ohne das wuerden Nischen-Themen
+    # (z.B. ein einzelnes GitHub-Repo) blocken, weil DuckDuckGo sie nicht kennt.
+    primary = ""
+    for key in ("deepdive_report_path", "deepdive_context_path", "report_path"):
+        path = text_value(payload.get(key))
+        if path and Path(path).expanduser().exists():
+            try:
+                primary += Path(path).expanduser().read_text(encoding="utf-8", errors="replace") + "\n"
+            except Exception:
+                pass
+    payload = dict(payload)
+    payload["_primary_source"] = primary
     return run_factcheck(script, title, query, source_notes, payload, config)
 
 
@@ -208,14 +222,38 @@ def run_factcheck(
     fail_on_conflict = bool_param(payload.get("fail_on_conflict"), bool_param(config.get("fail_on_conflict"), True))
     fail_if_search_broken = bool_param(payload.get("fail_if_search_broken"), bool_param(config.get("fail_if_search_broken"), True))
 
+    primary_source = normalize_word(str(payload.get("_primary_source") or ""))
     claims = extract_claims(script, max_claims)
     checked = []
     search_errors = []
     for claim in claims:
+        # Primaerquellen-Check ZUERST: ist der Claim durch den DeepDive-Report
+        # gedeckt (hohe Term-Abdeckung + ggf. Zahlen drin), gilt er als
+        # recherche-gestuetzt und wird nicht geblockt.
+        prim = primary_coverage(claim, primary_source) if primary_source else (0.0, False)
+        if prim[0] >= 0.6 and (not claim.get("numbers") or prim[1]):
+            verdict = dict(claim)
+            verdict.update({
+                "search_query": "primary:deepdive_report",
+                "decision": "verified",
+                "severity": "low",
+                "reason": "Durch den DeepDive-Report (Primaerquelle) gestuetzt.",
+                "primary_coverage": round(prim[0], 3),
+                "suggested_rewrite": "",
+                "evidence": [],
+            })
+            checked.append(verdict)
+            continue
         search_query = build_query(claim["claim"], title or query)
         try:
             evidence = duckduckgo_search(search_query, max_results, timeout_s)
             verdict = evaluate_claim(claim, search_query, evidence)
+            # Teil-Deckung in der Primaerquelle mildert ein Web-Negativ ab:
+            # was die eigene Recherche teilweise stuetzt, darf hoechstens warnen.
+            if prim[0] >= 0.4 and verdict.get("decision") in {"unsupported", "unknown"}:
+                verdict["decision"] = "needs_softening"
+                verdict["severity"] = "low"
+                verdict["reason"] = (verdict.get("reason", "") + " | Teilweise durch DeepDive-Report gestuetzt.").strip(" |")
             # Zweite Chance mit EN-Fallback-Query: deutsche Komposita finden
             # englische Quellen nicht — erst wenn BEIDE Suchen nichts stuetzen,
             # darf der Claim blocken (stabilere Verdicts ueber Runden).
@@ -676,6 +714,22 @@ def coverage(terms: list[str], text: str) -> float:
     hay = normalize_word(text)
     hits = sum(1 for term in terms if term in hay)
     return hits / max(1, len(terms))
+
+
+def primary_coverage(claim: dict[str, Any], primary_norm: str) -> tuple[float, bool]:
+    """Wie gut ist der Claim durch die Primaerquelle (DeepDive-Report) gedeckt?
+    Liefert (term_ratio, alle_zahlen_belegt). primary_norm ist bereits
+    normalize_word-vorverarbeitet."""
+    if not primary_norm:
+        return (0.0, False)
+    terms = key_terms(claim["claim"], limit=18)
+    if not terms:
+        return (0.0, False)
+    hits = sum(1 for t in terms if t in primary_norm)
+    ratio = hits / len(terms)
+    nums = claim.get("numbers") or []
+    nums_ok = all(normalize_word(str(n)) in primary_norm for n in nums) if nums else True
+    return (ratio, nums_ok)
 
 
 def extract_numbers(text: str) -> list[str]:
