@@ -233,8 +233,36 @@ impl Pipeline {
             if aufgabe.status != AufgabeStatus::Gestartet {
                 continue;
             }
+            // Tasks mit verbleibenden Retries werden nach einem Neustart NEU
+            // EINGEREIHT statt gekillt — eine laufende Pipeline (Video-DeepDive
+            // etc.) ueberlebt damit einen Server-Neustart, statt komplett zu
+            // sterben. Seiteneffekt-Tools sind idempotency-gecacht, laufen also
+            // nicht teuer doppelt. Nur erschoepfte Retries failen hart.
+            if aufgabe.retry_count < aufgabe.retry {
+                aufgabe.retry_count += 1;
+                aufgabe.gestartet = None;
+                if let Err(e) = self.verschieben(&mut aufgabe, AufgabeStatus::Erstellt) {
+                    self.log(
+                        "startup",
+                        Some(&aufgabe.id),
+                        LogTyp::Error,
+                        &format!("Restart-Requeue failed: {}", e),
+                    );
+                } else {
+                    self.log(
+                        "startup",
+                        Some(&aufgabe.id),
+                        LogTyp::Warning,
+                        &format!(
+                            "Aufgabe nach Neustart neu eingereiht statt gekillt (Retry {}/{})",
+                            aufgabe.retry_count, aufgabe.retry
+                        ),
+                    );
+                }
+                continue;
+            }
             aufgabe.ergebnis = Some(
-                "FAILED: Server-Neustart hat die laufende Aufgabe unterbrochen. Mit Restart erneut starten."
+                "FAILED: Server-Neustart hat die laufende Aufgabe unterbrochen (Retries erschoepft)."
                     .into(),
             );
             match self.verschieben(&mut aufgabe, AufgabeStatus::Failed) {
@@ -647,6 +675,42 @@ mod tests {
                 .unwrap_or("")
                 .contains("Server-Neustart")
         );
+    }
+
+    #[test]
+    fn test_restart_requeues_task_with_retries_left() {
+        let (_dir, pipeline) = tmp_pipeline();
+        let mut aufgabe = Aufgabe::neu("video.workflow", "deepdive", "sofort", "workflow_trigger");
+        aufgabe.retry = 2; // Workflow-Tasks bekommen Retries
+        pipeline.speichern(&aufgabe).unwrap();
+        pipeline
+            .verschieben(&mut aufgabe, AufgabeStatus::Gestartet)
+            .unwrap();
+
+        // Neustart: Task hat Retries -> neu eingereiht, NICHT gefailt
+        let failed = pipeline.fail_started_after_restart();
+        assert_eq!(failed, 0, "Task mit Retries darf nicht failen");
+        assert_eq!(pipeline.gestartet().len(), 0);
+        let loaded = pipeline.laden_by_id(&aufgabe.id).unwrap().unwrap();
+        assert_eq!(loaded.status, AufgabeStatus::Erstellt, "muss neu eingereiht sein");
+        assert_eq!(loaded.retry_count, 1);
+
+        // Zweiter Neustart waehrend wieder gestartet: retry_count 1 -> 2 (noch ok)
+        let mut again = loaded;
+        pipeline.verschieben(&mut again, AufgabeStatus::Gestartet).unwrap();
+        pipeline.fail_started_after_restart();
+        let l2 = pipeline.laden_by_id(&aufgabe.id).unwrap().unwrap();
+        assert_eq!(l2.status, AufgabeStatus::Erstellt);
+        assert_eq!(l2.retry_count, 2);
+
+        // Dritter: retry_count 2 == retry 2 -> jetzt failt es hart
+        let mut again2 = l2;
+        pipeline.verschieben(&mut again2, AufgabeStatus::Gestartet).unwrap();
+        let failed3 = pipeline.fail_started_after_restart();
+        assert_eq!(failed3, 1);
+        let l3 = pipeline.laden_by_id(&aufgabe.id).unwrap().unwrap();
+        assert_eq!(l3.status, AufgabeStatus::Failed);
+        assert!(l3.ergebnis.as_deref().unwrap_or("").contains("erschoepft"));
     }
 
     #[test]
