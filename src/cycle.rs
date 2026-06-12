@@ -2549,6 +2549,46 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn e2e_script_exec_runs_tool_chain_in_one_round() {
+        // PTC: EIN script.exec-Call schreibt zwei Dateien via call() und
+        // aggregiert — Zwischenergebnisse erreichen das LLM nie, nur stdout.
+        let env = e2e_env("http://127.0.0.1:1", "fs.ptc");
+        env.config.write().await.module[0].berechtigungen = vec!["script.exec".into()];
+        let home = env.pipeline.home_dir("fs.ptc");
+        let code = format!(
+            "a = call(\"files.write\", \"{h}/p1.txt\", \"AAA\")\n\
+             b = call(\"files.write\", \"{h}/p2.txt\", \"BBB\")\n\
+             listing = call(\"files.list\", \"{h}\")\n\
+             print(\"GESCHRIEBEN:\", \"p1.txt\" in listing and \"p2.txt\" in listing)",
+            h = home.to_string_lossy()
+        );
+        let round1 = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "",
+                "tool_calls": [tool_call_json("call_s", "script.exec",
+                    serde_json::json!({"python_code": code}))]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+        let round2 = serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "Pipeline fertig."}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 4}
+        });
+        let (url, received) = spawn_mock_openai(vec![round1, round2]).await;
+        env.config.write().await.llm_backends[0].url = url;
+
+        let aufgabe = run_exec_llm(&env, "fs.ptc", "Schreibe zwei Dateien per Skript").await;
+        assert_eq!(aufgabe.status, AufgabeStatus::Success);
+        assert_eq!(std::fs::read_to_string(home.join("p1.txt")).unwrap(), "AAA");
+        assert_eq!(std::fs::read_to_string(home.join("p2.txt")).unwrap(), "BBB");
+        let reqs = received.lock().await;
+        assert_eq!(reqs.len(), 2, "drei Tool-Aktionen, aber nur EINE Tool-Runde");
+        let msgs = reqs[1]["messages"].as_array().unwrap();
+        let tool_msg = msgs.iter().find(|m| m["role"] == "tool").unwrap();
+        let content = tool_msg["content"].as_str().unwrap();
+        assert!(content.contains("GESCHRIEBEN: True"), "stdout fehlt: {}", content);
+        assert!(content.contains("3 tool-calls"), "tool-call-zaehler fehlt: {}", content);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn e2e_tool_round_limit_fails_task() {
         // Modell will in jeder Runde ein Tool — Limit 1 muss den Task nach der
         // ersten Runde mit klarer Fehlermeldung beenden.

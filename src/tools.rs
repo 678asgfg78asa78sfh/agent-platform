@@ -172,6 +172,21 @@ pub fn tools_for_module(modul: &ModulConfig) -> Vec<ToolDef> {
         }
     }
 
+    // Programmatic Tool Calling (Hermes-Adoption): NUR per expliziter
+    // Berechtigung, nie typ-implizit — das Skript darf beliebiges Python.
+    if modul.persistent
+        && modul
+            .berechtigungen
+            .iter()
+            .any(|p| p == "script" || p == "script.exec")
+    {
+        tools.push(ToolDef {
+            name: "script.exec".into(),
+            description: "Fuehrt ein Python-Skript aus, das deine Agent-Tools direkt aufrufen kann: result = call(\"tool.name\", \"param1\", ...) liefert den Tool-Output als String. Nutze das fuer MEHRSTUFIGE Ketten (suchen, mehrere Seiten holen, filtern, aggregieren) in EINEM Schritt — Zwischenergebnisse bleiben im Skript, nur print()-Ausgaben kommen zurueck. Maximal 25 Tool-Calls pro Skript.".into(),
+            params: vec!["python_code".into()],
+        });
+    }
+
     tools
 }
 
@@ -1634,6 +1649,210 @@ fn args_touch_sensitive_paths(args: &[&str]) -> bool {
 /// Effect-Kategorie und wird sauber geschützt. Das vorherige Hardcoded-Liste-
 /// Modell hatte eine Lücke: Python-Tool mail.send wurde weder dedupliziert
 /// noch auditiert (OpenAI-Finding Run SQLite-4).
+const SCRIPT_TOOL_MARKER: &str = "\u{1}TOOL\u{1}";
+const SCRIPT_MAX_TOOL_CALLS: usize = 25;
+const SCRIPT_TIMEOUT_S: u64 = 180;
+const SCRIPT_OUTPUT_CAP: usize = 24_000;
+
+/// Programmatic Tool Calling (PTC, Hermes-Adoption): fuehrt LLM-generiertes
+/// Python aus; das Skript ruft Agent-Tools ueber `call(name, *params)` auf.
+/// Protokoll: das Skript schreibt eine Marker-Zeile auf stdout und liest die
+/// Antwort als JSON-Zeile von stdin — Zwischenergebnisse landen NIE im
+/// LLM-Kontext, nur die print()-Ausgaben des Skripts kommen zurueck.
+/// Schutz: expliziter Permission-Gate (Aufrufer), Tool-Whitelist = die Tools
+/// des Moduls (ohne script.exec selbst), Call-Cap, Gesamt-Timeout, Output-Cap.
+#[allow(clippy::too_many_arguments)]
+async fn exec_llm_script(
+    code: &str,
+    modul_id: &str,
+    pipeline: &Pipeline,
+    llm: &crate::llm::LlmRouter,
+    py_modules: &[crate::loader::PyModuleMeta],
+    py_pool: &crate::loader::PyProcessPool,
+    config_snapshot: &AgentConfig,
+    task_id: Option<&str>,
+) -> (bool, String) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    if code.trim().is_empty() {
+        return (false, "python_code fehlt.".into());
+    }
+    let Some(modul) = config_snapshot
+        .module
+        .iter()
+        .find(|m| m.id == modul_id || m.name == modul_id)
+    else {
+        return (false, format!("Modul '{}' nicht gefunden", modul_id));
+    };
+    // Whitelist: alle Tools, die das Modul regulaer haette — ohne Rekursion.
+    let allowed: std::collections::HashSet<String> = tools_as_openai_json(modul, py_modules)
+        .iter()
+        .filter_map(|t| {
+            t.pointer("/function/name")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .filter(|n| n != "script.exec")
+        .collect();
+
+    let home = pipeline.home_dir(&modul.id);
+    let run_dir = home.join(".script_runs");
+    let _ = std::fs::create_dir_all(&run_dir);
+    let stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let script_path = run_dir.join(format!("script_{}_{}.py", stamp, &uuid::Uuid::new_v4().to_string()[..8]));
+    let stub = concat!(
+        "import sys, json\n",
+        "MARKER = chr(1) + \"TOOL\" + chr(1)\n",
+        "def call(tool, *params):\n",
+        "    sys.stdout.write(MARKER + json.dumps({\"tool\": str(tool), \"params\": [str(p) for p in params]}, ensure_ascii=False) + \"\\n\")\n",
+        "    sys.stdout.flush()\n",
+        "    line = sys.stdin.readline()\n",
+        "    if not line:\n",
+        "        raise RuntimeError(\"agent closed tool channel\")\n",
+        "    resp = json.loads(line)\n",
+        "    if not resp.get(\"ok\"):\n",
+        "        raise RuntimeError(str(resp.get(\"data\", \"tool failed\")))\n",
+        "    return str(resp.get(\"data\", \"\"))\n",
+        "\n",
+    );
+    let runner = format!("{stub}{code}\n");
+    if std::fs::write(&script_path, &runner).is_err() {
+        return (false, "Skript konnte nicht geschrieben werden.".into());
+    }
+
+    let mut child = match tokio::process::Command::new("python3")
+        .arg(&script_path)
+        .current_dir(&home)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return (false, format!("python3 start fehlgeschlagen: {e}")),
+    };
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut lines = BufReader::new(stdout).lines();
+
+    let mut output = String::new();
+    let mut tool_calls = 0usize;
+    let started = std::time::Instant::now();
+    let deadline = std::time::Duration::from_secs(SCRIPT_TIMEOUT_S);
+
+    loop {
+        let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            let _ = child.kill().await;
+            return (
+                false,
+                format!(
+                    "SCRIPT_TIMEOUT nach {}s. Bisherige Ausgabe:\n{}",
+                    SCRIPT_TIMEOUT_S,
+                    crate::util::safe_truncate(&output, 2000)
+                ),
+            );
+        }
+        let line = match tokio::time::timeout(remaining, lines.next_line()).await {
+            Err(_) => continue, // Timeout-Check oben greift
+            Ok(Err(e)) => {
+                let _ = child.kill().await;
+                return (false, format!("Skript-IO-Fehler: {e}"));
+            }
+            Ok(Ok(None)) => break, // stdout zu — Prozess fertig
+            Ok(Ok(Some(l))) => l,
+        };
+        if let Some(payload) = line.strip_prefix(SCRIPT_TOOL_MARKER) {
+            tool_calls += 1;
+            let response = if tool_calls > SCRIPT_MAX_TOOL_CALLS {
+                serde_json::json!({"ok": false, "data": format!("Tool-Call-Limit ({}) erreicht.", SCRIPT_MAX_TOOL_CALLS)})
+            } else {
+                match serde_json::from_str::<serde_json::Value>(payload) {
+                    Ok(req) => {
+                        let name = req["tool"].as_str().unwrap_or("").to_string();
+                        let call_params: Vec<String> = req["params"]
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if !allowed.contains(&name) {
+                            serde_json::json!({"ok": false, "data": format!("Tool '{}' ist fuer dieses Modul nicht erlaubt.", name)})
+                        } else {
+                            let sub_task_id = task_id.map(|t| format!("{}#script{}", t, tool_calls));
+                            let (ok, data) = Box::pin(exec_tool_unified(
+                                &name,
+                                &call_params,
+                                modul_id,
+                                sub_task_id.as_deref(),
+                                pipeline,
+                                llm,
+                                py_modules,
+                                py_pool,
+                                config_snapshot,
+                                None,
+                            ))
+                            .await;
+                            pipeline.log(
+                                &modul.name,
+                                task_id,
+                                if ok { crate::types::LogTyp::Success } else { crate::types::LogTyp::Failed },
+                                &format!(
+                                    "script.exec → {}({}) = {}",
+                                    name,
+                                    crate::util::safe_truncate(&call_params.join(", "), 80),
+                                    crate::util::safe_truncate(&data, 80)
+                                ),
+                            );
+                            serde_json::json!({"ok": ok, "data": data})
+                        }
+                    }
+                    Err(e) => serde_json::json!({"ok": false, "data": format!("tool-request parse: {e}")}),
+                }
+            };
+            let mut line_out = response.to_string();
+            line_out.push('\n');
+            if stdin.write_all(line_out.as_bytes()).await.is_err() {
+                break;
+            }
+            let _ = stdin.flush().await;
+        } else if output.len() < SCRIPT_OUTPUT_CAP {
+            output.push_str(&line);
+            output.push('\n');
+        }
+    }
+
+    let status = match tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await {
+        Ok(Ok(s)) => s,
+        _ => {
+            let _ = child.kill().await;
+            return (false, format!("Skript haengt nach stdout-Ende.\n{}", crate::util::safe_truncate(&output, 2000)));
+        }
+    };
+    let mut stderr_tail = String::new();
+    if let Some(mut se) = child.stderr.take() {
+        use tokio::io::AsyncReadExt;
+        let _ = se.read_to_string(&mut stderr_tail).await;
+    }
+    let _ = std::fs::remove_file(&script_path);
+    let ok = status.success();
+    let mut result = format!(
+        "SCRIPT {} (exit {}, {} tool-calls, {:.1}s)\n{}",
+        if ok { "OK" } else { "FEHLGESCHLAGEN" },
+        status.code().unwrap_or(-1),
+        tool_calls,
+        started.elapsed().as_secs_f32(),
+        crate::util::safe_truncate(&output, SCRIPT_OUTPUT_CAP)
+    );
+    if !ok && !stderr_tail.trim().is_empty() {
+        result.push_str("\nSTDERR:\n");
+        result.push_str(crate::util::safe_truncate(&stderr_tail, 3000));
+    }
+    (ok, result)
+}
+
 fn tool_has_side_effect(tool_name: &str) -> bool {
     const PURE_READS: &[&str] = &[
         "files.read",
@@ -1857,6 +2076,40 @@ async fn exec_tool_unified_inner(
     task_id: Option<&str>,
     args: Option<&serde_json::Value>,
 ) -> (bool, String) {
+    // Programmatic Tool Calling: eigener Pfad mit Subprozess + Tool-RPC.
+    // Permission wird hier explizit geprueft (nur persistente Module mit
+    // 'script'/'script.exec' in den Berechtigungen).
+    if tool_name == "script.exec" {
+        let allowed = config_snapshot
+            .module
+            .iter()
+            .find(|m| m.id == modul_id || m.name == modul_id)
+            .map(|m| {
+                m.persistent
+                    && m.berechtigungen
+                        .iter()
+                        .any(|p| p == "script" || p == "script.exec")
+            })
+            .unwrap_or(false);
+        if !allowed {
+            return (
+                false,
+                "DENIED: script.exec braucht die explizite Berechtigung 'script' (persistentes Modul).".into(),
+            );
+        }
+        let code = params.first().map(|s| s.as_str()).unwrap_or("");
+        return exec_llm_script(
+            code,
+            modul_id,
+            pipeline,
+            llm,
+            py_modules,
+            py_pool,
+            config_snapshot,
+            task_id,
+        )
+        .await;
+    }
     // For RAG tools, pre-compute embedding if configured
     if tool_name == "rag.speichern" || tool_name == "rag.suchen" {
         let pool = config_snapshot
@@ -2290,6 +2543,9 @@ fn has_permission(modul: &ModulConfig, tool_name: &str) -> bool {
             (typ_grants && modul.typ == "websearch") || perms.iter().any(|p| p == "websearch")
         }
         "shell.exec" => (typ_grants && modul.typ == "shell") || perms.iter().any(|p| p == "shell"),
+        "script.exec" => {
+            modul.persistent && perms.iter().any(|p| p == "script" || p == "script.exec")
+        }
         "notify.send" => {
             (typ_grants && modul.typ == "notify") || perms.iter().any(|p| p == "notify")
         }
