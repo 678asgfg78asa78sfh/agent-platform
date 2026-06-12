@@ -522,7 +522,7 @@ def normalize_scenes(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not value:
         raise ValueError("scenes muss eine nicht-leere Liste sein.")
     scenes = []
-    typed_keys = ("type", "stat", "bars", "people", "figures", "timeline", "quote", "compare", "narration")
+    typed_keys = ("type", "stat", "bars", "people", "figures", "timeline", "quote", "compare", "narration", "image_prompt", "image")
     for idx, scene in enumerate(value, start=1):
         if not isinstance(scene, dict):
             raise ValueError(f"Szene {idx} ist kein Objekt.")

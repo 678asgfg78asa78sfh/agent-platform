@@ -36,6 +36,8 @@ MODULE = {
         "tick_limit": {"type": "number", "label": "Workflows pro Tick", "default": 12},
         "auto_render": {"type": "bool", "label": "Nach Normalisierung rendern", "default": True},
         "video_style": {"type": "select", "label": "Video-Renderer", "default": "infographic", "options": ["infographic", "mapled"]},
+        "scene_images": {"type": "bool", "label": "KI-Szenenbilder generieren", "default": True},
+        "default_image_modul_id": {"type": "string", "label": "Image-Gen Modul", "default": "image_gen.default"},
         "auto_shorts": {"type": "bool", "label": "Nach Render Shorts schneiden", "default": False},
         "fact_check": {"type": "bool", "label": "Vor TTS Faktencheck ausfuehren", "default": True},
         "fact_check_min_score": {"type": "number", "label": "Faktencheck Mindestscore", "default": 72},
@@ -519,6 +521,8 @@ def process_workflow(wf: dict[str, Any], config: dict[str, Any]) -> None:
         advance_review_assets(wf, config)
     elif stage == "repair_assets":
         advance_repair_assets(wf, config)
+    elif stage == "generate_visuals":
+        advance_generate_visuals(wf, config)
     elif stage == "synthesize_audio":
         advance_synthesize_audio(wf, config)
     elif stage == "render_video":
@@ -781,12 +785,89 @@ def factcheck_summary(report: dict[str, Any]) -> str:
     return "; ".join(parts)
 
 
+def visuals_enabled(wf: dict[str, Any], config: dict[str, Any]) -> bool:
+    options = wf.get("options") if isinstance(wf.get("options"), dict) else {}
+    return bool_param(options.get("scene_images"), cfg_bool(config, "scene_images", True))
+
+
+def start_visuals_task(wf: dict[str, Any], config: dict[str, Any]) -> None:
+    artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
+    assets_path = artifacts.get("video_assets") or ""
+    modul = str(wf.get("image_modul_id") or config.get("default_image_modul_id") or "image_gen.default")
+    params = {
+        "assets_json_path": str(assets_path),
+        "out_dir": str(Path(wf["workflow_dir"]) / "scene_images"),
+    }
+    task = enqueue_direct_task(
+        config,
+        modul,
+        "image_gen.for_assets",
+        [json.dumps(params, ensure_ascii=False)],
+        created_by="workflow_trigger",
+        timeout_s=cfg_int(config, "default_task_timeout_s", 3600, 60, 14400),
+        back_route=None,
+        parent_id=wf.get("parent_task_id") or None,
+        workflow_id=wf.get("id"),
+        workflow_stage="generate_visuals",
+    )
+    wf.setdefault("tasks", {})["generate_visuals"] = task
+    wf["stage"] = "generate_visuals"
+    wf["status"] = "running"
+    wf["updated_at"] = now_iso()
+    wf.setdefault("events", []).append(event("visuals_started", f"Szenenbilder werden generiert: {task}"))
+
+
+def advance_generate_visuals(wf: dict[str, Any], config: dict[str, Any]) -> None:
+    task_id = wf.get("tasks", {}).get("generate_visuals")
+    task = load_task(config, task_id)
+    if not task:
+        wf.setdefault("events", []).append(event("visuals_skipped", f"Bilder-Task fehlt ({task_id}) — weiter ohne Szenenbilder."))
+        proceed_to_audio_or_render(wf, config)
+        return
+    if task["status"] in {"erstellt", "gestartet"}:
+        wf["status"] = "waiting"
+        wf["updated_at"] = now_iso()
+        return
+    # Bilder sind Enhancement, nie Blocker: bei Fehlern einfach weiter.
+    if task["status"] == "success":
+        result = parse_jsonish_result(task.get("result") or "")
+        wf.setdefault("artifacts", {})["scene_images"] = str(Path(wf["workflow_dir"]) / "scene_images")
+        wf.setdefault("events", []).append(event(
+            "visuals_done",
+            f"Szenenbilder: {result.get('generated', '?')} neu, {result.get('cached_hits', 0)} aus Cache, ~${result.get('cost_usd_estimate', 0)}",
+        ))
+    else:
+        wf.setdefault("events", []).append(event("visuals_failed", f"Bilder-Task {task['status']} — weiter ohne Szenenbilder."))
+    proceed_to_audio_or_render(wf, config)
+
+
 def proceed_after_assets_approved(wf: dict[str, Any], config: dict[str, Any], assets: dict[str, Any] | None = None) -> None:
     artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
     if assets is None:
         assets = read_json_file(artifacts.get("video_assets"), {})
     if not isinstance(assets, dict) or not assets.get("voice_script"):
         mark_failed(wf, "Freigabe kann nicht fortgesetzt werden: video_assets/voice_script fehlen.")
+        return
+
+    # Szenenbilder VOR TTS/Render generieren (Enhancement; Fehler blocken nie).
+    if (
+        visuals_enabled(wf, config)
+        and wf.get("options", {}).get("auto_render", True)
+        and not wf.get("tasks", {}).get("generate_visuals")
+        and any(isinstance(s, dict) and s.get("image_prompt") for s in assets.get("scenes") or [])
+    ):
+        start_visuals_task(wf, config)
+        return
+
+    proceed_to_audio_or_render(wf, config, assets)
+
+
+def proceed_to_audio_or_render(wf: dict[str, Any], config: dict[str, Any], assets: dict[str, Any] | None = None) -> None:
+    artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
+    if assets is None:
+        assets = read_json_file(artifacts.get("video_assets"), {})
+    if not isinstance(assets, dict) or not assets.get("voice_script"):
+        mark_failed(wf, "Fortsetzung fehlgeschlagen: video_assets/voice_script fehlen.")
         return
 
     if not wf.get("options", {}).get("auto_render", True):
@@ -1485,6 +1566,7 @@ Wichtig:
 	  * list    — 3-4 Kernpunkte als bullets, wenn nichts anderes passt.
 	  * outro   — Schluss-Szene (letzte Szene, immer).
 	- Mische die Typen: maximal EINE map-Szene pro Video, nie zwei gleiche Typen direkt hintereinander. Zahlen in stat/bars/people NUR wenn sie im Report belegt sind — sonst anderen Typ waehlen.
+	- Jede Szene AUSSER map bekommt zusaetzlich "image_prompt": eine konkrete englische Bildbeschreibung des Szenenmotivs fuer einen Illustrations-Generator (Motiv + Komposition, KEIN Stil, KEIN Text im Bild, keine echten Personennamen — Politiker als "two world leaders" o.ae. umschreiben). Beispiel: "two giant hands pulling a glowing semiconductor chip in opposite directions".
 	- route ist NUR bei type=map Pflicht (2+ Stationen). Pro Station genau EIN Name, z.B. "USA", "Russland", "Frankreich"; keine Slash-Kombinationen. Abstrakte Stationen wie "Global", "Europe", "Asia", "Middle East" sind erlaubt.
 	- Baue das Sprecher-Skript in klaren, in sich geschlossenen Sinnpassagen auf. Jede Szene soll als eigenstaendige Passage funktionieren, damit daraus sauber geschnitten werden kann.
 	- Shorts sind NICHT einfach Ausschnitte. Markiere nur Passagen als Short, die allein verstaendlich sind: starker Hook, ein klarer Gedanke, keine Abhaengigkeit vom vorherigen Absatz, keine langen Quellenlisten.
@@ -1502,7 +1584,7 @@ Erwartetes JSON:
   "duration_s": {duration},
   "scenes": [
     {{"type": "hook", "title": "Videotitel", "subtitle": "Unterzeile", "weight": 0.7, "color": "gold"}},
-    {{"type": "stat", "title": "Kapitel", "subtitle": "Einordnung", "stat": {{"value": 92, "unit": "Prozent", "label": "wofuer die Zahl steht", "max": 100}}, "bullets": ["Kontext"], "weight": 1.0, "color": "gold"}},
+    {{"type": "stat", "title": "Kapitel", "subtitle": "Einordnung", "stat": {{"value": 92, "unit": "Prozent", "label": "wofuer die Zahl steht", "max": 100}}, "bullets": ["Kontext"], "image_prompt": "a single glowing microchip on a pedestal, spotlight from above", "weight": 1.0, "color": "gold"}},
     {{"type": "figures", "title": "Akteure", "figures": {{"left": {{"label": "USA", "say": "Kernposition", "color": "blue"}}, "right": {{"label": "China", "say": "Kernposition", "color": "red"}}}}, "weight": 1.1, "color": "gold"}},
     {{"type": "map", "title": "Kausalkette", "route": ["USA", "China", "Japan"], "bullets": ["kurzer Punkt"], "weight": 1.0, "color": "gold"}},
     {{"type": "outro", "title": "Videotitel", "subtitle": "Quellen im Begleittext", "weight": 0.5, "color": "gold"}}
@@ -2221,7 +2303,7 @@ def normalize_assets(assets: dict[str, Any], wf: dict[str, Any]) -> dict[str, An
         scenes = []
     normalized_scenes = []
     colors = ["gold", "blue", "teal", "red", "purple", "green"]
-    typed_keys = ("type", "stat", "bars", "people", "figures", "timeline", "quote", "compare", "narration")
+    typed_keys = ("type", "stat", "bars", "people", "figures", "timeline", "quote", "compare", "narration", "image_prompt", "image")
     for idx, scene in enumerate(scenes[:18], start=1):
         if not isinstance(scene, dict):
             continue

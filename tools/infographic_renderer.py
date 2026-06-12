@@ -195,6 +195,7 @@ class Scene:
         self.accent = ACCENTS.get(str(raw.get("color") or "").lower(), ACCENTS[DEFAULT_ACCENT])
         self.type = self.resolve_type(str(raw.get("type") or "").strip().lower())
         self.narration = str(raw.get("narration") or "")
+        self.image = str(raw.get("image") or raw.get("image_path") or "")
         self.start_s = 0.0
         self.duration_s = 0.0
 
@@ -454,8 +455,53 @@ class Renderer:
             d.rounded_rectangle([x - pad, ly - 4 * s, x + lw + pad, ly + 26 * s], radius=8 * s, fill=(8, 11, 19, 225))
             d.text((x, ly), line, font=f, fill=INK)
 
+    _image_cache: dict[str, Image.Image] = {}
+
+    def scene_background_image(self, img: Image.Image, scene: Scene, t: float) -> None:
+        """Themen-Bild als Hintergrund: Cover-Fit, langsamer Ken-Burns-Zoom
+        mit alternierender Drift, dunkles Overlay fuer Textkontrast. Die
+        Karte ignoriert Bilder (sie IST das Visual)."""
+        if not scene.image or scene.type == "map":
+            return
+        path = Path(scene.image)
+        if not path.is_absolute():
+            path = ROOT / path
+        key = str(path)
+        if key not in self._image_cache:
+            try:
+                self._image_cache[key] = Image.open(path).convert("RGB")
+            except Exception:
+                self._image_cache[key] = None  # type: ignore[assignment]
+        src_img = self._image_cache.get(key)
+        if src_img is None:
+            return
+        W, H = img.width, img.height
+        # Ken Burns: 1.05 -> 1.13 ueber die Szene, Drift-Richtung alterniert
+        prog = clamp01(t / max(scene.duration_s, 1e-6))
+        zoom = 1.05 + 0.08 * ease_in_out(prog)
+        iw, ih = src_img.size
+        scale = max(W / iw, H / ih) * zoom
+        sw, sh = int(iw * scale), int(ih * scale)
+        drift_dir = 1 if scene.index % 2 == 0 else -1
+        max_dx = max(0, sw - W)
+        max_dy = max(0, sh - H)
+        dx = int(max_dx / 2 + drift_dir * max_dx * 0.18 * (prog - 0.5))
+        dy = int(max_dy / 2)
+        frame = src_img.resize((sw, sh), Image.BILINEAR).crop((dx, dy, dx + W, dy + H))
+        img.paste(frame, (0, 0))
+        # Kontrast-Overlay: oben moderat, unten (Untertitel-Zone) kraeftig
+        ov = Image.new("L", (1, H))
+        for y in range(H):
+            f = y / max(H - 1, 1)
+            ov.putpixel((0, y), int(120 + 95 * f))
+        alpha = ov.resize((W, H))
+        dark = Image.new("RGBA", (W, H), (8, 11, 19, 255))
+        dark.putalpha(alpha)
+        img.alpha_composite(dark)
+
     # ── Szenen-Dispatch ──
     def draw_scene(self, img, d, scene: Scene, t: float) -> None:
+        self.scene_background_image(img, scene, t)
         fn = {
             "hook": self.scene_hook, "stat": self.scene_stat, "bars": self.scene_bars,
             "people": self.scene_people, "figures": self.scene_figures,
