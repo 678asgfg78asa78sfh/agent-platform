@@ -425,9 +425,24 @@ pub struct ChainStep {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModulIdentity {
-    pub bot_name: String,      // "Roland", "MailBot", etc
-    pub greeting: String,      // "Hallo! Ich bin Roland..."
+    // Alle Felder mit serde-Default: ein partielles oder handeditiertes
+    // identity-Objekt (z.B. nur system_prompt gesetzt) darf NICHT die
+    // Deserialisierung der gesamten AgentConfig sprengen — sonst faellt der
+    // Agent stumm auf ein altes Backup zurueck und ignoriert alle Aenderungen.
+    #[serde(default = "default_bot_name")]
+    pub bot_name: String, // "Roland", "MailBot", etc
+    #[serde(default = "default_greeting")]
+    pub greeting: String, // "Hallo! Ich bin Roland..."
+    #[serde(default)]
     pub system_prompt: String, // System prompt für das LLM
+}
+
+fn default_bot_name() -> String {
+    "Agent".into()
+}
+
+fn default_greeting() -> String {
+    "Hallo!".into()
 }
 
 impl Default for ModulIdentity {
