@@ -4310,6 +4310,9 @@ async fn video_start(
     let language = body["language"].as_str().unwrap_or("de").to_lowercase();
     let preview = body["preview"].as_bool().unwrap_or(false);
     let shorts = body["shorts"].as_bool().unwrap_or(false);
+    // Resume-Pfad: vorhandenen DeepDive-Report wiederverwenden (kein neuer Crawl).
+    let report_path = body["report_path"].as_str().unwrap_or("").trim().to_string();
+    let resume = !report_path.is_empty();
 
     let mut params = serde_json::json!({
         "query": query,
@@ -4325,6 +4328,13 @@ async fn video_start(
         params["require_tts"] = serde_json::json!(false);
         params["allow_silent_audio"] = serde_json::json!(true);
     }
+    if resume {
+        params["report_path"] = serde_json::json!(report_path);
+        params["auto_render"] = serde_json::json!(true);
+        if let Some(t) = body["title"].as_str() {
+            params["title"] = serde_json::json!(t);
+        }
+    }
 
     let workflow_modul = {
         let cfg = s.config.read().await;
@@ -4334,8 +4344,13 @@ async fn video_start(
             .map(|m| m.id.clone())
             .unwrap_or_else(|| "workflow_trigger.default".into())
     };
+    let tool = if resume {
+        "workflow_trigger.video_from_report"
+    } else {
+        "workflow_trigger.deepdive_video"
+    };
     let mut aufgabe = crate::types::Aufgabe::direct(
-        "workflow_trigger.deepdive_video",
+        tool,
         vec![params.to_string()],
         &workflow_modul,
         &format!("chat:{}", modul),
