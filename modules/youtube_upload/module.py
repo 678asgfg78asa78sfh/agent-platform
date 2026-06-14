@@ -1,0 +1,314 @@
+"""YouTube-Upload-Modul — laedt fertige Pipeline-Videos auf den Kanal.
+
+Provider: YouTube Data API v3 (OAuth2 Refresh-Token-Flow). Die KI ruft
+`youtube_upload.video` auf, wenn der User es sagt; der Upload erscheint als
+sichtbarer Scheduler-Task (Transparenz-Prinzip). Setzt Titel/Beschreibung/Tags,
+optional Thumbnail und Playlist.
+
+Secrets (einmalig in der Google Cloud Console + tools/youtube_auth.py):
+  client_id, client_secret, refresh_token  -> in die Modul-Settings.
+
+WICHTIG (Google-Beschraenkung): Solange das Cloud-Projekt nicht den
+YouTube-API-Audit bestanden hat, werden per API hochgeladene Videos auf
+'private' gesperrt — der Kanaleigentuemer schaltet sie in YouTube Studio
+manuell frei. default_privacy hier ist trotzdem durchgereicht (post-Audit
+greift dann 'public'/'unlisted' direkt).
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status"
+THUMB_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
+CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true"
+PLAYLISTITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet"
+
+MODULE = {
+    "name": "youtube_upload",
+    "description": "Laedt ein fertiges Video auf den YouTube-Kanal (Data API v3, OAuth). Setzt Titel/Beschreibung/Tags, optional Thumbnail+Playlist.",
+    "version": "1.0",
+    "settings": {
+        "enabled": {"type": "bool", "label": "Aktiv", "default": True},
+        "client_id": {"type": "password", "label": "OAuth Client ID", "default": ""},
+        "client_secret": {"type": "password", "label": "OAuth Client Secret", "default": ""},
+        "refresh_token": {"type": "password", "label": "OAuth Refresh Token (aus youtube_auth.py)", "default": ""},
+        "default_privacy": {"type": "string", "label": "Default-Sichtbarkeit (private/unlisted/public)", "default": "private"},
+        "default_category_id": {"type": "string", "label": "Kategorie-ID (27=Bildung, 25=News, 24=Entertainment)", "default": "27"},
+        "default_tags": {"type": "string", "label": "Default-Tags (kommagetrennt)", "default": ""},
+        "description_suffix": {"type": "string", "label": "Beschreibungs-Zusatz (Footer)", "default": "\n\nErstellt mit einer KI-Recherche-Pipeline."},
+        "made_for_kids": {"type": "bool", "label": "Made for Kids", "default": False},
+        "request_timeout_s": {"type": "number", "label": "HTTP Timeout Sekunden", "default": 300},
+    },
+    "tools": [
+        {
+            "name": "youtube_upload.video",
+            "description": (
+                "Laedt EIN Video auf den Kanal. JSON {video_path, title, description?, tags?, "
+                "privacy?=private|unlisted|public, category_id?, playlist_id?, thumbnail_path?}. "
+                "Liefert video_id + URL. Hinweis: vor dem API-Audit landet das Video 'private'."
+            ),
+            "params": ["query_json"],
+        },
+        {
+            "name": "youtube_upload.status",
+            "description": "Prueft die OAuth-Credentials und zeigt den verbundenen Kanal (Name, Abos, Videos).",
+            "params": [],
+        },
+    ],
+}
+
+
+def handle_tool(tool_name: str, params: Any, config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        if not bool_param(config.get("enabled"), True):
+            return fail("youtube_upload ist deaktiviert.")
+        if tool_name == "youtube_upload.video":
+            return upload_video(params, config)
+        if tool_name == "youtube_upload.status":
+            return status(config)
+        return fail(f"Unbekanntes Tool: {tool_name}")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")[:400]
+        return fail(f"YOUTUBE_HTTP_{exc.code}: {body}")
+    except Exception as exc:
+        return fail(f"YOUTUBE_UPLOAD_FAILED: {exc}")
+
+
+def upload_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
+    payload = parse_payload(params)
+    video_path = resolve_path(str(payload.get("video_path") or payload.get("path") or ""))
+    if not video_path or not video_path.exists():
+        return fail(f"video_path nicht gefunden: {video_path}")
+    title = str(payload.get("title") or "").strip() or video_path.stem
+    title = title[:100]  # YouTube-Limit
+    desc = str(payload.get("description") or "").strip()
+    suffix = str(config.get("description_suffix") or "")
+    description = (desc + suffix)[:4900]
+    tags = norm_tags(payload.get("tags"), config.get("default_tags"))
+    privacy = str(payload.get("privacy") or config.get("default_privacy") or "private").lower()
+    if privacy not in ("private", "unlisted", "public"):
+        privacy = "private"
+    category_id = str(payload.get("category_id") or config.get("default_category_id") or "27")
+    timeout = int_param(config.get("request_timeout_s"), 300, 30, 1800)
+
+    token = access_token(config)
+
+    body = {
+        "snippet": {"title": title, "description": description, "tags": tags, "categoryId": category_id},
+        "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": bool_param(config.get("made_for_kids"), False)},
+    }
+    data = json.dumps(body).encode("utf-8")
+    size = video_path.stat().st_size
+    init = urllib.request.Request(UPLOAD_URL, data=data, method="POST", headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": "video/*",
+        "X-Upload-Content-Length": str(size),
+    })
+    with urllib.request.urlopen(init, timeout=60) as resp:
+        session_uri = resp.headers.get("Location")
+    if not session_uri:
+        return fail("Keine resumable Upload-Session erhalten (Location-Header fehlt).")
+
+    # Bytes hochladen (ein PUT — Videos sind ~20 MB, das reicht hier).
+    raw = video_path.read_bytes()
+    put = urllib.request.Request(session_uri, data=raw, method="PUT", headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "video/*",
+        "Content-Length": str(len(raw)),
+    })
+    with urllib.request.urlopen(put, timeout=timeout) as resp:
+        result = json.loads(resp.read().decode("utf-8", errors="replace"))
+    video_id = result.get("id")
+    if not video_id:
+        return fail(f"Upload ohne video_id: {json.dumps(result)[:200]}")
+
+    notes: list[str] = []
+    # Thumbnail (optional; braucht verifizierten Kanal)
+    thumb = resolve_path(str(payload.get("thumbnail_path") or ""))
+    if thumb and thumb.exists():
+        try:
+            set_thumbnail(token, video_id, thumb, timeout)
+            notes.append("Thumbnail gesetzt")
+        except Exception as exc:
+            notes.append(f"Thumbnail fehlgeschlagen: {exc}")
+
+    # Playlist (optional)
+    playlist_id = str(payload.get("playlist_id") or "").strip()
+    if playlist_id:
+        try:
+            add_to_playlist(token, video_id, playlist_id, timeout)
+            notes.append(f"zu Playlist {playlist_id} hinzugefuegt")
+        except Exception as exc:
+            notes.append(f"Playlist fehlgeschlagen: {exc}")
+
+    actual_privacy = (result.get("status") or {}).get("privacyStatus", privacy)
+    if actual_privacy == "private" and privacy != "private":
+        notes.append("Hinweis: auf 'private' gesperrt (App-Audit ausstehend) — in YouTube Studio freischalten.")
+
+    return ok({
+        "type": "youtube_upload.video",
+        "video_id": video_id,
+        "url": f"https://youtu.be/{video_id}",
+        "studio_url": f"https://studio.youtube.com/video/{video_id}/edit",
+        "title": title,
+        "privacy": actual_privacy,
+        "requested_privacy": privacy,
+        "notes": notes,
+    })
+
+
+def set_thumbnail(token: str, video_id: str, thumb: Path, timeout: int) -> None:
+    url = f"{THUMB_URL}?videoId={urllib.parse.quote(video_id)}"
+    ctype = "image/png" if thumb.suffix.lower() == ".png" else "image/jpeg"
+    req = urllib.request.Request(url, data=thumb.read_bytes(), method="POST", headers={
+        "Authorization": f"Bearer {token}", "Content-Type": ctype,
+    })
+    with urllib.request.urlopen(req, timeout=timeout):
+        pass
+
+
+def add_to_playlist(token: str, video_id: str, playlist_id: str, timeout: int) -> None:
+    body = {"snippet": {"playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}}
+    req = urllib.request.Request(PLAYLISTITEMS_URL, data=json.dumps(body).encode("utf-8"), method="POST", headers={
+        "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout):
+        pass
+
+
+def status(config: dict[str, Any]) -> dict[str, Any]:
+    have = {k: bool(str(config.get(k) or "").strip()) for k in ("client_id", "client_secret", "refresh_token")}
+    if not all(have.values()):
+        missing = [k for k, v in have.items() if not v]
+        return fail(f"OAuth-Credentials fehlen: {', '.join(missing)}. Siehe tools/youtube_auth.py.")
+    token = access_token(config)
+    req = urllib.request.Request(CHANNELS_URL, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    items = data.get("items") or []
+    if not items:
+        return fail("Token gueltig, aber kein Kanal gefunden (richtiger Google-Account/Brand-Account autorisiert?).")
+    ch = items[0]
+    snip = ch.get("snippet") or {}
+    stat = ch.get("statistics") or {}
+    return ok({
+        "channel": snip.get("title"),
+        "channel_id": ch.get("id"),
+        "subscribers": stat.get("subscriberCount"),
+        "videos": stat.get("videoCount"),
+        "default_privacy": config.get("default_privacy"),
+        "credentials": "ok",
+    })
+
+
+def access_token(config: dict[str, Any]) -> str:
+    """Refresh-Token -> kurzlebiges Access-Token (pro Aufruf neu, ~1h gueltig)."""
+    cid = str(config.get("client_id") or "").strip()
+    secret = str(config.get("client_secret") or "").strip()
+    refresh = str(config.get("refresh_token") or "").strip()
+    if not (cid and secret and refresh):
+        raise RuntimeError("client_id/client_secret/refresh_token fehlen in den Modul-Settings.")
+    data = urllib.parse.urlencode({
+        "client_id": cid, "client_secret": secret,
+        "refresh_token": refresh, "grant_type": "refresh_token",
+    }).encode("utf-8")
+    req = urllib.request.Request(TOKEN_URL, data=data, method="POST",
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        tok = json.loads(resp.read().decode("utf-8", errors="replace"))
+    at = tok.get("access_token")
+    if not at:
+        raise RuntimeError(f"Kein access_token: {json.dumps(tok)[:160]}")
+    return at
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────
+def norm_tags(value: Any, default: Any) -> list[str]:
+    def split(v: Any) -> list[str]:
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return [t.strip() for t in str(v or "").split(",") if t.strip()]
+    tags = split(value) or split(default)
+    return tags[:30]
+
+
+def parse_payload(params: Any) -> dict[str, Any]:
+    if isinstance(params, dict):
+        return params
+    if isinstance(params, list) and params:
+        item = params[0]
+        if isinstance(item, dict):
+            return item
+        text = str(item or "").strip()
+        if text.startswith("{"):
+            try:
+                d = json.loads(text)
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                pass
+        return {"video_path": text} if text else {}
+    return {}
+
+
+def resolve_path(value: str) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p
+
+
+def bool_param(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "ja", "on"}
+
+
+def int_param(value: Any, default: int, min_v: int | None = None, max_v: int | None = None) -> int:
+    try:
+        out = int(float(value))
+    except Exception:
+        out = default
+    if min_v is not None:
+        out = max(min_v, out)
+    if max_v is not None:
+        out = min(max_v, out)
+    return out
+
+
+def ok(data: Any) -> dict[str, Any]:
+    if not isinstance(data, str):
+        data = json.dumps(data, ensure_ascii=False, indent=2)
+    return {"success": True, "data": data}
+
+
+def fail(data: Any) -> dict[str, Any]:
+    return {"success": False, "data": str(data)}
+
+
+if __name__ == "__main__":
+    for line in sys.stdin:
+        try:
+            req = json.loads(line.strip())
+            if req.get("action") == "describe":
+                print(json.dumps(MODULE), flush=True)
+            elif req.get("action") == "handle_tool":
+                result = handle_tool(req.get("tool", ""), req.get("params", []), req.get("config", {}))
+                print(json.dumps(result), flush=True)
+            else:
+                print(json.dumps({"error": f"Unknown action: {req.get('action')}"}), flush=True)
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}), flush=True)
