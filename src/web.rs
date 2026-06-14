@@ -1805,6 +1805,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/image/start", axum::routing::post(image_start))
         .route("/api/planner/proposals", axum::routing::get(planner_proposals))
         .route("/api/planner/status", axum::routing::get(planner_status))
+        .route("/api/community/status", axum::routing::get(community_status))
         .route("/api/planner/decide", axum::routing::post(planner_decide))
         .route("/api/planner/scan", axum::routing::post(planner_scan))
         .route(
@@ -4515,6 +4516,37 @@ async fn planner_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Valu
         "interests": st.get("interests").cloned().unwrap_or_else(|| serde_json::json!([])),
         "by_status": st.get("by_status").cloned().unwrap_or_else(|| serde_json::json!({})),
         "covered_count": st.get("covered_count").cloned().unwrap_or_else(|| serde_json::json!(0)),
+    }))
+}
+
+/// Community-Manager-Status (Kommentar-Pflege) fuer den Flow-Graph.
+async fn community_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let cfg = s.config.read().await;
+    let cm = cfg.module.iter().find(|m| m.id == "community_manager.default");
+    let schedule = cm.and_then(|m| m.settings.schedule.clone()).unwrap_or_default();
+    let auto_post = cm
+        .and_then(|m| m.settings.extra.get("auto_post"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let (_ok, data) = exec_tool_inline(
+        &s,
+        "community_manager.status",
+        &[],
+        "community_manager.default",
+        None,
+        &cfg,
+        None,
+    )
+    .await;
+    drop(cfg);
+    let st: serde_json::Value =
+        serde_json::from_str(&data).unwrap_or_else(|_| serde_json::json!({}));
+    Json(serde_json::json!({
+        "schedule": schedule,
+        "auto_post": auto_post,
+        "drafts_by_status": st.get("drafts_by_status").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "seen_count": st.get("seen_count").cloned().unwrap_or_else(|| serde_json::json!(0)),
+        "credentials": st.get("credentials").cloned().unwrap_or_else(|| serde_json::json!("?")),
     }))
 }
 
