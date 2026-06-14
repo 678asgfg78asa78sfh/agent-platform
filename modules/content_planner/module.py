@@ -135,6 +135,16 @@ def handle_tool(tool_name: str, params: Any, config: dict[str, Any]) -> dict[str
         return fail(f"CONTENT_PLANNER_FAILED: {exc}")
 
 
+# ─── Normalisierung ─────────────────────────────────────────────────────────
+def coerce_sources(value: Any) -> list[str]:
+    """sources IMMER als Liste — LLM liefert manchmal 'A; B; C' als String."""
+    if isinstance(value, list):
+        return [str(s).strip() for s in value if str(s).strip()][:6]
+    if isinstance(value, str) and value.strip():
+        return [s.strip() for s in re.split(r"[;\n]+", value) if s.strip()][:6]
+    return []
+
+
 # ─── Tokenizer / Dedup ──────────────────────────────────────────────────────
 _STOP = {"und", "oder", "der", "die", "das", "im", "in", "ein", "eine", "den", "von",
          "zu", "mit", "auf", "wie", "was", "des", "the", "and", "for", "a", "of"}
@@ -185,7 +195,7 @@ def save_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
             "query": query,
             "theme": str(raw.get("theme") or "").strip(),
             "rationale": str(raw.get("rationale") or "").strip(),
-            "sources": raw.get("sources") or [],
+            "sources": coerce_sources(raw.get("sources")),
             "score": int_param(raw.get("score"), 50, 0, 100),
             "status": "proposed",
             "created": int(time.time()),

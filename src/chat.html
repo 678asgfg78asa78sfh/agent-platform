@@ -963,7 +963,13 @@ function loadPlanner() {
     } else {
       body = '';
       items.forEach(function(p) {
-        var srcs = (p.sources || []).slice(0, 3).map(function(u) { return '<a href="' + esc(u) + '" target="_blank" style="color:var(--cyan);font-size:9px;">Quelle</a>'; }).join(' · ');
+        var srcArr = Array.isArray(p.sources) ? p.sources : (p.sources ? [String(p.sources)] : []);
+        var srcs = srcArr.slice(0, 3).map(function(u) {
+          u = String(u);
+          return /^https?:\/\//.test(u)
+            ? '<a href="' + esc(u) + '" target="_blank" style="color:var(--cyan);font-size:9px;">Quelle</a>'
+            : '<span style="color:var(--text-dim);font-size:9px;" title="' + esc(u) + '">' + esc(u.slice(0, 22)) + '</span>';
+        }).join(' · ');
         body += '<div style="padding:8px 10px;border-bottom:1px solid var(--border);">'
           + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">'
           + '<span style="font-size:10px;font-weight:700;color:var(--cyan);min-width:22px;">' + (p.score || 0) + '</span>'
@@ -979,7 +985,9 @@ function loadPlanner() {
           + '</div></div>';
       });
     }
-    list.innerHTML = renderPlannerHead(st) + body;
+    var head = '';
+    try { head = renderPlannerHead(st); } catch (e) { head = ''; }
+    list.innerHTML = head + body;
     list.querySelectorAll('[data-pa]').forEach(function(el) {
       el.addEventListener('click', function() { plannerDecide(el.getAttribute('data-pid'), el.getAttribute('data-pa')); });
     });
