@@ -88,12 +88,18 @@ def upload_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     video_path = resolve_path(str(payload.get("video_path") or payload.get("path") or ""))
     if not video_path or not video_path.exists():
         return fail(f"video_path nicht gefunden: {video_path}")
-    title = str(payload.get("title") or "").strip() or video_path.stem
-    title = title[:100]  # YouTube-Limit
-    desc = str(payload.get("description") or "").strip()
+    # Auto-Metadaten aus den Video-Assets (Titel/Beschreibung/Tags) — der Agent
+    # laedt ohne Handarbeit sauber hoch. Explizite payload-Werte ueberschreiben.
+    auto: dict[str, Any] = {}
+    if bool_param(payload.get("auto_meta"), True):
+        assets, query = find_workflow_assets(video_path)
+        if assets:
+            auto = build_auto_meta(assets, query)
+    title = (str(payload.get("title") or "").strip() or auto.get("title") or video_path.stem)[:100]
+    desc = str(payload.get("description") or "").strip() or auto.get("description") or ""
     suffix = str(config.get("description_suffix") or "")
     description = (desc + suffix)[:4900]
-    tags = norm_tags(payload.get("tags"), config.get("default_tags"))
+    tags = norm_tags(payload.get("tags"), None) or auto.get("tags") or norm_tags(config.get("default_tags"), None)
     privacy = str(payload.get("privacy") or config.get("default_privacy") or "private").lower()
     if privacy not in ("private", "unlisted", "public"):
         privacy = "private"
@@ -230,6 +236,83 @@ def access_token(config: dict[str, Any]) -> str:
     if not at:
         raise RuntimeError(f"Kein access_token: {json.dumps(tok)[:160]}")
     return at
+
+
+# ─── Auto-Metadaten ─────────────────────────────────────────────────────────
+import re as _re
+
+_STOP = {"und", "oder", "der", "die", "das", "im", "in", "ein", "eine", "den", "dem",
+         "von", "zu", "fuer", "für", "mit", "auf", "wie", "was", "des", "bis", "nach",
+         "vergleich", "internationalen", "the", "and", "for", "wird", "sind", "eines",
+         "jahr", "neue", "neuer", "zwei", "mehr", "weg", "doch", "aber", "auch", "schon"}
+
+
+def find_workflow_assets(video_path: Path) -> tuple[dict | None, str]:
+    """Findet die video_assets.json + workflow-query zum Video.
+    Layout: home/<modul>/videos/<wf>/video.mp4  <->  home/<modul>/workflows/<wf>/."""
+    wf = video_path.parent.name
+    candidates = [
+        video_path.parent / "video_assets.json",
+        video_path.parent.parent.parent / "workflows" / wf / "video_assets.json",
+    ]
+    for c in candidates:
+        if c.exists():
+            try:
+                assets = json.loads(c.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            query = ""
+            wfj = c.parent / "workflow.json"
+            if wfj.exists():
+                try:
+                    query = str(json.loads(wfj.read_text(encoding="utf-8")).get("query") or "")
+                except Exception:
+                    pass
+            return assets, query
+    return None, ""
+
+
+def build_auto_meta(assets: dict, query: str) -> dict[str, Any]:
+    title = str(assets.get("title") or "").strip()
+    scenes = assets.get("scenes") or []
+    opener = first_sentences(str(assets.get("voice_script") or ""), 320)
+    topics = [str(s.get("title") or "").strip() for s in scenes
+              if str(s.get("type") or "").lower() not in ("hook", "outro") and str(s.get("title") or "").strip()]
+    tags = auto_tags(query, title, topics)
+    parts: list[str] = []
+    if opener:
+        parts.append(opener)
+    if topics:
+        parts.append("\U0001F4CC Themen in diesem Video:\n" + "\n".join("• " + t for t in topics[:8]))
+    hashtags = [f"#{_re.sub(r'[^A-Za-z0-9]', '', t)}" for t in tags[:4] if _re.sub(r'[^A-Za-z0-9]', '', t)]
+    if hashtags:
+        parts.append(" ".join(hashtags))
+    return {"title": title, "description": "\n\n".join(parts), "tags": tags}
+
+
+def first_sentences(text: str, max_chars: int = 320) -> str:
+    text = _re.sub(r"\s+", " ", str(text)).strip()
+    if not text:
+        return ""
+    out = ""
+    for sent in _re.split(r"(?<=[.!?]) ", text):
+        if out and len(out) + len(sent) > max_chars:
+            break
+        out = (out + " " + sent).strip()
+    return out
+
+
+def auto_tags(query: str, title: str, topics: list[str]) -> list[str]:
+    words = _re.findall(r"[A-Za-zÄÖÜäöüß0-9]{4,}", f"{query} {title} {' '.join(topics)}")
+    seen: set[str] = set()
+    out: list[str] = []
+    for w in words:
+        wl = w.lower()
+        if wl in _STOP or wl in seen:
+            continue
+        seen.add(wl)
+        out.append(w)
+    return out[:15]
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
