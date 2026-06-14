@@ -196,6 +196,7 @@ body::after {
     <button class="clear-btn" id="media-btn" title="Medien (Videos/Bilder)" style="font-size:15px;">&#x1F39E;&#xFE0F;</button>
     <button class="clear-btn" id="video-create-btn" title="Video erzeugen (direkte Pipeline)" style="font-size:15px;">&#x1F3AC;</button>
     <button class="clear-btn" id="image-create-btn" title="Bild erzeugen (KI-Bild)" style="font-size:15px;">&#x1F3A8;</button>
+    <button class="clear-btn" id="planner-btn" title="Redaktionsplan (Video-Vorschläge)" style="font-size:15px;">&#x1F4CB;</button>
     <div class="agent-avatar" id="agent-avatar">A</div>
     <span class="agent-name" id="agent-name">Agent</span>
     <span class="agent-sub" id="agent-sub"></span>
@@ -220,6 +221,16 @@ body::after {
       <button class="clear-btn" id="media-refresh" style="font-size:10px; padding:2px 6px;">&#x21BB;</button>
     </div>
     <div id="media-list" style="max-height:46dvh;overflow:auto;"></div>
+  </div>
+  <div id="planner-panel" class="panel">
+    <div class="panel-head">
+      <span class="panel-title">Redaktionsplan — Video-Vorschläge</span>
+      <div style="display:flex;gap:4px;">
+        <button class="clear-btn" id="planner-scan" style="font-size:10px; padding:2px 6px; color:var(--cyan);" title="Jetzt nach neuen Themen suchen">&#x1F50D; Scan</button>
+        <button class="clear-btn" id="planner-refresh" style="font-size:10px; padding:2px 6px;">&#x21BB;</button>
+      </div>
+    </div>
+    <div id="planner-list" style="max-height:52dvh;overflow:auto;"></div>
   </div>
   <div id="file-panel" class="panel" style="max-height:250px;">
     <div class="panel-head">
@@ -883,6 +894,77 @@ function showImageForm() {
       alert('Fehler: ' + e);
     });
   });
+}
+
+// ── Redaktionsplan (content_planner) ──
+ge('planner-btn').addEventListener('click', function() {
+  var p = ge('planner-panel');
+  var open = p.style.display === 'block';
+  p.style.display = open ? 'none' : 'block';
+  if (!open) loadPlanner();
+});
+ge('planner-refresh').addEventListener('click', loadPlanner);
+ge('planner-scan').addEventListener('click', function() {
+  var btn = ge('planner-scan');
+  btn.disabled = true; btn.textContent = '… Scan';
+  apiFetch('/api/planner/scan', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      appendMsg('assistant', d.error ? ('Scan-Fehler: ' + d.error)
+        : ('\u{1F50D} Redaktions-Scan gestartet (Task ' + (d.task_id || '?').slice(0, 8) + '). Vorschläge erscheinen gleich im Plan.'));
+      setTimeout(function() { btn.disabled = false; btn.innerHTML = '&#x1F50D; Scan'; loadPlanner(); }, 4000);
+      var n = 0, iv = setInterval(function() { n++; loadPlanner(); if (n >= 10) clearInterval(iv); }, 8000);
+    }).catch(function(e) { btn.disabled = false; btn.innerHTML = '&#x1F50D; Scan'; alert('Fehler: ' + e); });
+});
+
+function plannerBadge(st) {
+  var m = {now: ['JETZT', 'var(--red)'], next: ['NÄCHSTES', 'var(--cyan)'], approved: ['GENEHMIGT', '#3a3'],
+    proposed: ['VORSCHLAG', 'var(--text-dim)'], rejected: ['VERWORFEN', '#a33'], queued: ['QUEUE', 'var(--text-dim)']}[st] || [st, 'var(--text-dim)'];
+  return '<span style="font-size:8px;padding:1px 5px;border:1px solid ' + m[1] + ';color:' + m[1] + ';border-radius:3px;letter-spacing:1px;">' + m[0] + '</span>';
+}
+
+function plannerBtn(id, action, label, color) {
+  return '<button data-pid="' + id + '" data-pa="' + action + '" style="background:none;border:1px solid ' + color + ';color:' + color + ';cursor:pointer;border-radius:4px;padding:2px 7px;font-size:10px;font-family:var(--font);">' + label + '</button>';
+}
+
+function loadPlanner() {
+  var list = ge('planner-list');
+  if (!list.innerHTML) list.innerHTML = '<div style="padding:10px;color:var(--text-dim);font-size:11px;">lade…</div>';
+  apiFetch('/api/planner/proposals').then(function(r) { return r.json(); }).then(function(data) {
+    var items = (data && data.proposals) || [];
+    if (!items.length) { list.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:11px;">Noch keine Vorschläge. Klick oben auf &#x1F50D; Scan — dann sucht die KI aktuelle Themen.</div>'; return; }
+    var html = '';
+    items.forEach(function(p) {
+      var srcs = (p.sources || []).slice(0, 3).map(function(u) { return '<a href="' + esc(u) + '" target="_blank" style="color:var(--cyan);font-size:9px;">Quelle</a>'; }).join(' · ');
+      html += '<div style="padding:8px 10px;border-bottom:1px solid var(--border);">'
+        + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">'
+        + '<span style="font-size:10px;font-weight:700;color:var(--cyan);min-width:22px;">' + (p.score || 0) + '</span>'
+        + plannerBadge(p.status) + '<span style="font-size:8px;color:var(--text-dim);">' + esc(p.theme || '') + '</span></div>'
+        + '<div style="font-size:12px;color:var(--text-bright);margin-bottom:3px;">' + esc(p.title || '') + '</div>'
+        + (p.rationale ? '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;line-height:1.4;max-height:46px;overflow:hidden;">' + esc(p.rationale) + '</div>' : '')
+        + '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">'
+        + plannerBtn(p.id, 'now', '▶ Jetzt', 'var(--red)')
+        + plannerBtn(p.id, 'approve', '✓ Genehmigen', '#3a3')
+        + plannerBtn(p.id, 'next', 'Nächstes', 'var(--cyan)')
+        + plannerBtn(p.id, 'reject', '✕', 'var(--text-dim)')
+        + (srcs ? '<span style="margin-left:auto;">' + srcs + '</span>' : '')
+        + '</div></div>';
+    });
+    list.innerHTML = html;
+    list.querySelectorAll('[data-pa]').forEach(function(el) {
+      el.addEventListener('click', function() { plannerDecide(el.getAttribute('data-pid'), el.getAttribute('data-pa')); });
+    });
+  }).catch(function() { list.innerHTML = '<div style="padding:10px;color:var(--red);font-size:11px;">Laden fehlgeschlagen.</div>'; });
+}
+
+function plannerDecide(id, action) {
+  if (action === 'now' || action === 'approve') {
+    if (!confirm((action === 'now' ? 'Jetzt' : 'Genehmigen') + ' → Video wird produziert. Fortfahren?')) return;
+  }
+  apiFetch('/api/planner/decide', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id, action: action, modul: modulId})})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      if (d.video_task) appendMsg('assistant', '\u{1F3AC} Video aus Redaktionsplan gestartet (Task ' + String(d.video_task).slice(0, 8) + '). Ergebnis unter &#x1F39E;&#xFE0F; Medien.');
+      loadPlanner();
+    }).catch(function(e) { alert('Fehler: ' + e); });
 }
 
 var mediaLoaded = false;

@@ -1803,6 +1803,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/media/{modul_id}", axum::routing::get(list_media))
         .route("/api/video/start", axum::routing::post(video_start))
         .route("/api/image/start", axum::routing::post(image_start))
+        .route("/api/planner/proposals", axum::routing::get(planner_proposals))
+        .route("/api/planner/decide", axum::routing::post(planner_decide))
+        .route("/api/planner/scan", axum::routing::post(planner_scan))
         .route(
             "/api/home/{modul_id}/{path}",
             axum::routing::get(read_home_file),
@@ -4457,6 +4460,126 @@ async fn image_start(
         "count": count,
         "message": "Bild-Pipeline gestartet. Ergebnis erscheint unter Medien.",
     }))
+}
+
+/// Redaktionsplan: aktive Vorschlags-Queue (fuer das Chat-Panel).
+async fn planner_proposals(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let cfg = s.config.read().await;
+    let (ok, data) = exec_tool_inline(
+        &s,
+        "content_planner.proposals",
+        &["{}".to_string()],
+        "content_planner.default",
+        None,
+        &cfg,
+        None,
+    )
+    .await;
+    drop(cfg);
+    if ok {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+            return Json(v);
+        }
+    }
+    Json(serde_json::json!({"error": data, "proposals": [], "count": 0}))
+}
+
+/// Redaktionsplan: Aktion auf einen Vorschlag (now|next|approve|reject|snooze).
+/// now/approve triggert zusaetzlich die Video-Pipeline mit der Proposal-Query —
+/// sichtbar als Scheduler-Task (Transparenz).
+async fn planner_decide(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let id = body["id"].as_str().unwrap_or("").to_string();
+    let action = body["action"].as_str().unwrap_or("").to_string();
+    if id.is_empty() || action.is_empty() {
+        return Json(serde_json::json!({"error": "id und action noetig"}));
+    }
+    let modul = body["modul"]
+        .as_str()
+        .and_then(safe_id)
+        .unwrap_or_else(|| "chat.deepseekdeepseekv4flash".into());
+    let params = serde_json::json!({"id": id, "action": action}).to_string();
+    let cfg = s.config.read().await;
+    let (ok, data) = exec_tool_inline(
+        &s,
+        "content_planner.decide",
+        &[params],
+        "content_planner.default",
+        None,
+        &cfg,
+        None,
+    )
+    .await;
+    let decision: serde_json::Value =
+        serde_json::from_str(&data).unwrap_or_else(|_| serde_json::json!({"raw": data}));
+    let mut video_task = serde_json::Value::Null;
+    if ok && decision["trigger_video"].as_bool().unwrap_or(false) {
+        if let Some(query) = decision["query"].as_str() {
+            let workflow_modul = cfg
+                .module
+                .iter()
+                .find(|m| m.typ == "workflow_trigger")
+                .map(|m| m.id.clone())
+                .unwrap_or_else(|| "workflow_trigger.default".into());
+            let vparams = serde_json::json!({
+                "query": query,
+                "title": decision["title"].as_str().unwrap_or(""),
+                "language": "de",
+                "auto_shorts": false,
+                "chat_route": format!("chat:{}", modul),
+            });
+            let mut auf = crate::types::Aufgabe::direct(
+                "workflow_trigger.deepdive_video",
+                vec![vparams.to_string()],
+                &workflow_modul,
+                &format!("chat:{}", modul),
+                None,
+                None,
+            );
+            auf.zurueck_an = Some(format!("chat:{}", modul));
+            if s.pipeline.speichern(&auf).is_ok() {
+                video_task = serde_json::json!(auf.id);
+                s.pipeline.log(
+                    &workflow_modul,
+                    Some(&auf.id),
+                    LogTyp::Info,
+                    &format!("Video aus Redaktionsplan: {}", util::safe_truncate(query, 80)),
+                );
+            }
+        }
+    }
+    drop(cfg);
+    Json(serde_json::json!({"ok": ok, "decision": decision, "video_task": video_task}))
+}
+
+/// Redaktionsplan: Scan JETZT — gleicher LLM-Task wie der taegliche Cron, async.
+async fn planner_scan(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let cfg = s.config.read().await;
+    let planner = cfg.module.iter().find(|m| m.id == "content_planner.default");
+    let anweisung = planner
+        .and_then(|m| m.settings.cron_anweisung.clone())
+        .unwrap_or_else(|| {
+            "Fuehre den Redaktions-Scan durch und speichere Vorschlaege mit content_planner.save_proposals.".into()
+        });
+    let target = planner
+        .and_then(|m| m.settings.target_modul.clone())
+        .unwrap_or_else(|| "chat.deepseekdeepseekv4flash".into());
+    drop(cfg);
+    let auf = crate::types::Aufgabe::llm_call(&anweisung, &target, "content_planner.default", None)
+        .with_timeout_s(900);
+    let id = auf.id.clone();
+    if let Err(e) = s.pipeline.speichern(&auf) {
+        return Json(serde_json::json!({"error": format!("Task anlegen fehlgeschlagen: {e}")}));
+    }
+    s.pipeline.log(
+        "content_planner.default",
+        Some(&id),
+        LogTyp::Info,
+        "Redaktions-Scan manuell gestartet",
+    );
+    Json(serde_json::json!({"started": true, "task_id": id, "message": "Scan laeuft — Vorschlaege erscheinen gleich im Plan."}))
 }
 
 /// Aktive + juengste Pipeline-Workflows (Video-Erstellung) — first-class

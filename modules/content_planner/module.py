@@ -65,8 +65,16 @@ MODULE = {
 
 
 def home(config: dict[str, Any]) -> Path:
-    h = str(config.get("home_dir") or "").strip()
-    base = Path(h) if h else (ROOT / "agent-data" / "content_planner")
+    # Stabiler Pfad = content_planner-Modul-Home, EGAL welcher Caller das Tool ruft
+    # (Chat-LLM, Cron-Scan, ...). tool_modul_id ist die Settings-Modul-Instanz
+    # (content_planner.default); sonst landete die Queue im Caller-Home.
+    tmid = str(config.get("tool_modul_id") or "").strip()
+    data = str(config.get("data_dir") or "").strip()
+    if tmid and data:
+        base = Path(data) / "home" / tmid
+    else:
+        h = str(config.get("home_dir") or "").strip()
+        base = Path(h) if h else (ROOT / "agent-data" / "content_planner")
     base.mkdir(parents=True, exist_ok=True)
     return base
 
