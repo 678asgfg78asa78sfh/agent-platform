@@ -1804,6 +1804,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/video/start", axum::routing::post(video_start))
         .route("/api/image/start", axum::routing::post(image_start))
         .route("/api/planner/proposals", axum::routing::get(planner_proposals))
+        .route("/api/planner/status", axum::routing::get(planner_status))
         .route("/api/planner/decide", axum::routing::post(planner_decide))
         .route("/api/planner/scan", axum::routing::post(planner_scan))
         .route(
@@ -4482,6 +4483,39 @@ async fn planner_proposals(State(s): State<Arc<AppState>>) -> Json<serde_json::V
         }
     }
     Json(serde_json::json!({"error": data, "proposals": [], "count": 0}))
+}
+
+/// Redaktionsplan: Kreislauf-Status (Autopilot an/aus, Auto-Crawl-Plan, Zaehler,
+/// Themen) — fuettert den Status-Kopf des Panels, damit der ganze Kreislauf auf
+/// einen Blick sichtbar ist.
+async fn planner_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let cfg = s.config.read().await;
+    let planner = cfg.module.iter().find(|m| m.id == "content_planner.default");
+    let schedule = planner.and_then(|m| m.settings.schedule.clone()).unwrap_or_default();
+    let autopilot = planner
+        .and_then(|m| m.settings.extra.get("autopilot"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let (_ok, data) = exec_tool_inline(
+        &s,
+        "content_planner.status",
+        &[],
+        "content_planner.default",
+        None,
+        &cfg,
+        None,
+    )
+    .await;
+    drop(cfg);
+    let st: serde_json::Value =
+        serde_json::from_str(&data).unwrap_or_else(|_| serde_json::json!({}));
+    Json(serde_json::json!({
+        "autopilot": autopilot,
+        "schedule": schedule,
+        "interests": st.get("interests").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "by_status": st.get("by_status").cloned().unwrap_or_else(|| serde_json::json!({})),
+        "covered_count": st.get("covered_count").cloned().unwrap_or_else(|| serde_json::json!(0)),
+    }))
 }
 
 /// Redaktionsplan: Aktion auf einen Vorschlag (now|next|approve|reject|snooze).

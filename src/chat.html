@@ -926,30 +926,60 @@ function plannerBtn(id, action, label, color) {
   return '<button data-pid="' + id + '" data-pa="' + action + '" style="background:none;border:1px solid ' + color + ';color:' + color + ';cursor:pointer;border-radius:4px;padding:2px 7px;font-size:10px;font-family:var(--font);">' + label + '</button>';
 }
 
+function cronHuman(s) {
+  var p = (s || '').trim().split(/\s+/);
+  if (p.length >= 5 && p[2] === '*' && p[3] === '*' && p[4] === '*' && /^\d+$/.test(p[1]) && /^\d+$/.test(p[0]))
+    return 'täglich ' + ('0' + p[1]).slice(-2) + ':' + ('0' + p[0]).slice(-2);
+  return s || '—';
+}
+function renderPlannerHead(st) {
+  var by = st.by_status || {};
+  var prop = (by.proposed || 0) + (by.next || 0) + (by.queued || 0);
+  var prod = (by.now || 0) + (by.approved || 0);
+  var ap = st.autopilot ? '<span style="color:#3a3;font-weight:700;">● AN</span>' : '<span style="color:var(--text-dim);">○ AUS</span>';
+  var themes = (st.interests || []).map(function(t) { return '<span style="font-size:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:1px 6px;color:var(--text-dim);">' + esc(t) + '</span>'; }).join(' ');
+  return '<div style="padding:8px 10px;border-bottom:2px solid var(--cyan);background:rgba(0,200,255,0.05);">'
+    + '<div style="display:flex;align-items:center;gap:7px;font-size:10px;margin-bottom:5px;flex-wrap:wrap;">'
+    + '<span style="color:var(--text-bright);">Autopilot</span>' + ap
+    + '<span style="color:var(--text-dim);">·</span><span style="color:var(--cyan);">\u{1F504} Auto-Crawl: ' + esc(cronHuman(st.schedule)) + '</span></div>'
+    + '<div style="display:flex;gap:12px;font-size:9px;margin-bottom:5px;">'
+    + '<span style="color:var(--text);">▣ ' + prop + ' Vorschläge</span>'
+    + '<span style="color:var(--red);">▶ ' + prod + ' in Produktion</span>'
+    + '<span style="color:#3a3;">✓ ' + (st.covered_count || 0) + ' behandelt</span></div>'
+    + '<div style="display:flex;gap:3px;flex-wrap:wrap;">' + themes + '</div></div>';
+}
 function loadPlanner() {
   var list = ge('planner-list');
   if (!list.innerHTML) list.innerHTML = '<div style="padding:10px;color:var(--text-dim);font-size:11px;">lade…</div>';
-  apiFetch('/api/planner/proposals').then(function(r) { return r.json(); }).then(function(data) {
+  Promise.all([
+    apiFetch('/api/planner/status').then(function(r) { return r.json(); }).catch(function() { return {}; }),
+    apiFetch('/api/planner/proposals').then(function(r) { return r.json(); }).catch(function() { return {}; })
+  ]).then(function(res) {
+    var st = res[0] || {}, data = res[1] || {};
     var items = (data && data.proposals) || [];
-    if (!items.length) { list.innerHTML = '<div style="padding:12px;color:var(--text-dim);font-size:11px;">Noch keine Vorschläge. Klick oben auf &#x1F50D; Scan — dann sucht die KI aktuelle Themen.</div>'; return; }
-    var html = '';
-    items.forEach(function(p) {
-      var srcs = (p.sources || []).slice(0, 3).map(function(u) { return '<a href="' + esc(u) + '" target="_blank" style="color:var(--cyan);font-size:9px;">Quelle</a>'; }).join(' · ');
-      html += '<div style="padding:8px 10px;border-bottom:1px solid var(--border);">'
-        + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">'
-        + '<span style="font-size:10px;font-weight:700;color:var(--cyan);min-width:22px;">' + (p.score || 0) + '</span>'
-        + plannerBadge(p.status) + '<span style="font-size:8px;color:var(--text-dim);">' + esc(p.theme || '') + '</span></div>'
-        + '<div style="font-size:12px;color:var(--text-bright);margin-bottom:3px;">' + esc(p.title || '') + '</div>'
-        + (p.rationale ? '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;line-height:1.4;max-height:46px;overflow:hidden;">' + esc(p.rationale) + '</div>' : '')
-        + '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">'
-        + plannerBtn(p.id, 'now', '▶ Jetzt', 'var(--red)')
-        + plannerBtn(p.id, 'approve', '✓ Genehmigen', '#3a3')
-        + plannerBtn(p.id, 'next', 'Nächstes', 'var(--cyan)')
-        + plannerBtn(p.id, 'reject', '✕', 'var(--text-dim)')
-        + (srcs ? '<span style="margin-left:auto;">' + srcs + '</span>' : '')
-        + '</div></div>';
-    });
-    list.innerHTML = html;
+    var body;
+    if (!items.length) {
+      body = '<div style="padding:12px;color:var(--text-dim);font-size:11px;">Noch keine Vorschläge. Klick oben auf &#x1F50D; Scan — dann sucht die KI aktuelle Themen.</div>';
+    } else {
+      body = '';
+      items.forEach(function(p) {
+        var srcs = (p.sources || []).slice(0, 3).map(function(u) { return '<a href="' + esc(u) + '" target="_blank" style="color:var(--cyan);font-size:9px;">Quelle</a>'; }).join(' · ');
+        body += '<div style="padding:8px 10px;border-bottom:1px solid var(--border);">'
+          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">'
+          + '<span style="font-size:10px;font-weight:700;color:var(--cyan);min-width:22px;">' + (p.score || 0) + '</span>'
+          + plannerBadge(p.status) + '<span style="font-size:8px;color:var(--text-dim);">' + esc(p.theme || '') + '</span></div>'
+          + '<div style="font-size:12px;color:var(--text-bright);margin-bottom:3px;">' + esc(p.title || '') + '</div>'
+          + (p.rationale ? '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;line-height:1.4;max-height:46px;overflow:hidden;">' + esc(p.rationale) + '</div>' : '')
+          + '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">'
+          + plannerBtn(p.id, 'now', '▶ Jetzt', 'var(--red)')
+          + plannerBtn(p.id, 'approve', '✓ Genehmigen', '#3a3')
+          + plannerBtn(p.id, 'next', 'Nächstes', 'var(--cyan)')
+          + plannerBtn(p.id, 'reject', '✕', 'var(--text-dim)')
+          + (srcs ? '<span style="margin-left:auto;">' + srcs + '</span>' : '')
+          + '</div></div>';
+      });
+    }
+    list.innerHTML = renderPlannerHead(st) + body;
     list.querySelectorAll('[data-pa]').forEach(function(el) {
       el.addEventListener('click', function() { plannerDecide(el.getAttribute('data-pid'), el.getAttribute('data-pa')); });
     });
