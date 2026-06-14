@@ -289,6 +289,7 @@ WORLD = WorldMap()
 # ─── Renderer ─────────────────────────────────────────────────────────────
 class Renderer:
     _bg_cache: Image.Image | None = None
+    _bg_overlay: Image.Image | None = None
 
     def __init__(self, args: argparse.Namespace, assets: dict[str, Any]):
         self.out_dir = Path(args.out)
@@ -482,23 +483,29 @@ class Renderer:
         zoom = 1.05 + 0.08 * ease_in_out(prog)
         iw, ih = src_img.size
         scale = max(W / iw, H / ih) * zoom
-        sw, sh = int(iw * scale), int(ih * scale)
+        sw, sh = max(W, int(iw * scale)), max(H, int(ih * scale))
         drift_dir = 1 if scene.index % 2 == 0 else -1
         max_dx = max(0, sw - W)
         max_dy = max(0, sh - H)
         dx = int(max_dx / 2 + drift_dir * max_dx * 0.18 * (prog - 0.5))
         dy = int(max_dy / 2)
-        frame = src_img.resize((sw, sh), Image.BILINEAR).crop((dx, dy, dx + W, dy + H))
+        # Nur das benoetigte WxH-Fenster aus der Quelle skalieren (box-resize),
+        # statt das ganze Bild auf sw x sh aufzublasen und dann zu croppen —
+        # pro Frame quadratisch billiger (sw*sh war bei ss=2 ~9MP).
+        box = (dx / scale, dy / scale, (dx + W) / scale, (dy + H) / scale)
+        frame = src_img.resize((W, H), Image.BILINEAR, box=box)
         img.paste(frame, (0, 0))
-        # Kontrast-Overlay: oben moderat, unten (Untertitel-Zone) kraeftig
-        ov = Image.new("L", (1, H))
-        for y in range(H):
-            f = y / max(H - 1, 1)
-            ov.putpixel((0, y), int(120 + 95 * f))
-        alpha = ov.resize((W, H))
-        dark = Image.new("RGBA", (W, H), (8, 11, 19, 255))
-        dark.putalpha(alpha)
-        img.alpha_composite(dark)
+        # Kontrast-Overlay (oben moderat, unten kraeftig) — haengt NICHT von t/scene
+        # ab, also einmal pro WxH bauen und cachen statt pro Frame neu (der alte
+        # putpixel-Loop + Resize war die Haupt-Renderbremse).
+        overlay = self._bg_overlay
+        if overlay is None or overlay.size != (W, H):
+            ramp = (120 + 95 * np.linspace(0.0, 1.0, H, dtype=np.float32)).astype(np.uint8)
+            alpha = Image.fromarray(np.repeat(ramp[:, None], W, axis=1), "L")
+            overlay = Image.new("RGBA", (W, H), (8, 11, 19, 255))
+            overlay.putalpha(alpha)
+            type(self)._bg_overlay = overlay
+        img.alpha_composite(overlay)
 
     # ── Szenen-Dispatch ──
     def draw_scene(self, img, d, scene: Scene, t: float) -> None:
@@ -1093,6 +1100,13 @@ class Renderer:
         import imageio_ffmpeg
 
         self.plan_timing(total_s)
+        # Adaptive Supersampling: ss=2 vervierfacht die Pixel + LANCZOS-Downsample
+        # pro Frame (~8x Kosten, ~271 ms/Frame). Bei langen Videos waere der Render
+        # unzumutbar (6-Min-Video @ ss2 ~40 min). Ab ~90s Laufzeit auf ss=1 — volles
+        # 1080p, nur ohne 4x-Antialiasing (~35 ms/Frame), haelt den Render kurz.
+        if self.ss > 1 and total_s > 90:
+            print(f"adaptive: supersample {self.ss}->1 (Laufzeit {total_s:.0f}s)", file=sys.stderr, flush=True)
+            self.ss = 1
         silent = self.out_dir / ("infographic_silent_preview.mp4" if self.preview else "infographic_silent.mp4")
         frames = int(total_s * self.fps)
         writer = imageio_ffmpeg.write_frames(
