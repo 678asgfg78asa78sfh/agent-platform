@@ -442,19 +442,26 @@ class Renderer:
         words = scene.narration.split()
         if not words:
             return
-        visible = max(1, int(len(words) * clamp01(t / max(scene.duration_s - 0.4, 0.1)) + 2))
-        win = 16
-        start = max(0, visible - win)
-        text = " ".join(words[start:visible])
-        f = font(int(20 * s), bold=False)
-        lines = wrap_text(d, text, f, W * 0.66)[-2:]
+        # Normale Untertitel: Narration in lesbare Segmente (~9 Woerter) teilen und
+        # das ZEITLICH passende Segment KOMPLETT zeigen — kein Wort-fuer-Wort-
+        # Typewriter mehr. Liest sich wie ganz normale Untertitel.
+        seg_len = 9
+        segments = [" ".join(words[i:i + seg_len]) for i in range(0, len(words), seg_len)]
+        n = len(segments)
+        if n == 0:
+            return
+        dur = max(scene.duration_s - 0.3, 0.1)
+        idx = min(n - 1, max(0, int((t / dur) * n)))
+        text = segments[idx]
+        f = font(int(22 * s), bold=False)
+        lines = wrap_text(d, text, f, W * 0.72)[:2]
         band_top = self.subtitle_top()
         for i, line in enumerate(lines):
             lw = text_w(d, line, f)
             x = (W - lw) / 2
-            pad = 12 * s
-            ly = band_top + i * int(30 * s)
-            d.rounded_rectangle([x - pad, ly - 4 * s, x + lw + pad, ly + 26 * s], radius=8 * s, fill=(8, 11, 19, 225))
+            pad = 14 * s
+            ly = band_top + i * int(32 * s)
+            d.rounded_rectangle([x - pad, ly - 5 * s, x + lw + pad, ly + 28 * s], radius=9 * s, fill=(6, 9, 16, 236))
             d.text((x, ly), line, font=f, fill=INK)
 
     _image_cache: dict[str, Image.Image] = {}
