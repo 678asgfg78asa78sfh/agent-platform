@@ -29,13 +29,15 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_INTERESTS = [
-    {"theme": "Geopolitik", "keywords": "geopolitik, konflikte, handel, macht, energie, taiwan, brics"},
-    {"theme": "Human Enhancement / Biologie", "keywords": "human enhancement, gene editing, crispr, neurotech, brain computer interface"},
-    {"theme": "Anti-Aging / Longevity", "keywords": "longevity, anti-aging, zellbiologie, senolytics, reprogramming, lebensspanne"},
-    {"theme": "Medizin-Durchbrueche", "keywords": "medizin durchbruch, therapie, krebs, mrna, klinische studie, zelltherapie"},
-    {"theme": "Electronics", "keywords": "halbleiter, chips, batterie, photonik, quantencomputer, hardware"},
-    {"theme": "KI / AI", "keywords": "ki, ai, llm, agent, robotik, automatisierung, durchbruch"},
-    {"theme": "Emerging Tech", "keywords": "aufkommende technologie, fusion, energie, raumfahrt, materialwissenschaft"},
+    {"theme": "US-Politik & Weltlage", "keywords": "usa, trump, wahl, washington, china, russland, geopolitik, konflikt, sanktionen, deal"},
+    {"theme": "Persoenlichkeiten & Macher", "keywords": "elon musk, milliardaere, gruender, forscher, kontroverse person, portrait, aufstieg, skandal"},
+    {"theme": "SpaceX & Raumfahrt", "keywords": "spacex, starship, mars, mond, nasa, satelliten, rakete, weltraum, artemis"},
+    {"theme": "Antarktis & Extreme Erde", "keywords": "antarktis, arktis, tiefsee, pole, gletscher, geheimnis, expedition, klima-kipppunkt"},
+    {"theme": "KI & Robotik", "keywords": "ki, ai, llm, agenten, humanoide roboter, automatisierung, durchbruch, openai, deepmind"},
+    {"theme": "Longevity & Biotech", "keywords": "longevity, anti-aging, crispr, gentechnik, zelltherapie, neurotech, medizin durchbruch"},
+    {"theme": "Energie & Electronics", "keywords": "fusion, kernfusion, batterie, halbleiter, chips, solar, quantencomputer, netz"},
+    {"theme": "Trends & Viral", "keywords": "viral, trending, kontrovers, aufkochend, was alle reden, kurios, durchbruch der woche"},
+    {"theme": "Zukunft & Big Ideas", "keywords": "zukunft, prognose, was-waere-wenn, szenario, gesellschaft, wohlstand, kausalitaet"},
 ]
 
 # Bereits behandelte Themen (aus frueheren Videos) — Dedup-Startwerte.
@@ -51,6 +53,7 @@ MODULE = {
     "settings": {
         "enabled": {"type": "bool", "label": "Aktiv", "default": True},
         "max_queue": {"type": "number", "label": "Max aktive Vorschlaege", "default": 30},
+        "max_per_theme": {"type": "number", "label": "Max aktive Vorschlaege pro Thema (Vielfalt)", "default": 2},
         "dedup_threshold": {"type": "number", "label": "Dedup-Aehnlichkeit (0-1)", "default": 0.5},
     },
     "tools": [
@@ -177,6 +180,14 @@ def save_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
     q = queue_list(config)
     existing_topics = [str(p.get("title") or p.get("query") or "") for p in q]
     added, skipped = [], []
+    # Vielfalt: max N aktive Vorschlaege pro Thema (sonst klumpt alles in ein Thema).
+    cap_theme = int_param(config.get("max_per_theme"), 2, 1, 10)
+    active_states = ("proposed", "queued", "next", "now", "approved")
+    theme_counts: dict[str, int] = {}
+    for p in q:
+        if p.get("status") in active_states:
+            th = str(p.get("theme") or "").strip().lower()
+            theme_counts[th] = theme_counts.get(th, 0) + 1
     for raw in props:
         if not isinstance(raw, dict):
             continue
@@ -189,6 +200,11 @@ def save_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
         if dup:
             skipped.append({"title": title, "duplicate_of": dup})
             continue
+        theme_key = str(raw.get("theme") or "").strip().lower()
+        if theme_key and theme_counts.get(theme_key, 0) >= cap_theme:
+            skipped.append({"title": title, "theme_voll": raw.get("theme")})
+            continue
+        theme_counts[theme_key] = theme_counts.get(theme_key, 0) + 1
         item = {
             "id": uuid.uuid4().hex[:10],
             "title": title or query[:80],
