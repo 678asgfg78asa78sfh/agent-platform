@@ -175,6 +175,8 @@ def deepdive_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "preview": bool_param(payload.get("preview"), cfg_bool(config, "preview", False)),
             "auto_render": bool_param(payload.get("auto_render"), cfg_bool(config, "auto_render", True)),
             "auto_shorts": bool_param(payload.get("auto_shorts"), cfg_bool(config, "auto_shorts", False)),
+            "auto_upload": bool_param(payload.get("auto_upload"), cfg_bool(config, "auto_upload", False)),
+            "upload_privacy": first_text(payload, "upload_privacy", "privacy") or str(config.get("default_upload_privacy") or "unlisted"),
             "fact_check": bool_param(payload.get("fact_check"), cfg_bool(config, "fact_check", True)),
             "fact_check_min_score": int_param(payload.get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100),
             "fact_check_max_claims": int_param(payload.get("fact_check_max_claims"), cfg_int(config, "fact_check_max_claims", 14), 1, 60),
@@ -274,6 +276,8 @@ def video_from_report(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "preview": bool_param(payload.get("preview"), cfg_bool(config, "preview", False)),
             "auto_render": bool_param(payload.get("auto_render"), cfg_bool(config, "auto_render", True)),
             "auto_shorts": bool_param(payload.get("auto_shorts"), cfg_bool(config, "auto_shorts", False)),
+            "auto_upload": bool_param(payload.get("auto_upload"), cfg_bool(config, "auto_upload", False)),
+            "upload_privacy": first_text(payload, "upload_privacy", "privacy") or str(config.get("default_upload_privacy") or "unlisted"),
             "fact_check": bool_param(payload.get("fact_check"), cfg_bool(config, "fact_check", True)),
             "fact_check_min_score": int_param(payload.get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100),
             "fact_check_max_claims": int_param(payload.get("fact_check_max_claims"), cfg_int(config, "fact_check_max_claims", 14), 1, 60),
@@ -441,6 +445,8 @@ def repair_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "preview": bool_param(payload.get("preview"), False),
             "auto_render": True,
             "auto_shorts": bool_param(payload.get("auto_shorts"), cfg_bool(config, "auto_shorts", False)),
+            "auto_upload": bool_param(payload.get("auto_upload"), cfg_bool(config, "auto_upload", False)),
+            "upload_privacy": first_text(payload, "upload_privacy", "privacy") or str(config.get("default_upload_privacy") or "unlisted"),
             "fact_check": bool_param(payload.get("fact_check"), cfg_bool(config, "fact_check", True)),
             "fact_check_min_score": int_param(payload.get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100),
             "fact_check_max_claims": int_param(payload.get("fact_check_max_claims"), cfg_int(config, "fact_check_max_claims", 14), 1, 60),
@@ -531,6 +537,8 @@ def process_workflow(wf: dict[str, Any], config: dict[str, Any]) -> None:
         advance_synthesize_audio(wf, config)
     elif stage == "render_video":
         advance_render_video(wf, config)
+    elif stage == "upload_video":
+        advance_upload_video(wf, config)
     elif stage == "make_shorts":
         advance_make_shorts(wf, config)
 
@@ -1239,6 +1247,31 @@ def advance_render_video(wf: dict[str, Any], config: dict[str, Any]) -> None:
         if value:
             artifacts[artifact_key] = value
     save_synthesis(wf, config, status="video_rendered")
+    # Auto-Upload (autonomer Schluss): nach Render direkt auf YouTube (default unlisted).
+    if wf.get("options", {}).get("auto_upload") and video:
+        privacy = str(wf.get("options", {}).get("upload_privacy") or "unlisted")
+        up_params: dict[str, Any] = {"video_path": video, "privacy": privacy}
+        thumb = Path(video).parent / "thumbnail.jpg"
+        if thumb.exists():
+            up_params["thumbnail_path"] = str(thumb)
+        upload_task = enqueue_direct_task(
+            config,
+            "youtube_upload.default",
+            "youtube_upload.video",
+            [json.dumps(up_params, ensure_ascii=False)],
+            created_by="workflow_trigger",
+            timeout_s=cfg_int(config, "default_upload_timeout_s", 600, 60, 3600),
+            back_route=wf.get("options", {}).get("chat_route") or None,
+            parent_id=wf.get("parent_task_id") or None,
+            workflow_id=wf.get("id"),
+            workflow_stage="upload_video",
+        )
+        wf.setdefault("tasks", {})["upload_video"] = upload_task
+        wf["stage"] = "upload_video"
+        wf["status"] = "running"
+        wf["updated_at"] = now_iso()
+        wf.setdefault("events", []).append(event("dependency_met", f"Video fertig, Upload ({privacy}) gestartet: {upload_task}"))
+        return
     if not wf.get("options", {}).get("auto_shorts"):
         wf["stage"] = "done"
         wf["status"] = "success"
@@ -1280,6 +1313,34 @@ def advance_render_video(wf: dict[str, Any], config: dict[str, Any]) -> None:
     wf["status"] = "running"
     wf["updated_at"] = now_iso()
     wf.setdefault("events", []).append(event("dependency_met", f"Video fertig, Shorts gestartet: {shorts_task}"))
+
+
+def advance_upload_video(wf: dict[str, Any], config: dict[str, Any]) -> None:
+    task_id = wf.get("tasks", {}).get("upload_video")
+    task = load_task(config, task_id)
+    done_event = "Video gerendert."
+    if task:
+        if task["status"] in {"erstellt", "gestartet"}:
+            wf["status"] = "waiting"
+            wf["updated_at"] = now_iso()
+            return
+        if task["status"] == "success":
+            res = parse_jsonish_result(task.get("result") or "")
+            url = str(res.get("url") or "").strip()
+            if url:
+                wf.setdefault("artifacts", {})["youtube_url"] = url
+            done_event = f"Hochgeladen: {url or 'ok'}"
+        else:
+            # Upload gescheitert — Video existiert trotzdem, WF nicht failen.
+            wf.setdefault("artifacts", {})["upload_error"] = truncate(task.get("result") or "", 300)
+            done_event = f"Video gerendert; Upload fehlgeschlagen: {truncate(task.get('result') or '', 120)}"
+    else:
+        done_event = "Video gerendert (Upload-Task fehlte)."
+    wf["stage"] = "done"
+    wf["status"] = "success"
+    wf["updated_at"] = now_iso()
+    wf.setdefault("events", []).append(event("completed", done_event))
+    save_synthesis(wf, config, status="done")
 
 
 def advance_make_shorts(wf: dict[str, Any], config: dict[str, Any]) -> None:

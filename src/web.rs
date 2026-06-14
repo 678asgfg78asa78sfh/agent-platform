@@ -4528,6 +4528,7 @@ async fn planner_decide(
                 "title": decision["title"].as_str().unwrap_or(""),
                 "language": "de",
                 "auto_shorts": false,
+                "auto_upload": true,
                 "chat_route": format!("chat:{}", modul),
             });
             let mut auf = crate::types::Aufgabe::direct(
