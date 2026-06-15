@@ -225,7 +225,7 @@ body::after {
   </div>
   <div id="planner-panel" class="panel">
     <div class="panel-head">
-      <span class="panel-title">Redaktionsplan — Video-Vorschläge</span>
+      <span class="panel-title">&#x1F5F3;&#xFE0F; Themen-Voting — die KI bewertet &amp; wählt</span>
       <div style="display:flex;gap:4px;">
         <button class="clear-btn" id="planner-scan" style="font-size:10px; padding:2px 6px; color:var(--cyan);" title="Jetzt nach neuen Themen suchen">&#x1F50D; Scan</button>
         <button class="clear-btn" id="planner-refresh" style="font-size:10px; padding:2px 6px;">&#x21BB;</button>
@@ -950,6 +950,7 @@ function renderPlannerHead(st) {
     + '<div style="display:flex;align-items:center;gap:7px;font-size:10px;margin-bottom:5px;flex-wrap:wrap;">'
     + '<span style="color:var(--text-bright);">Autopilot</span>' + ap
     + '<span style="color:var(--text-dim);">·</span><span style="color:var(--cyan);">\u{1F504} Auto-Crawl: ' + esc(cronHuman(st.schedule)) + '</span></div>'
+    + '<div style="font-size:8px;color:var(--text-dim);margin-bottom:5px;line-height:1.4;">\u{1F5F3}️ Tägliches Voting: die KI scort jedes Thema 0–100 (Trend · Hook · Lücke · Watchtime) → der Sieger wird automatisch produziert.</div>'
     + '<div style="display:flex;gap:12px;font-size:9px;margin-bottom:5px;">'
     + '<span style="color:var(--text);">▣ ' + prop + ' Vorschläge</span>'
     + '<span style="color:var(--red);">▶ ' + prod + ' in Produktion</span>'
@@ -970,7 +971,9 @@ function loadPlanner() {
       body = '<div style="padding:12px;color:var(--text-dim);font-size:11px;">Noch keine Vorschläge. Klick oben auf &#x1F50D; Scan — dann sucht die KI aktuelle Themen.</div>';
     } else {
       body = '';
-      items.forEach(function(p) {
+      items.forEach(function(p, i) {
+        var rank = i + 1;
+        var score = p.score || 0;
         var srcArr = Array.isArray(p.sources) ? p.sources : (p.sources ? [String(p.sources)] : []);
         var srcs = srcArr.slice(0, 3).map(function(u) {
           u = String(u);
@@ -978,19 +981,27 @@ function loadPlanner() {
             ? '<a href="' + esc(u) + '" target="_blank" style="color:var(--cyan);font-size:9px;">Quelle</a>'
             : '<span style="color:var(--text-dim);font-size:9px;" title="' + esc(u) + '">' + esc(u.slice(0, 22)) + '</span>';
         }).join(' · ');
-        body += '<div style="padding:8px 10px;border-bottom:1px solid var(--border);">'
-          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">'
-          + '<span style="font-size:10px;font-weight:700;color:var(--cyan);min-width:22px;">' + (p.score || 0) + '</span>'
-          + plannerBadge(p.status) + '<span style="font-size:8px;color:var(--text-dim);">' + esc(p.theme || '') + '</span></div>'
-          + '<div style="font-size:12px;color:var(--text-bright);margin-bottom:3px;">' + esc(p.title || '') + '</div>'
-          + (p.rationale ? '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;line-height:1.4;max-height:46px;overflow:hidden;">' + esc(p.rationale) + '</div>' : '')
+        var isWinner = (p.status === 'now' || p.status === 'approved');
+        var crown = isWinner ? '<span style="color:#f5c518;font-size:9px;font-weight:700;">\u{1F451} GEWINNER → wird produziert</span>'
+          : (rank === 1 ? '<span style="color:#f5c518;font-size:9px;">\u{1F3C6} führt im Voting</span>' : '');
+        var sc = score >= 85 ? '#3a3' : (score >= 70 ? 'var(--cyan)' : 'var(--text-dim)');
+        body += '<div style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);' + (isWinner ? 'background:rgba(245,197,24,0.07);' : '') + '">'
+          + '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:42px;border:1.5px solid ' + sc + ';border-radius:7px;padding:3px 2px;">'
+          + '<span style="font-size:17px;font-weight:800;color:' + sc + ';line-height:1;">' + score + '</span>'
+          + '<span style="font-size:7px;color:var(--text-dim);letter-spacing:1px;">VOTE</span></div>'
+          + '<div style="flex:1;min-width:0;">'
+          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap;">'
+          + '<span style="font-size:9px;color:var(--text-dim);font-weight:700;">#' + rank + '</span>'
+          + plannerBadge(p.status) + '<span style="font-size:8px;color:var(--text-dim);">' + esc(p.theme || '') + '</span>' + crown + '</div>'
+          + '<div style="font-size:12px;color:var(--text-bright);margin-bottom:2px;">' + esc(p.title || '') + '</div>'
+          + (p.rationale ? '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;line-height:1.4;max-height:42px;overflow:hidden;">' + esc(p.rationale) + '</div>' : '')
           + '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">'
           + plannerBtn(p.id, 'now', '▶ Jetzt', 'var(--red)')
           + plannerBtn(p.id, 'approve', '✓ Genehmigen', '#3a3')
           + plannerBtn(p.id, 'next', 'Nächstes', 'var(--cyan)')
           + plannerBtn(p.id, 'reject', '✕', 'var(--text-dim)')
           + (srcs ? '<span style="margin-left:auto;">' + srcs + '</span>' : '')
-          + '</div></div>';
+          + '</div></div></div>';
       });
     }
     var head = '';
