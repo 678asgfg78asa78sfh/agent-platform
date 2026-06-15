@@ -940,6 +940,31 @@ function cronHuman(s) {
     return 'täglich ' + ('0' + p[1]).slice(-2) + ':' + ('0' + p[0]).slice(-2);
   return s || '—';
 }
+function showVoteOverlay(el) {
+  document.querySelectorAll('.vote-overlay').forEach(function(o) { o.remove(); });
+  var t = +el.getAttribute('data-trend'), h = +el.getAttribute('data-hook'), g = +el.getAttribute('data-gap'), w = +el.getAttribute('data-watch'), pen = +el.getAttribute('data-pen'), score = +el.getAttribute('data-score');
+  var base = score + pen;
+  function row(name, weight, val) {
+    return '<div style="display:flex;justify-content:space-between;gap:16px;margin:1px 0;"><span>' + name + ' <span style="color:var(--text-dim);">×' + weight + '</span></span><b style="color:var(--text-bright);">' + val + '</b></div>';
+  }
+  var html = '<div class="vote-overlay" style="position:fixed;z-index:9500;background:var(--bg-surface);border:1px solid var(--cyan);border-radius:8px;padding:10px 12px;font-size:11px;color:var(--text);box-shadow:0 5px 20px rgba(0,0,0,0.6);min-width:168px;">'
+    + '<div style="font-size:9px;color:var(--cyan);margin-bottom:6px;letter-spacing:1px;">VOTE-GEWICHTUNG</div>'
+    + row('Trend', '35%', t) + row('Hook', '30%', h) + row('Lücke', '25%', g) + row('Watchtime', '10%', w)
+    + '<div style="border-top:1px solid var(--border);margin:6px 0 4px;"></div>'
+    + '<div style="display:flex;justify-content:space-between;gap:16px;"><span style="color:var(--text-dim);">gewichtet</span><b>' + base + '</b></div>'
+    + (pen ? '<div style="display:flex;justify-content:space-between;gap:16px;color:#d77;"><span>− Ähnlichkeit</span><b>−' + pen + '</b></div>' : '')
+    + '<div style="display:flex;justify-content:space-between;gap:16px;color:var(--cyan);font-size:13px;font-weight:700;margin-top:3px;"><span>= VOTE</span><span>' + score + '</span></div>'
+    + '</div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+  var ov = document.body.lastElementChild;
+  var r = el.getBoundingClientRect();
+  var left = r.right + 8; if (left + 180 > window.innerWidth) left = r.left - 180;
+  ov.style.left = Math.max(6, left) + 'px';
+  ov.style.top = Math.max(6, Math.min(window.innerHeight - 170, r.top)) + 'px';
+  setTimeout(function() {
+    document.addEventListener('click', function closeOv() { ov.remove(); document.removeEventListener('click', closeOv); });
+  }, 10);
+}
 function renderPlannerHead(st) {
   var by = st.by_status || {};
   var prop = (by.proposed || 0) + (by.next || 0) + (by.queued || 0);
@@ -971,6 +996,7 @@ function loadPlanner() {
       body = '<div style="padding:12px;color:var(--text-dim);font-size:11px;">Noch keine Vorschläge. Klick oben auf &#x1F50D; Scan — dann sucht die KI aktuelle Themen.</div>';
     } else {
       body = '';
+      var leaderMarked = false;
       items.forEach(function(p, i) {
         var rank = i + 1;
         var score = p.score || 0;
@@ -981,25 +1007,29 @@ function loadPlanner() {
             ? '<a href="' + esc(u) + '" target="_blank" style="color:var(--cyan);font-size:9px;">Quelle</a>'
             : '<span style="color:var(--text-dim);font-size:9px;" title="' + esc(u) + '">' + esc(u.slice(0, 22)) + '</span>';
         }).join(' · ');
-        var isWinner = (p.status === 'now' || p.status === 'approved');
-        var crown = isWinner ? '<span style="color:#f5c518;font-size:9px;font-weight:700;">\u{1F451} GEWINNER → wird produziert</span>'
-          : (rank === 1 ? '<span style="color:#f5c518;font-size:9px;">\u{1F3C6} führt im Voting</span>' : '');
-        var sc = score >= 85 ? '#3a3' : (score >= 70 ? 'var(--cyan)' : 'var(--text-dim)');
-        body += '<div style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);' + (isWinner ? 'background:rgba(245,197,24,0.07);' : '') + '">'
-          + '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:42px;border:1.5px solid ' + sc + ';border-radius:7px;padding:3px 2px;">'
+        var isDone = (p.status === 'now' || p.status === 'approved');
+        var isCandidate = (p.status === 'proposed' || p.status === 'next' || p.status === 'queued');
+        var isLeader = false;
+        if (isCandidate && !leaderMarked) { isLeader = true; leaderMarked = true; }
+        var tag = isDone ? '<span style="color:#3a3;font-size:9px;">✓ schon produziert</span>'
+          : (isLeader ? '<span style="color:#f5c518;font-size:9px;font-weight:700;">\u{1F451} Sieger → wird als Nächstes produziert</span>' : '');
+        var dim = isDone ? 'opacity:0.5;' : '';
+        var sc = isDone ? 'var(--text-dim)' : (score >= 85 ? '#3a3' : (score >= 70 ? 'var(--cyan)' : 'var(--text-dim)'));
+        var sb = p.scores || {};
+        var hasB = (sb.trend != null);
+        var vData = hasB ? (' data-vb="1" data-trend="' + (sb.trend || 0) + '" data-hook="' + (sb.hook || 0) + '" data-gap="' + (sb.gap || 0) + '" data-watch="' + (sb.watchtime || 0) + '" data-pen="' + (p.similarity_penalty || 0) + '" data-score="' + score + '"') : '';
+        body += '<div style="display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);' + dim + (isLeader ? 'background:rgba(245,197,24,0.07);' : '') + '">'
+          + '<div class="vote-box"' + vData + ' style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:42px;border:1.5px solid ' + sc + ';border-radius:7px;padding:3px 2px;' + (hasB ? 'cursor:pointer;' : '') + '">'
           + '<span style="font-size:17px;font-weight:800;color:' + sc + ';line-height:1;">' + score + '</span>'
-          + '<span style="font-size:7px;color:var(--text-dim);letter-spacing:1px;">VOTE</span></div>'
+          + '<span style="font-size:7px;color:var(--text-dim);letter-spacing:1px;">VOTE' + (hasB ? ' ⓘ' : '') + '</span></div>'
           + '<div style="flex:1;min-width:0;">'
           + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap;">'
           + '<span style="font-size:9px;color:var(--text-dim);font-weight:700;">#' + rank + '</span>'
-          + plannerBadge(p.status) + '<span style="font-size:8px;color:var(--text-dim);">' + esc(p.theme || '') + '</span>' + crown + '</div>'
+          + plannerBadge(p.status) + '<span style="font-size:8px;color:var(--text-dim);">' + esc(p.theme || '') + '</span>' + tag + '</div>'
           + '<div style="font-size:12px;color:var(--text-bright);margin-bottom:2px;">' + esc(p.title || '') + '</div>'
           + (p.rationale ? '<div style="font-size:10px;color:var(--text-dim);margin-bottom:3px;line-height:1.4;max-height:42px;overflow:hidden;">' + esc(p.rationale) + '</div>' : '')
-          + ((p.scores && p.scores.trend != null) ? '<div style="font-size:8px;color:var(--text-dim);margin-bottom:4px;">⚖️ Trend ' + (p.scores.trend || 0) + ' · Hook ' + (p.scores.hook || 0) + ' · Lücke ' + (p.scores.gap || 0) + ' · Watch ' + (p.scores.watchtime || 0) + (p.similarity_penalty ? ' · <span style="color:#d77;">−' + p.similarity_penalty + " ähnlich</span>" : '') + '</div>' : '')
           + '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">'
-          + plannerBtn(p.id, 'now', '▶ Jetzt', 'var(--red)')
-          + plannerBtn(p.id, 'approve', '✓ Genehmigen', '#3a3')
-          + plannerBtn(p.id, 'next', 'Nächstes', 'var(--cyan)')
+          + (isDone ? '' : (plannerBtn(p.id, 'now', '▶ Jetzt', 'var(--red)') + plannerBtn(p.id, 'approve', '✓ Genehmigen', '#3a3') + plannerBtn(p.id, 'next', 'Nächstes', 'var(--cyan)')))
           + plannerBtn(p.id, 'reject', '✕', 'var(--text-dim)')
           + (srcs ? '<span style="margin-left:auto;">' + srcs + '</span>' : '')
           + '</div></div></div>';
@@ -1010,6 +1040,9 @@ function loadPlanner() {
     list.innerHTML = head + body;
     list.querySelectorAll('[data-pa]').forEach(function(el) {
       el.addEventListener('click', function() { plannerDecide(el.getAttribute('data-pid'), el.getAttribute('data-pa')); });
+    });
+    list.querySelectorAll('.vote-box[data-vb]').forEach(function(el) {
+      el.addEventListener('click', function(e) { e.stopPropagation(); showVoteOverlay(el); });
     });
   }).catch(function() { list.innerHTML = '<div style="padding:10px;color:var(--red);font-size:11px;">Laden fehlgeschlagen.</div>'; });
 }

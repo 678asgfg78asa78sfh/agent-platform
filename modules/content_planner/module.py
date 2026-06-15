@@ -268,9 +268,11 @@ def list_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
     q = queue_list(config)
     status_f = str(payload.get("status") or "").strip().lower()
     items = [p for p in q if (not status_f or p.get("status") == status_f)]
-    # Reihenfolge: now -> next -> approved -> proposed (queued), je Score
-    rank = {"now": 0, "next": 1, "approved": 2, "queued": 3, "proposed": 4}
-    items.sort(key=lambda p: (rank.get(p.get("status"), 9), -int(p.get("score", 0))))
+    # Aktives Voting ZUERST (Kandidaten, nach Score), DANN schon produzierte
+    # (now/approved) als erledigt, zuletzt verworfene. Schon gemachte Themen
+    # konkurrieren NICHT mehr im Vote — sie stehen unten als ✓ produziert.
+    group = {"next": 0, "proposed": 0, "queued": 0, "now": 1, "approved": 1, "rejected": 2}
+    items.sort(key=lambda p: (group.get(p.get("status"), 1), -int(p.get("score", 0))))
     limit = int_param(payload.get("limit"), 30, 1, 200)
     return ok({"count": len(items), "proposals": items[:limit]})
 
