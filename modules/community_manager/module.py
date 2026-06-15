@@ -23,7 +23,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-TOKEN_URL = "https://oauth2.googleapis.com/token"
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from yt_oauth import access_token  # noqa: E402 — geteilter OAuth-Helfer (Dedup)
+
 THREADS_URL = "https://www.googleapis.com/youtube/v3/commentThreads"
 COMMENTS_URL = "https://www.googleapis.com/youtube/v3/comments"
 ROOT = Path(__file__).resolve().parents[2]
@@ -213,23 +216,6 @@ def status(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         "drafts_by_status": by,
         "seen_count": len(load(config, "seen.json", [])),
     })
-
-
-def access_token(config: dict[str, Any]) -> str:
-    cid = str(config.get("client_id") or "").strip()
-    secret = str(config.get("client_secret") or "").strip()
-    refresh = str(config.get("refresh_token") or "").strip()
-    if not (cid and secret and refresh):
-        raise RuntimeError("OAuth-Credentials fehlen in den Settings.")
-    data = urllib.parse.urlencode({"client_id": cid, "client_secret": secret,
-                                    "refresh_token": refresh, "grant_type": "refresh_token"}).encode("utf-8")
-    req = urllib.request.Request(TOKEN_URL, data=data, method="POST",
-                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        tok = json.loads(resp.read().decode("utf-8", errors="replace"))
-    if not tok.get("access_token"):
-        raise RuntimeError(f"Kein access_token: {json.dumps(tok)[:160]}")
-    return tok["access_token"]
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────

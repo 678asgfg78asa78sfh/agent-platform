@@ -1,3 +1,4 @@
+import sys
 """System-Info Modul — liefert Infos über CPU, RAM, Disk, Netzwerk."""
 import json, sys, os, platform
 
@@ -39,8 +40,8 @@ def _overview():
                 cpus = [l for l in f if l.startswith("model name")]
                 if cpus:
                     info.append(f"CPU: {cpus[0].split(':')[1].strip()} ({len(cpus)} cores)")
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[sysinfo] uebersprungener Fehler: %r\n" % (_e,))
 
         # RAM
         try:
@@ -50,8 +51,8 @@ def _overview():
                 avail = int([l for l in lines if "MemAvailable" in l][0].split()[1]) // 1024
                 used = total - avail
                 info.append(f"RAM: {used}MB / {total}MB ({100*used//total}%)")
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[sysinfo] uebersprungener Fehler: %r\n" % (_e,))
 
         # Disk
         try:
@@ -60,15 +61,15 @@ def _overview():
             free_gb = (st.f_bavail * st.f_frsize) / (1024**3)
             used_gb = total_gb - free_gb
             info.append(f"Disk /: {used_gb:.1f}GB / {total_gb:.1f}GB ({100*used_gb/total_gb:.0f}%)")
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[sysinfo] uebersprungener Fehler: %r\n" % (_e,))
 
         # Load
         try:
             load1, load5, load15 = os.getloadavg()
             info.append(f"Load: {load1:.2f} / {load5:.2f} / {load15:.2f}")
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[sysinfo] uebersprungener Fehler: %r\n" % (_e,))
 
         # Uptime
         try:
@@ -77,8 +78,8 @@ def _overview():
                 days = int(secs // 86400)
                 hours = int((secs % 86400) // 3600)
                 info.append(f"Uptime: {days}d {hours}h")
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[sysinfo] uebersprungener Fehler: %r\n" % (_e,))
 
         return {"success": True, "data": "\n".join(info)}
     except Exception as e:

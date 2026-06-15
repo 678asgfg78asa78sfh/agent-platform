@@ -1,3 +1,4 @@
+import sys
 """Module Builder — Ermoeglicht der KI neue Python-Module zu erstellen, testen und deployen."""
 import json, sys, os, subprocess, re, difflib, shutil, uuid
 from datetime import datetime, timezone
@@ -336,7 +337,8 @@ def _list():
             if tools:
                 lines.append(f"    Tools: {', '.join(tools)}")
             lines.append("")
-        except:
+        except Exception as _e:
+            sys.stderr.write("[module_builder] %s laden fehlgeschlagen: %r\n" % (entry, _e))
             lines.append(f"  {entry:20s} (Fehler beim Laden)")
             lines.append("")
     return {"success": True, "data": "\n".join(lines)}
@@ -517,8 +519,8 @@ def _draft_list(name):
         first = ""
         try:
             first = _read_text(path).splitlines()[0][:120]
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[module_builder] uebersprungener Fehler: %r\n" % (_e,))
         files.append((st.st_mtime, f"{entry} | {st.st_size} bytes | {ts} | {first}"))
     if not files:
         return {"success": True, "data": f"Keine Drafts fuer Modul '{name}'."}
@@ -596,8 +598,8 @@ def _draft_promote(name, draft_id):
         else:
             try:
                 os.remove(mod_path)
-            except OSError:
-                pass
+            except OSError as _e:
+                sys.stderr.write("[module_builder] uebersprungener Fehler: %r\n" % (_e,))
             restored = "Kaputte neue module.py entfernt."
         return {"success": False, "data": f"Promote hat aktiven Test nicht bestanden. {restored}\n{active_test['data']}"}
 
@@ -648,8 +650,8 @@ def _write_module(name, code):
             try:
                 os.remove(mod_path)
                 os.rmdir(mod_dir)
-            except OSError:
-                pass
+            except OSError as _e:
+                sys.stderr.write("[module_builder] uebersprungener Fehler: %r\n" % (_e,))
             restored = "Kaputte neue Datei wurde entfernt."
         return {"success": False, "data": f"Modul-Code geschrieben, aber Test fehlgeschlagen. {restored}\n{test_result['data']}"}
 

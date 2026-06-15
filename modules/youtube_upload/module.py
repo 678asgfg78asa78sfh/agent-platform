@@ -26,7 +26,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-TOKEN_URL = "https://oauth2.googleapis.com/token"
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from yt_oauth import access_token  # noqa: E402 — geteilter OAuth-Helfer (Dedup)
+
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status"
 THUMB_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&mine=true"
@@ -215,27 +218,6 @@ def status(config: dict[str, Any]) -> dict[str, Any]:
         "default_privacy": config.get("default_privacy"),
         "credentials": "ok",
     })
-
-
-def access_token(config: dict[str, Any]) -> str:
-    """Refresh-Token -> kurzlebiges Access-Token (pro Aufruf neu, ~1h gueltig)."""
-    cid = str(config.get("client_id") or "").strip()
-    secret = str(config.get("client_secret") or "").strip()
-    refresh = str(config.get("refresh_token") or "").strip()
-    if not (cid and secret and refresh):
-        raise RuntimeError("client_id/client_secret/refresh_token fehlen in den Modul-Settings.")
-    data = urllib.parse.urlencode({
-        "client_id": cid, "client_secret": secret,
-        "refresh_token": refresh, "grant_type": "refresh_token",
-    }).encode("utf-8")
-    req = urllib.request.Request(TOKEN_URL, data=data, method="POST",
-                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        tok = json.loads(resp.read().decode("utf-8", errors="replace"))
-    at = tok.get("access_token")
-    if not at:
-        raise RuntimeError(f"Kein access_token: {json.dumps(tok)[:160]}")
-    return at
 
 
 # ─── Auto-Metadaten ─────────────────────────────────────────────────────────

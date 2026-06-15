@@ -666,8 +666,8 @@ def _patch(params, config):
     finally:
         try:
             os.remove(tmp_path)
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[coding] uebersprungener Fehler: %r\n" % (_e,))
 
     diff_check = git_diff_check(root)
     if task:
@@ -845,8 +845,8 @@ def parse_payload(params, default_key="query"):
             data = json.loads(raw)
             if isinstance(data, dict):
                 return data
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[coding] uebersprungener Fehler: %r\n" % (_e,))
     return {default_key: raw}
 
 
@@ -861,8 +861,8 @@ def _first(params, key):
             data = json.loads(raw)
             if isinstance(data, dict):
                 return str(data.get(key) or data.get("id") or "").strip()
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[coding] uebersprungener Fehler: %r\n" % (_e,))
     return raw
 
 
@@ -1157,8 +1157,8 @@ def list_snapshots(config):
             try:
                 with open(path, "r", encoding="utf-8") as fh:
                     out.append(json.load(fh))
-            except Exception:
-                pass
+            except Exception as _e:
+                sys.stderr.write("[coding] uebersprungener Fehler: %r\n" % (_e,))
     return out
 
 
@@ -1208,8 +1208,8 @@ def rg_search(root, query, config, max_results):
                     hits.append({"path": parts[0], "line": parts[1], "text": truncate(parts[2].strip(), 260)})
                     if len(hits) >= max_results:
                         break
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[coding] uebersprungener Fehler: %r\n" % (_e,))
     if hits:
         return hits
     terms = [t.lower() for t in re.findall(r"[A-Za-z0-9_]+", query) if len(t) > 2]

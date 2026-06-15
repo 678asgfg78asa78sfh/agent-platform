@@ -127,8 +127,8 @@ def _get_db(config: dict | None = None) -> sqlite3.Connection:
         if getattr(_db_local, "conn", None) is not None:
             try:
                 _db_local.conn.close()
-            except Exception:
-                pass
+            except Exception as _e:
+                sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
         path_dir = os.path.dirname(path)
         if path_dir:
             os.makedirs(path_dir, exist_ok=True)
@@ -202,11 +202,11 @@ def _init_db(config: dict | None = None):
             for q in old if isinstance(old, list) else old.get("quellen", []):
                 try:
                     _migrate_old_source(conn, q)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
             os.rename(OLD_JSON, OLD_JSON + ".migrated")
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
     return conn
 
 
@@ -247,8 +247,8 @@ def _migrate_old_source(conn, q):
         conn.execute(
             "INSERT OR IGNORE INTO sources(id,url,name,category,language,reliability,alignment,reach,freshness_hint,tags_json,notes,active,created_at_utc,updated_at_utc) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?)",
             [sid, url, name, kat, lang, s, a, r, fh, tags, notes, now, now])
-    except Exception:
-        pass
+    except Exception as _e:
+        sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
 
 
 def _normalize_url(url: str) -> str:
@@ -363,8 +363,8 @@ def _parse_date(s: str) -> str:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        pass
+    except Exception as _e:
+        sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
     formats = [
         "%a, %d %b %Y %H:%M:%S %z",   # RFC 2822
         "%a, %d %b %Y %H:%M:%S %Z",
@@ -430,8 +430,8 @@ def _score_item(row, query_tokens: list) -> float:
                 score += 1.0
             elif hours_ago < 72:
                 score += 0.5
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
 
     return score
 
@@ -589,8 +589,8 @@ def _row_value(row, key: str, default=""):
         if key in row.keys():
             value = row[key]
             return default if value is None else value
-    except Exception:
-        pass
+    except Exception as _e:
+        sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
     return default
 
 
@@ -932,8 +932,8 @@ def _fetch(daten_json: str, config: dict | None = None) -> str:
                     )
                     new_for_src += 1
                     new_item_ids.append(iid)
-                except sqlite3.IntegrityError:
-                    pass
+                except sqlite3.IntegrityError as _e:
+                    sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
             conn.execute("UPDATE sources SET last_fetch_at_utc=?, last_error=NULL, updated_at_utc=? WHERE id=?", [now, now, src["id"]])
             total_new += new_for_src
             output_lines.append(f"  [{src['id']}] {src['name']}: {new_for_src} neue Items")
@@ -1110,8 +1110,8 @@ def _fuer_deepdive(anfrage_json: str, config: dict | None = None) -> str:
             lf_dt = datetime.strptime(last_fetch, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             if (datetime.now(timezone.utc) - lf_dt).total_seconds() > stale_after_minutes * 60:
                 index_stale = True
-        except Exception:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[rss_verwaltung] uebersprungener Fehler: %r\n" % (_e,))
 
     refresh_log = []
     if sources and refresh and (force_refresh or index_stale):

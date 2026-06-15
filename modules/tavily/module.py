@@ -1,3 +1,4 @@
+import sys
 """Tavily Search — Web-Suche via Tavily API (besser als DuckDuckGo Scraping)."""
 import json, sys, os, urllib.request
 
@@ -29,8 +30,8 @@ def _load_own_config():
     if os.path.exists(cfg_path):
         try:
             return json.load(open(cfg_path))
-        except:
-            pass
+        except Exception as _e:
+            sys.stderr.write("[tavily] uebersprungener Fehler: %r\n" % (_e,))
     return {}
 
 def _search(query, config):

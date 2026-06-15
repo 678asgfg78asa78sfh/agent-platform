@@ -329,8 +329,8 @@ def deliver_reply(config, chat_id, final_text, was_voice, requested_voice):
                     delivered = True
                     try:
                         os.remove(audio_path)
-                    except OSError:
-                        pass
+                    except OSError as _e:
+                        sys.stderr.write("[telegram_bot] uebersprungener Fehler: %r\n" % (_e,))
             else:
                 voice_error = "Antwort war leer"
         except Exception as exc:
@@ -641,8 +641,8 @@ def extract_user_text(message, config):
         text = transcribe_xai(path, mime, config)
         try:
             os.remove(path)
-        except OSError:
-            pass
+        except OSError as _e:
+            sys.stderr.write("[telegram_bot] uebersprungener Fehler: %r\n" % (_e,))
         return text, True, None
 
     return "", False, None
@@ -702,8 +702,8 @@ def extract_image_payload(message, config):
     finally:
         try:
             os.remove(path)
-        except OSError:
-            pass
+        except OSError as _e:
+            sys.stderr.write("[telegram_bot] uebersprungener Fehler: %r\n" % (_e,))
 
 
 def suffix_for_mime(mime):
@@ -1290,8 +1290,8 @@ def enhance_voice_output(text, config):
         enhanced = normalize_voice_enhancer_response(raw, max_chars)
         if enhanced and not voice_output_looks_bad(enhanced):
             return enhanced
-    except Exception:
-        pass
+    except Exception as _e:
+        sys.stderr.write("[telegram_bot] uebersprungener Fehler: %r\n" % (_e,))
     return fallback
 
 
@@ -1846,8 +1846,8 @@ def send_audio_reply(config, chat_id, audio_path, caption=""):
             finally:
                 try:
                     os.remove(ogg_path)
-                except OSError:
-                    pass
+                except OSError as _e:
+                    sys.stderr.write("[telegram_bot] uebersprungener Fehler: %r\n" % (_e,))
     tg_send_file(config, "sendAudio", chat_id, "audio", audio_path, caption=caption, action="upload_voice")
 
 
@@ -1952,8 +1952,8 @@ def tg_send_message(config, chat_id, text):
 def tg_action(config, chat_id, action):
     try:
         tg_post(config, "sendChatAction", {"chat_id": chat_id, "action": action}, timeout=8)
-    except Exception:
-        pass
+    except Exception as _e:
+        sys.stderr.write("[telegram_bot] uebersprungener Fehler: %r\n" % (_e,))
 
 
 def tg_send_file(config, method, chat_id, field, path, caption="", action="upload_document"):
