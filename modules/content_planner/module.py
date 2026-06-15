@@ -148,6 +148,23 @@ def coerce_sources(value: Any) -> list[str]:
     return []
 
 
+# Voting-Gewichtung: woraus sich der Score zusammensetzt (transparent + anpassbar).
+VOTE_WEIGHTS = {"trend": 0.35, "hook": 0.30, "gap": 0.25, "watchtime": 0.10}
+SIM_PENALTY_MAX = 40  # max. Minus-Gewicht bei hoher Aehnlichkeit zu schon Behandeltem
+
+
+def weighted_score(breakdown: dict[str, Any]) -> float | None:
+    """Gewichteter Gesamt-Score aus den Faktoren trend/hook/gap/watchtime."""
+    total = 0.0
+    wsum = 0.0
+    for k, w in VOTE_WEIGHTS.items():
+        v = breakdown.get(k)
+        if isinstance(v, (int, float)):
+            total += float(v) * w
+            wsum += w
+    return (total / wsum) if wsum else None
+
+
 # ─── Tokenizer / Dedup ──────────────────────────────────────────────────────
 _STOP = {"und", "oder", "der", "die", "das", "im", "in", "ein", "eine", "den", "von",
          "zu", "mit", "auf", "wie", "was", "des", "the", "and", "for", "a", "of"}
@@ -179,6 +196,7 @@ def save_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
         props = [props]
     q = queue_list(config)
     existing_topics = [str(p.get("title") or p.get("query") or "") for p in q]
+    covered = covered_list(config)  # schon behandelte Themen — fuer Strafe + Cancel
     added, skipped = [], []
     # Vielfalt: max N aktive Vorschlaege pro Thema (sonst klumpt alles in ein Thema).
     cap_theme = int_param(config.get("max_per_theme"), 2, 1, 10)
@@ -205,6 +223,19 @@ def save_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
             skipped.append({"title": title, "theme_voll": raw.get("theme")})
             continue
         theme_counts[theme_key] = theme_counts.get(theme_key, 0) + 1
+        # Transparentes Voting: Faktoren (trend/hook/gap/watchtime) -> gewichteter
+        # Basis-Score; falls LLM nur einen Gesamtscore liefert, den nehmen.
+        raw_scores = raw.get("scores") if isinstance(raw.get("scores"), dict) else {}
+        breakdown = {k: int_param(raw_scores.get(k), 0, 0, 100) for k in VOTE_WEIGHTS} if raw_scores else {}
+        base = weighted_score(breakdown)
+        if base is None:
+            base = float(int_param(raw.get("score"), 50, 0, 100))
+        # Aehnlichkeits-Strafe (Minus-Gewicht): je aehnlicher zu schon Behandeltem
+        # oder bereits in der Queue, desto mehr Abzug.
+        sims = [similarity(topic, prev) for prev in covered] + [similarity(topic, e) for e in existing_topics]
+        maxsim = max(sims) if sims else 0.0
+        penalty = round(maxsim * SIM_PENALTY_MAX)
+        final = max(0, min(100, round(base - penalty)))
         item = {
             "id": uuid.uuid4().hex[:10],
             "title": title or query[:80],
@@ -212,7 +243,9 @@ def save_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
             "theme": str(raw.get("theme") or "").strip(),
             "rationale": str(raw.get("rationale") or "").strip(),
             "sources": coerce_sources(raw.get("sources")),
-            "score": int_param(raw.get("score"), 50, 0, 100),
+            "scores": breakdown,
+            "similarity_penalty": penalty,
+            "score": final,
             "status": "proposed",
             "created": int(time.time()),
         }

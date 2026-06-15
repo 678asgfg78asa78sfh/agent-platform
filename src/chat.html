@@ -950,7 +950,7 @@ function renderPlannerHead(st) {
     + '<div style="display:flex;align-items:center;gap:7px;font-size:10px;margin-bottom:5px;flex-wrap:wrap;">'
     + '<span style="color:var(--text-bright);">Autopilot</span>' + ap
     + '<span style="color:var(--text-dim);">·</span><span style="color:var(--cyan);">\u{1F504} Auto-Crawl: ' + esc(cronHuman(st.schedule)) + '</span></div>'
-    + '<div style="font-size:8px;color:var(--text-dim);margin-bottom:5px;line-height:1.4;">\u{1F5F3}️ Tägliches Voting: die KI scort jedes Thema 0–100 (Trend · Hook · Lücke · Watchtime) → der Sieger wird automatisch produziert.</div>'
+    + '<div style="font-size:8px;color:var(--text-dim);margin-bottom:5px;line-height:1.5;">\u{1F5F3}️ Voting-Gewichtung: <b style="color:var(--text);">Trend 35%</b> · Hook 30% · Lücke 25% · Watchtime 10% · <span style="color:#d77;">−Ähnlichkeit</span> zu Behandeltem → Sieger \u{1F451} wird produziert. Schon gemachte Themen werden gecancelt.</div>'
     + '<div style="display:flex;gap:12px;font-size:9px;margin-bottom:5px;">'
     + '<span style="color:var(--text);">▣ ' + prop + ' Vorschläge</span>'
     + '<span style="color:var(--red);">▶ ' + prod + ' in Produktion</span>'
@@ -994,7 +994,8 @@ function loadPlanner() {
           + '<span style="font-size:9px;color:var(--text-dim);font-weight:700;">#' + rank + '</span>'
           + plannerBadge(p.status) + '<span style="font-size:8px;color:var(--text-dim);">' + esc(p.theme || '') + '</span>' + crown + '</div>'
           + '<div style="font-size:12px;color:var(--text-bright);margin-bottom:2px;">' + esc(p.title || '') + '</div>'
-          + (p.rationale ? '<div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;line-height:1.4;max-height:42px;overflow:hidden;">' + esc(p.rationale) + '</div>' : '')
+          + (p.rationale ? '<div style="font-size:10px;color:var(--text-dim);margin-bottom:3px;line-height:1.4;max-height:42px;overflow:hidden;">' + esc(p.rationale) + '</div>' : '')
+          + ((p.scores && p.scores.trend != null) ? '<div style="font-size:8px;color:var(--text-dim);margin-bottom:4px;">⚖️ Trend ' + (p.scores.trend || 0) + ' · Hook ' + (p.scores.hook || 0) + ' · Lücke ' + (p.scores.gap || 0) + ' · Watch ' + (p.scores.watchtime || 0) + (p.similarity_penalty ? ' · <span style="color:#d77;">−' + p.similarity_penalty + " ähnlich</span>" : '') + '</div>' : '')
           + '<div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap;">'
           + plannerBtn(p.id, 'now', '▶ Jetzt', 'var(--red)')
           + plannerBtn(p.id, 'approve', '✓ Genehmigen', '#3a3')
