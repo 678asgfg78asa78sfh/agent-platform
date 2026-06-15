@@ -26,12 +26,17 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
+
+# Whisper-Sync (GPU-Box) liefert Wort-Zeiten fuer ECHTE Untertitel-Synchronisation.
+WHISPER_SYNC_URL = os.environ.get("WHISPER_SYNC_URL", "http://192.168.2.102:8003")
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -290,6 +295,7 @@ WORLD = WorldMap()
 class Renderer:
     _bg_cache: Image.Image | None = None
     _bg_overlay: Image.Image | None = None
+    subtitle_timeline: list[dict] | None = None  # whisper-sync Wort-Zeiten (echte Sync)
 
     def __init__(self, args: argparse.Namespace, assets: dict[str, Any]):
         self.out_dir = Path(args.out)
@@ -435,24 +441,65 @@ class Renderer:
         frac = clamp01(t_abs / max(total, 1e-6))
         d.rectangle([0, H - 5 * s, int(W * frac), H], fill=scene.accent + (220,))
 
+    def build_subtitle_timeline(self, audio_path: Path) -> list[dict] | None:
+        """Holt Wort-Zeiten von whisper-sync (GPU-Box) und gruppiert sie zu
+        lesbaren, ZEITGENAUEN Segmenten. None -> Fallback gleichmaessige Verteilung."""
+        try:
+            data = Path(audio_path).read_bytes()
+            req = urllib.request.Request(
+                WHISPER_SYNC_URL.rstrip("/") + "/transcribe", data=data, method="POST",
+                headers={"Content-Type": "application/octet-stream", "X-Language": "de"})
+            with urllib.request.urlopen(req, timeout=240) as r:
+                res = json.loads(r.read().decode("utf-8", errors="replace"))
+            words = res.get("words") or []
+            if not words:
+                return None
+            segs: list[dict] = []
+            cur: list[dict] = []
+            for w in words:
+                cur.append(w)
+                ends = str(w.get("w", "")).endswith((".", "!", "?", ":", ";"))
+                if len(cur) >= 8 or (ends and len(cur) >= 3):
+                    segs.append({"start": float(cur[0]["start"]), "end": float(cur[-1]["end"]),
+                                 "text": " ".join(str(x.get("w", "")) for x in cur).strip()})
+                    cur = []
+            if cur:
+                segs.append({"start": float(cur[0]["start"]), "end": float(cur[-1]["end"]),
+                             "text": " ".join(str(x.get("w", "")) for x in cur).strip()})
+            for i in range(len(segs) - 1):  # kleine Luecken schliessen
+                if 0 < segs[i + 1]["start"] - segs[i]["end"] < 1.2:
+                    segs[i]["end"] = segs[i + 1]["start"]
+            print(f"whisper-sync: {len(segs)} synchrone Untertitel-Segmente", file=sys.stderr, flush=True)
+            return segs or None
+        except Exception as exc:
+            print(f"whisper-sync nicht verfuegbar ({exc}) -> Fallback Verteilung", file=sys.stderr, flush=True)
+            return None
+
     def draw_subtitles(self, d, scene: Scene, t: float, W: int, H: int) -> None:
-        if not scene.narration:
-            return
         s = self.ss
-        words = scene.narration.split()
-        if not words:
+        text = None
+        if self.subtitle_timeline is not None:
+            # ECHTE Sync: absolute Zeit (Szenenstart + lokal) -> Whisper-Segment.
+            t_abs = scene.start_s + t
+            for seg in self.subtitle_timeline:
+                if seg["start"] <= t_abs < seg["end"]:
+                    text = seg["text"]
+                    break
+            # In Luecken zwischen Segmenten: kein Untertitel.
+        else:
+            # Fallback: Szenen-Narration gleichmaessig ueber die Szene verteilt.
+            if not scene.narration:
+                return
+            words = scene.narration.split()
+            if not words:
+                return
+            segments = [" ".join(words[i:i + 9]) for i in range(0, len(words), 9)]
+            if segments:
+                dur = max(scene.duration_s - 0.3, 0.1)
+                idx = min(len(segments) - 1, max(0, int((t / dur) * len(segments))))
+                text = segments[idx]
+        if not text:
             return
-        # Normale Untertitel: Narration in lesbare Segmente (~9 Woerter) teilen und
-        # das ZEITLICH passende Segment KOMPLETT zeigen — kein Wort-fuer-Wort-
-        # Typewriter mehr. Liest sich wie ganz normale Untertitel.
-        seg_len = 9
-        segments = [" ".join(words[i:i + seg_len]) for i in range(0, len(words), seg_len)]
-        n = len(segments)
-        if n == 0:
-            return
-        dur = max(scene.duration_s - 0.3, 0.1)
-        idx = min(n - 1, max(0, int((t / dur) * n)))
-        text = segments[idx]
         f = font(int(22 * s), bold=False)
         lines = wrap_text(d, text, f, W * 0.72)[:2]
         band_top = self.subtitle_top()
@@ -1107,6 +1154,10 @@ class Renderer:
         import imageio_ffmpeg
 
         self.plan_timing(total_s)
+        # Untertitel exakt zur Stimme: Wort-Zeiten von whisper-sync holen (Fallback
+        # = gleichmaessige Szenen-Verteilung, wenn die GPU-Box nicht erreichbar ist).
+        if audio is not None and Path(audio).exists():
+            self.subtitle_timeline = self.build_subtitle_timeline(Path(audio))
         # Adaptive Supersampling: ss=2 vervierfacht die Pixel + LANCZOS-Downsample
         # pro Frame (~8x Kosten, ~271 ms/Frame). Bei langen Videos waere der Render
         # unzumutbar (6-Min-Video @ ss2 ~40 min). Ab ~90s Laufzeit auf ss=1 — volles
