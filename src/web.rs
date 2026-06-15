@@ -1731,6 +1731,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             axum::routing::post(restore_config_backup),
         )
         .route("/api/aufgaben", axum::routing::get(get_aufgaben))
+        .route("/api/tasks/graph", axum::routing::get(tasks_graph))
         .route("/api/aufgaben/{id}", axum::routing::delete(cancel_aufgabe))
         .route("/api/aufgaben/{id}", axum::routing::patch(edit_aufgabe))
         .route(
@@ -4462,6 +4463,38 @@ async fn image_start(
         "count": count,
         "message": "Bild-Pipeline gestartet. Ergebnis erscheint unter Medien.",
     }))
+}
+
+/// Task-Graph (Maltego/Mindmap-Stil): Nodes = Tasks, Kanten = parent_id
+/// (welcher Task welchen gespawnt hat), Cluster = workflow_id. Aus den letzten
+/// ~300 Tasks (auch erledigte) — zeigt was zusammengehoert.
+async fn tasks_graph(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let rows = crate::store::task_list_recent(&s.pipeline.store.pool, 300).unwrap_or_default();
+    let ids: std::collections::HashSet<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let mut nodes = Vec::with_capacity(rows.len());
+    let mut edges = Vec::new();
+    for r in &rows {
+        let p: serde_json::Value =
+            serde_json::from_str(&r.payload_json).unwrap_or_else(|_| serde_json::json!({}));
+        let tool = p["tool"].as_str().unwrap_or("");
+        let anweisung = p["anweisung"].as_str().unwrap_or("");
+        let label = if !tool.is_empty() { tool } else if !anweisung.is_empty() { anweisung } else { "task" };
+        let parent = p["parent_id"].as_str().unwrap_or("");
+        nodes.push(serde_json::json!({
+            "id": r.id,
+            "label": util::safe_truncate(label, 42),
+            "modul": r.modul,
+            "status": r.status,
+            "workflow": p["workflow_id"].as_str().unwrap_or(""),
+            "stage": p["workflow_stage"].as_str().unwrap_or(""),
+            "typ": p["typ"].as_str().unwrap_or(""),
+            "ts": r.erstellt_ts,
+        }));
+        if !parent.is_empty() && ids.contains(parent) {
+            edges.push(serde_json::json!({"from": parent, "to": r.id}));
+        }
+    }
+    Json(serde_json::json!({"nodes": nodes, "edges": edges, "count": rows.len()}))
 }
 
 /// Redaktionsplan: aktive Vorschlags-Queue (fuer das Chat-Panel).

@@ -581,6 +581,23 @@ pub fn task_list_erledigt_recent(pool: &SqlitePool, limit: usize) -> StoreResult
     Ok(rows)
 }
 
+/// Alle Tasks (egal welcher Status), juengste zuerst — fuer den Task-Graph.
+pub fn task_list_recent(pool: &SqlitePool, limit: usize) -> StoreResult<Vec<TaskRow>> {
+    let conn = pool.get().map_err(e("pool"))?;
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT id, status, modul, payload_json, erstellt_ts, gestartet_ts, erledigt_ts
+         FROM tasks ORDER BY erstellt_ts DESC LIMIT ?1",
+        )
+        .map_err(e("prepare"))?;
+    let rows = stmt
+        .query_map(params![limit as i64], TaskRow::from_row)
+        .map_err(e("query"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(e("collect"))?;
+    Ok(rows)
+}
+
 pub fn task_count_completed(pool: &SqlitePool) -> StoreResult<usize> {
     let conn = pool.get().map_err(e("pool"))?;
     let count: i64 = conn
