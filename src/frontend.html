@@ -2966,6 +2966,9 @@ var WF_STAGES = [
   ['done', 'Fertig']
 ];
 
+var wfCollapsed = (function(){ try { return localStorage.getItem('wf_banner_collapsed') === '1'; } catch(e){ return false; } })();
+function toggleWfBanner() { wfCollapsed = !wfCollapsed; try { localStorage.setItem('wf_banner_collapsed', wfCollapsed ? '1' : '0'); } catch(e){} loadWorkflows(); }
+
 function loadWorkflows() {
   apiFetch('GET', '/api/workflows').then(function(data) {
     var wfs = (data && data.workflows) || [];
@@ -2977,11 +2980,24 @@ function loadWorkflows() {
     var show = active.concat(recent);
     if (!show.length) { banner.style.display='none'; banner.innerHTML=''; return; }
     banner.style.display='block';
-    var html = '<div style="font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin-bottom:6px;">&#x1F3AC; Video-Pipelines'
-      + (active.length ? ' &mdash; '+active.length+' aktiv' : '') + '</div>';
-    show.forEach(function(w){
-      html += renderWorkflowRow(w);
-    });
+    var head = '<div onclick="toggleWfBanner()" title="ein-/ausklappen" style="display:flex;align-items:center;gap:7px;font-size:10px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin-bottom:6px;cursor:pointer;user-select:none;">'
+      + '<span style="display:inline-block;transition:transform .2s;transform:rotate('+(wfCollapsed?'-90deg':'0deg')+');font-size:9px;">&#x25BE;</span>'
+      + '&#x1F3AC; Video-Pipelines' + (active.length ? ' &mdash; '+active.length+' aktiv' : '')
+      + (wfCollapsed ? '<span style="color:var(--text-dim);font-size:9px;letter-spacing:.4px;text-transform:none;">(Ticker)</span>' : '') + '</div>';
+    if (wfCollapsed) {
+      var ticker = show.slice(0,8).map(function(w){
+        var done=(w.status==='success'), failed=(w.status==='failed'||w.status==='cancelled'||String(w.stage).indexOf('failed')>=0);
+        var col = failed?'var(--red)':(done?'var(--green)':'var(--cyan)');
+        var glow = (!done&&!failed)?'box-shadow:0 0 5px '+col+';':'';
+        return '<span title="'+escHtml(w.title)+(w.last_event?' — '+escHtml(w.last_event):'')+'" style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;background:var(--bg-surface);border:1px solid var(--border);border-left:2px solid '+col+';border-radius:20px;font-size:10px;white-space:nowrap;">'
+          + '<span style="width:6px;height:6px;border-radius:50%;flex:0 0 auto;background:'+col+';'+glow+'"></span>'
+          + '<span style="color:var(--text-bright);max-width:150px;overflow:hidden;text-overflow:ellipsis;">'+escHtml(w.title)+'</span></span>';
+      }).join('');
+      banner.innerHTML = head + '<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:3px;">'+ticker+'</div>';
+      return;
+    }
+    var html = head;
+    show.forEach(function(w){ html += renderWorkflowRow(w); });
     banner.innerHTML = html;
   }).catch(function(){});
 }
@@ -3556,57 +3572,131 @@ function loadTaskGraph() {
   }).catch(function() { box.innerHTML = '<div style="padding:20px;color:var(--red);font-size:12px;">Laden fehlgeschlagen.</div>'; });
 }
 
-function renderTaskGraph(nodes, edges) {
+function fmtDur(s) {
+  if (s == null) return '–';
+  s = Math.round(s);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+}
+function fmtTok(t) { if (!t) return '0'; return t >= 1000 ? (t / 1000).toFixed(1) + 'k' : '' + t; }
+function tgInjectCss() {
+  if (document.getElementById('taskgraph-css')) return;
+  var st = document.createElement('style'); st.id = 'taskgraph-css';
+  st.textContent = '#aufgaben-graph{background:radial-gradient(circle at 50% 36%,rgba(25,197,255,0.07),transparent 60%),linear-gradient(#0b0f17,#070a10);}'
+    + '.tg-svg{background-image:radial-gradient(rgba(120,160,200,0.055) 1px,transparent 1px);background-size:26px 26px;animation:tgFade .55s ease;}'
+    + '@keyframes tgFade{from{opacity:0}to{opacity:1}}'
+    + '.tg-node{transition:opacity .18s ease;cursor:pointer;}'
+    + '.tg-hub{filter:drop-shadow(0 0 5px currentColor);}'
+    + '.tg-node:hover{filter:drop-shadow(0 0 9px currentColor);}'
+    + '.tg-edge{transition:stroke .2s ease;}'
+    + '.tg-label{font-family:ui-monospace,"JetBrains Mono",Menlo,monospace;letter-spacing:.3px;}';
+  document.head.appendChild(st);
+}
+
+function renderTaskGraph(allNodes, allEdges) {
   var box = ge('aufgaben-graph');
   var W = box.clientWidth || 900, Hh = box.clientHeight || 600;
-  if (!nodes.length) { box.innerHTML = '<div style="padding:24px;color:var(--text-dim);font-size:12px;">Keine Tasks.</div>'; return; }
-  if (nodes.length > 180) nodes = nodes.slice(0, 180);
-  var byId = {};
-  nodes.forEach(function(n) { n.x = W / 2 + (Math.random() - 0.5) * W * 0.7; n.y = Hh / 2 + (Math.random() - 0.5) * Hh * 0.7; n.vx = 0; n.vy = 0; byId[n.id] = n; });
-  var links = edges.filter(function(e) { return byId[e.from] && byId[e.to]; }).map(function(e) { return { s: byId[e.from], t: byId[e.to] }; });
-  // Workflow-Cluster (gleicher Workflow zieht sich zusammen = "gehört zusammen")
-  var wfs = {};
-  nodes.forEach(function(n) { if (n.workflow) { (wfs[n.workflow] = wfs[n.workflow] || []).push(n); } });
+  if (!allNodes.length) { box.innerHTML = '<div style="padding:24px;color:var(--text-dim);font-size:12px;">Keine Tasks.</div>'; return; }
+  var byId = {}; allNodes.forEach(function(n) { byId[n.id] = n; });
+  var validEdges = allEdges.filter(function(e) { return byId[e.from] && byId[e.to]; });
+  var connected = {}; validEdges.forEach(function(e) { connected[e.from] = 1; connected[e.to] = 1; });
+  // Cap: ALLE verbundenen Nodes behalten (sonst brechen Spawn-Kanten ab!), Rest jüngste.
+  var CAP = 230, nodes;
+  if (allNodes.length <= CAP) nodes = allNodes.slice();
+  else {
+    var conn = allNodes.filter(function(n) { return connected[n.id]; });
+    var stand = allNodes.filter(function(n) { return !connected[n.id]; }).sort(function(a, b) { return b.ts - a.ts; });
+    nodes = conn.concat(stand.slice(0, Math.max(0, CAP - conn.length)));
+  }
+  var nset = {}; nodes.forEach(function(n) { nset[n.id] = 1; });
+  var links = validEdges.filter(function(e) { return nset[e.from] && nset[e.to]; }).map(function(e) { return { s: byId[e.from], t: byId[e.to] }; });
+  var childrenOf = {}; links.forEach(function(l) { (childrenOf[l.s.id] = childrenOf[l.s.id] || []).push(l.t.id); });
+  var wfs = {}; nodes.forEach(function(n) { if (n.workflow) { (wfs[n.workflow] = wfs[n.workflow] || []).push(n); } });
+  nodes.forEach(function(n) { n.x = W / 2 + (Math.random() - 0.5) * W * 0.7; n.y = Hh / 2 + (Math.random() - 0.5) * Hh * 0.7; n.vx = 0; n.vy = 0; });
   for (var step = 0; step < 170; step++) {
-    for (var a = 0; a < nodes.length; a++) {
-      for (var b = a + 1; b < nodes.length; b++) {
-        var na = nodes[a], nb = nodes[b];
-        var dx = na.x - nb.x, dy = na.y - nb.y, d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2);
-        var f = 1500 / d2, fx = dx / d * f, fy = dy / d * f;
-        na.vx += fx; na.vy += fy; nb.vx -= fx; nb.vy -= fy;
-      }
-    }
-    links.forEach(function(l) {
-      var dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01;
-      var f = (d - 55) * 0.025, fx = dx / d * f, fy = dy / d * f;
-      l.s.vx += fx; l.s.vy += fy; l.t.vx -= fx; l.t.vy -= fy;
-    });
-    Object.keys(wfs).forEach(function(w) {
-      var grp = wfs[w], cx = 0, cy = 0; grp.forEach(function(n) { cx += n.x; cy += n.y; }); cx /= grp.length; cy /= grp.length;
-      grp.forEach(function(n) { n.vx += (cx - n.x) * 0.03; n.vy += (cy - n.y) * 0.03; });
-    });
-    nodes.forEach(function(n) {
-      n.vx += (W / 2 - n.x) * 0.003; n.vy += (Hh / 2 - n.y) * 0.003;
-      n.vx *= 0.86; n.vy *= 0.86;
-      n.x += Math.max(-16, Math.min(16, n.vx)); n.y += Math.max(-16, Math.min(16, n.vy));
-      n.x = Math.max(22, Math.min(W - 22, n.x)); n.y = Math.max(22, Math.min(Hh - 26, n.y));
-    });
+    for (var a = 0; a < nodes.length; a++) { for (var b = a + 1; b < nodes.length; b++) {
+      var na = nodes[a], nb = nodes[b], dx = na.x - nb.x, dy = na.y - nb.y, d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2);
+      var f = 1500 / d2, fx = dx / d * f, fy = dy / d * f; na.vx += fx; na.vy += fy; nb.vx -= fx; nb.vy -= fy;
+    } }
+    links.forEach(function(l) { var dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 55) * 0.025, fx = dx / d * f, fy = dy / d * f; l.s.vx += fx; l.s.vy += fy; l.t.vx -= fx; l.t.vy -= fy; });
+    Object.keys(wfs).forEach(function(w) { var grp = wfs[w], cx = 0, cy = 0; grp.forEach(function(n) { cx += n.x; cy += n.y; }); cx /= grp.length; cy /= grp.length; grp.forEach(function(n) { n.vx += (cx - n.x) * 0.03; n.vy += (cy - n.y) * 0.03; }); });
+    nodes.forEach(function(n) { n.vx += (W / 2 - n.x) * 0.003; n.vy += (Hh / 2 - n.y) * 0.003; n.vx *= 0.86; n.vy *= 0.86; n.x += Math.max(-16, Math.min(16, n.vx)); n.y += Math.max(-16, Math.min(16, n.vy)); n.x = Math.max(22, Math.min(W - 22, n.x)); n.y = Math.max(26, Math.min(Hh - 22, n.y)); });
   }
   var sc = { success: '#36b339', failed: '#e0483a', cancelled: '#c79133', gestartet: '#19c5ff', erstellt: '#7790aa', waiting: '#19c5ff', erledigt: '#36b339' };
-  var s = '<svg width="' + W + '" height="' + Hh + '" style="display:block;">';
-  links.forEach(function(l) { s += '<line x1="' + l.s.x.toFixed(1) + '" y1="' + l.s.y.toFixed(1) + '" x2="' + l.t.x.toFixed(1) + '" y2="' + l.t.y.toFixed(1) + '" stroke="rgba(25,197,255,0.30)" stroke-width="1.2"/>'; });
-  nodes.forEach(function(n) {
-    var c = sc[n.status] || '#7790aa';
-    var r = n.workflow ? 7 : 5;
-    var tip = (n.label || 'task') + '  [' + n.status + ']  ' + n.modul + (n.workflow ? '\n↳ Workflow ' + n.workflow + (n.stage ? ' · ' + n.stage : '') : '');
-    s += '<circle cx="' + n.x.toFixed(1) + '" cy="' + n.y.toFixed(1) + '" r="' + r + '" fill="' + c + '" stroke="#0a0e16" stroke-width="1.5"><title>' + escHtml(tip) + '</title></circle>';
+  var NS = 'http://www.w3.org/2000/svg';
+  box.innerHTML = '';
+  tgInjectCss();
+  var svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', W); svg.setAttribute('height', Hh); svg.style.display = 'block'; svg.style.cursor = 'grab'; svg.setAttribute('class', 'tg-svg');
+  var g = document.createElementNS(NS, 'g'); svg.appendChild(g);
+  var pathEls = [];
+  links.forEach(function(l) {
+    var mx = (l.s.x + l.t.x) / 2, my = (l.s.y + l.t.y) / 2, dx = l.t.x - l.s.x, dy = l.t.y - l.s.y;
+    var cx = mx - dy * 0.12, cy = my + dx * 0.12;
+    var pa = document.createElementNS(NS, 'path'); pa.setAttribute('d', 'M' + l.s.x.toFixed(1) + ' ' + l.s.y.toFixed(1) + ' Q' + cx.toFixed(1) + ' ' + cy.toFixed(1) + ' ' + l.t.x.toFixed(1) + ' ' + l.t.y.toFixed(1));
+    pa.setAttribute('fill', 'none'); pa.setAttribute('stroke', 'rgba(25,197,255,0.26)'); pa.setAttribute('stroke-width', '1.2'); pa.setAttribute('class', 'tg-edge'); l._ln = pa; g.appendChild(pa); pathEls.push(pa);
   });
-  s += '</svg>';
-  // Legende + Zähler
-  var leg = '<div style="position:absolute;top:8px;left:12px;font-size:10px;color:var(--text-dim);background:rgba(10,14,22,0.7);padding:6px 9px;border-radius:6px;line-height:1.7;">'
-    + '<b style="color:var(--text);">Task-Graph</b> · ' + nodes.length + ' Nodes · ' + links.length + ' Spawn-Kanten · ' + Object.keys(wfs).length + ' Workflows<br>'
-    + '<span style="color:#36b339;">●</span> ok &nbsp; <span style="color:#e0483a;">●</span> failed &nbsp; <span style="color:#19c5ff;">●</span> läuft &nbsp; <span style="color:#7790aa;">●</span> erstellt &nbsp;·&nbsp; große Punkte = Teil eines Workflows · Linien = hat gespawnt</div>';
-  box.innerHTML = '<div style="position:absolute;inset:0;overflow:auto;">' + s + '</div>' + leg;
+  var circEls = {};
+  nodes.forEach(function(n) {
+    var sp = n.spawned || 0, r = Math.min(15, 5 + Math.sqrt(sp) * 2.3); if (!n.workflow && sp === 0) r = 5; n._r = r;
+    var col = sc[n.status] || '#7790aa';
+    var c = document.createElementNS(NS, 'circle'); c.setAttribute('cx', n.x.toFixed(1)); c.setAttribute('cy', n.y.toFixed(1)); c.setAttribute('r', r.toFixed(1)); c.setAttribute('fill', col); c.setAttribute('stroke', '#0a0e16'); c.setAttribute('stroke-width', '1.5'); c.style.color = col; c.setAttribute('class', (sp >= 3 || n.workflow) ? 'tg-node tg-hub' : 'tg-node'); circEls[n.id] = c; g.appendChild(c);
+    c.addEventListener('mouseenter', function() { highlight(n); showCard(n); });
+    c.addEventListener('mouseleave', function() { clearHi(); });
+    c.addEventListener('click', function(ev) { ev.stopPropagation(); showDetail(n); });
+  });
+  nodes.forEach(function(n) { if ((n.spawned || 0) >= 3 || (n.workflow && (n.spawned || 0) >= 1)) { var t = document.createElementNS(NS, 'text'); t.setAttribute('x', (n.x + n._r + 3).toFixed(1)); t.setAttribute('y', (n.y + 3).toFixed(1)); t.setAttribute('fill', '#bcdfe8'); t.setAttribute('font-size', '9'); t.setAttribute('class', 'tg-label'); t.style.pointerEvents = 'none'; t.textContent = (n.label || '').slice(0, 24); g.appendChild(t); } });
+  box.appendChild(svg);
+  requestAnimationFrame(function() {
+    pathEls.forEach(function(pa, i) {
+      var len = 0; try { len = pa.getTotalLength(); } catch (e) {}
+      if (!len) return;
+      pa.style.strokeDasharray = len; pa.style.strokeDashoffset = len;
+      pa.style.transition = 'stroke-dashoffset .55s ease ' + Math.min(1100, i * 5) + 'ms';
+      requestAnimationFrame(function() { pa.style.strokeDashoffset = 0; });
+    });
+  });
+  var card = document.createElement('div'); card.style.cssText = 'position:absolute;display:none;z-index:50;background:#12161f;border:1px solid #19c5ff;border-radius:8px;padding:9px 11px;font-size:11px;color:#dfe;box-shadow:0 6px 22px rgba(0,0,0,0.65);max-width:280px;pointer-events:none;line-height:1.55;'; box.appendChild(card);
+  var detail = document.createElement('div'); detail.id = 'taskgraph-detail'; detail.style.cssText = 'position:absolute;display:none;top:8px;right:8px;z-index:60;width:300px;max-height:92%;overflow:auto;background:#12161f;border:1px solid #2a3340;border-radius:8px;padding:12px;font-size:11px;color:#cdd;box-shadow:0 6px 22px rgba(0,0,0,0.65);'; box.appendChild(detail);
+  var leg = document.createElement('div'); leg.style.cssText = 'position:absolute;top:8px;left:12px;font-size:10px;color:var(--text-dim);background:rgba(10,14,22,0.72);padding:6px 9px;border-radius:6px;line-height:1.7;pointer-events:none;';
+  leg.innerHTML = '<b style="color:var(--text);">Task-Graph</b> · ' + nodes.length + ' Nodes · ' + links.length + ' Spawn-Kanten · ' + Object.keys(wfs).length + ' Workflows<br><span style="color:#36b339;">●</span> ok <span style="color:#e0483a;">●</span> failed <span style="color:#19c5ff;">●</span> läuft <span style="color:#7790aa;">●</span> erstellt · Größe = #Subtasks · Hover = Baum+Infos · Klick = Detail · Mausrad = Zoom, Ziehen = Pan';
+  box.appendChild(leg);
+  var tf = { x: 0, y: 0, k: 1 };
+  function applyTf() { g.setAttribute('transform', 'translate(' + tf.x + ',' + tf.y + ') scale(' + tf.k + ')'); }
+  svg.addEventListener('wheel', function(ev) { ev.preventDefault(); var rc = svg.getBoundingClientRect(), mx = ev.clientX - rc.left, my = ev.clientY - rc.top, dk = ev.deltaY < 0 ? 1.12 : 0.89, nk = Math.max(0.3, Math.min(4, tf.k * dk)); tf.x = mx - (mx - tf.x) * (nk / tf.k); tf.y = my - (my - tf.y) * (nk / tf.k); tf.k = nk; applyTf(); }, { passive: false });
+  var drag = null;
+  svg.addEventListener('mousedown', function(ev) { if (ev.target.tagName === 'circle') return; drag = { x: ev.clientX - tf.x, y: ev.clientY - tf.y }; svg.style.cursor = 'grabbing'; detail.style.display = 'none'; });
+  svg.addEventListener('mousemove', function(ev) { if (!drag) return; tf.x = ev.clientX - drag.x; tf.y = ev.clientY - drag.y; applyTf(); });
+  svg.addEventListener('mouseup', function() { drag = null; svg.style.cursor = 'grab'; });
+  svg.addEventListener('mouseleave', function() { drag = null; });
+  function subtree(root) { var set = {}, st = [root.id]; while (st.length) { var id = st.pop(); if (set[id]) continue; set[id] = 1; (childrenOf[id] || []).forEach(function(c) { st.push(c); }); } return set; }
+  function highlight(n) { var set = subtree(n); nodes.forEach(function(m) { circEls[m.id].style.opacity = set[m.id] ? 1 : 0.12; }); links.forEach(function(l) { l._ln.setAttribute('stroke', (set[l.s.id] && set[l.t.id]) ? 'rgba(25,197,255,0.9)' : 'rgba(25,197,255,0.05)'); }); }
+  function clearHi() { nodes.forEach(function(m) { circEls[m.id].style.opacity = 1; }); links.forEach(function(l) { l._ln.setAttribute('stroke', 'rgba(25,197,255,0.28)'); }); card.style.display = 'none'; }
+  function showCard(n) {
+    var subN = Object.keys(subtree(n)).length - 1;
+    card.innerHTML = '<div style="color:#fff;font-weight:700;margin-bottom:3px;">' + escHtml(n.label || 'task') + '</div>'
+      + '<div style="color:' + (sc[n.status] || '#9ab') + ';">' + escHtml(n.status) + '</div>'
+      + '<div style="color:var(--text-dim);margin:2px 0;">' + escHtml(n.modul) + '</div>'
+      + '<div>⏱ Dauer: <b>' + fmtDur(n.duration_s) + '</b></div>'
+      + '<div>🪙 ~Token: <b>' + fmtTok(n.tokens) + '</b></div>'
+      + ((n.spawned || 0) > 0 ? '<div>🌱 spawnt: <b>' + n.spawned + '</b> direkt · Baum: ' + subN + '</div>' : '')
+      + (n.first_child_delay_s != null ? '<div>↳ bis 1. Subnode: <b>' + fmtDur(n.first_child_delay_s) + '</b></div>' : '')
+      + (n.workflow ? '<div style="color:#fc6;margin-top:3px;">⚙ ' + escHtml(n.workflow.slice(0, 20)) + (n.stage ? ' · ' + escHtml(n.stage) : '') + '</div>' : '');
+    var rc = box.getBoundingClientRect(), sx = n.x * tf.k + tf.x, sy = n.y * tf.k + tf.y;
+    card.style.left = Math.min(rc.width - 290, sx + 16) + 'px'; card.style.top = Math.max(4, sy - 10) + 'px'; card.style.display = 'block';
+  }
+  function showDetail(n) {
+    detail.style.display = 'block';
+    detail.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:flex-start;"><b style="color:#fff;">' + escHtml(n.label || 'task') + '</b><span style="cursor:pointer;color:var(--text-dim);padding:0 4px;" onclick="document.getElementById(\'taskgraph-detail\').style.display=\'none\'">✕</span></div>'
+      + '<div style="color:' + (sc[n.status] || '#9ab') + ';margin:3px 0;">' + escHtml(n.status) + ' · ' + escHtml(n.modul) + '</div>'
+      + '<div style="color:var(--text-dim);font-size:10px;">id ' + escHtml(n.id.slice(0, 12)) + (n.typ ? ' · ' + escHtml(n.typ) : '') + '</div>'
+      + '<hr style="border:none;border-top:1px solid #2a3340;margin:6px 0;">'
+      + '<div>⏱ Dauer: ' + fmtDur(n.duration_s) + ' &nbsp; 🪙 ~' + fmtTok(n.tokens) + ' Token</div>'
+      + ((n.spawned || 0) > 0 ? '<div>🌱 ' + n.spawned + ' Subtasks · bis 1.: ' + fmtDur(n.first_child_delay_s) + '</div>' : '')
+      + (n.workflow ? '<div style="color:#fc6;">⚙ ' + escHtml(n.workflow) + (n.stage ? ' · ' + escHtml(n.stage) : '') + '</div>' : '')
+      + (n.params ? '<div style="margin-top:6px;color:var(--text-dim);font-size:10px;">Params:</div><div style="white-space:pre-wrap;word-break:break-word;background:#0a0e16;padding:5px;border-radius:4px;font-size:10px;">' + escHtml(n.params) + '</div>' : '')
+      + (n.preview ? '<div style="margin-top:6px;color:var(--text-dim);font-size:10px;">Ergebnis:</div><div style="white-space:pre-wrap;word-break:break-word;background:#0a0e16;padding:5px;border-radius:4px;font-size:10px;max-height:170px;overflow:auto;">' + escHtml(n.preview) + '</div>' : '');
+  }
 }
 
 function renderFlow(data) {

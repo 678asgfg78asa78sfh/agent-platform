@@ -4470,28 +4470,94 @@ async fn image_start(
 /// ~300 Tasks (auch erledigte) — zeigt was zusammengehoert.
 async fn tasks_graph(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let rows = crate::store::task_list_recent(&s.pipeline.store.pool, 300).unwrap_or_default();
-    let ids: std::collections::HashSet<String> = rows.iter().map(|r| r.id.clone()).collect();
-    let mut nodes = Vec::with_capacity(rows.len());
-    let mut edges = Vec::new();
+    // Token-Calls (kein task_id-Bezug) -> grobe Zuordnung per modul + Zeitfenster.
+    let token_calls: Vec<(i64, String, i64)> = s
+        .pipeline
+        .store
+        .pool
+        .get()
+        .ok()
+        .and_then(|conn| {
+            conn.prepare("SELECT ts, modul, input_tokens+output_tokens FROM token_calls")
+                .ok()
+                .and_then(|mut st| {
+                    st.query_map([], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                    })
+                    .ok()
+                    .map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>())
+                })
+        })
+        .unwrap_or_default();
+    // Pass 1: parsen
+    struct N {
+        id: String, label: String, modul: String, status: String, workflow: String,
+        stage: String, typ: String, parent: String, ts: i64,
+        started: Option<i64>, ended: Option<i64>, preview: String, params: String,
+    }
+    let mut ns: Vec<N> = Vec::with_capacity(rows.len());
     for r in &rows {
         let p: serde_json::Value =
             serde_json::from_str(&r.payload_json).unwrap_or_else(|_| serde_json::json!({}));
         let tool = p["tool"].as_str().unwrap_or("");
         let anweisung = p["anweisung"].as_str().unwrap_or("");
         let label = if !tool.is_empty() { tool } else if !anweisung.is_empty() { anweisung } else { "task" };
-        let parent = p["parent_id"].as_str().unwrap_or("");
+        let params = p["params"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | "))
+            .unwrap_or_default();
+        ns.push(N {
+            id: r.id.clone(),
+            label: util::safe_truncate(label, 44).to_string(),
+            modul: r.modul.clone(),
+            status: r.status.clone(),
+            workflow: p["workflow_id"].as_str().unwrap_or("").to_string(),
+            stage: p["workflow_stage"].as_str().unwrap_or("").to_string(),
+            typ: p["typ"].as_str().unwrap_or("").to_string(),
+            parent: p["parent_id"].as_str().unwrap_or("").to_string(),
+            ts: r.erstellt_ts,
+            started: r.gestartet_ts,
+            ended: r.erledigt_ts,
+            preview: util::safe_truncate(p["ergebnis"].as_str().unwrap_or(""), 220).to_string(),
+            params: util::safe_truncate(&params, 140).to_string(),
+        });
+    }
+    let ids: std::collections::HashSet<String> = ns.iter().map(|n| n.id.clone()).collect();
+    let mut children: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+    for n in &ns {
+        if !n.parent.is_empty() && ids.contains(&n.parent) {
+            children.entry(n.parent.clone()).or_default().push(n.ts);
+        }
+    }
+    let mut nodes = Vec::with_capacity(ns.len());
+    let mut edges = Vec::new();
+    for n in &ns {
+        let spawned = children.get(&n.id).map(|c| c.len()).unwrap_or(0);
+        let first_child_delay = children
+            .get(&n.id)
+            .and_then(|c| c.iter().min().copied())
+            .map(|m| (m - n.ts).max(0));
+        let duration_s = match (n.started, n.ended) {
+            (Some(a), Some(b)) if b >= a => Some(b - a),
+            _ => None,
+        };
+        let tokens: i64 = match (n.started, n.ended) {
+            (Some(a), Some(b)) => token_calls
+                .iter()
+                .filter(|(ts, m, _)| *m == n.modul && *ts >= a && *ts <= b)
+                .map(|(_, _, t)| *t)
+                .sum(),
+            _ => 0,
+        };
         nodes.push(serde_json::json!({
-            "id": r.id,
-            "label": util::safe_truncate(label, 42),
-            "modul": r.modul,
-            "status": r.status,
-            "workflow": p["workflow_id"].as_str().unwrap_or(""),
-            "stage": p["workflow_stage"].as_str().unwrap_or(""),
-            "typ": p["typ"].as_str().unwrap_or(""),
-            "ts": r.erstellt_ts,
+            "id": n.id, "label": n.label, "modul": n.modul, "status": n.status,
+            "workflow": n.workflow, "stage": n.stage, "typ": n.typ, "parent": n.parent,
+            "ts": n.ts, "duration_s": duration_s, "spawned": spawned,
+            "first_child_delay_s": first_child_delay, "tokens": tokens,
+            "preview": n.preview, "params": n.params,
         }));
-        if !parent.is_empty() && ids.contains(parent) {
-            edges.push(serde_json::json!({"from": parent, "to": r.id}));
+        if !n.parent.is_empty() && ids.contains(&n.parent) {
+            edges.push(serde_json::json!({"from": n.parent, "to": n.id}));
         }
     }
     Json(serde_json::json!({"nodes": nodes, "edges": edges, "count": rows.len()}))
