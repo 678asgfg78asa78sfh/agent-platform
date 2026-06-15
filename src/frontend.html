@@ -3563,13 +3563,21 @@ ge('aufgaben-graph-btn').addEventListener('click', function() {
   if (!open) loadTaskGraph();
 });
 
+var graphData = { nodes: [], edges: [] };
+var graphOpts = { layout: 'force', dayIdx: null, group: true, days: [] };
+
 function loadTaskGraph() {
   var box = ge('aufgaben-graph');
-  box.innerHTML = '<div style="padding:20px;color:var(--text-dim);font-size:12px;">lade Task-Graph…</div>';
+  if (!document.getElementById('tg-canvas')) buildGraphShell(box);
+  var canvas = ge('tg-canvas');
+  canvas.innerHTML = '<div style="padding:20px;color:var(--text-dim);font-size:12px;">lade Task-Graph…</div>';
   apiFetch('GET', '/api/tasks/graph').then(function(data) {
-    try { renderTaskGraph(data.nodes || [], data.edges || []); }
-    catch (e) { box.innerHTML = '<div style="padding:20px;color:var(--red);font-size:12px;">Graph-Fehler: ' + escHtml(String(e)) + '</div>'; }
-  }).catch(function() { box.innerHTML = '<div style="padding:20px;color:var(--red);font-size:12px;">Laden fehlgeschlagen.</div>'; });
+    graphData = { nodes: data.nodes || [], edges: data.edges || [] };
+    tgComputeDays(graphData.nodes);
+    buildDaySlider();
+    try { renderTaskGraph(graphData.nodes, graphData.edges); }
+    catch (e) { canvas.innerHTML = '<div style="padding:20px;color:var(--red);font-size:12px;">Graph-Fehler: ' + escHtml(String(e)) + '</div>'; }
+  }).catch(function() { canvas.innerHTML = '<div style="padding:20px;color:var(--red);font-size:12px;">Laden fehlgeschlagen.</div>'; });
 }
 
 function fmtDur(s) {
@@ -3583,7 +3591,7 @@ function fmtTok(t) { if (!t) return '0'; return t >= 1000 ? (t / 1000).toFixed(1
 function tgInjectCss() {
   if (document.getElementById('taskgraph-css')) return;
   var st = document.createElement('style'); st.id = 'taskgraph-css';
-  st.textContent = '#aufgaben-graph{background:radial-gradient(circle at 50% 36%,rgba(25,197,255,0.07),transparent 60%),linear-gradient(#0b0f17,#070a10);min-height:60vh;}'
+  st.textContent = '#aufgaben-graph{position:relative;background:radial-gradient(circle at 50% 36%,rgba(25,197,255,0.07),transparent 60%),linear-gradient(#0b0f17,#070a10);min-height:60vh;}'
     + '.tg-svg{background-image:radial-gradient(rgba(120,160,200,0.055) 1px,transparent 1px);background-size:26px 26px;animation:tgFade .55s ease;}'
     + '@keyframes tgFade{from{opacity:0}to{opacity:1}}'
     + '.tg-node{transition:opacity .18s ease;cursor:pointer;}'
@@ -3594,42 +3602,167 @@ function tgInjectCss() {
   document.head.appendChild(st);
 }
 
-function renderTaskGraph(allNodes, allEdges) {
-  var box = ge('aufgaben-graph');
-  var W = box.clientWidth || 900, Hh = box.clientHeight || 600;
-  if (!allNodes.length) { box.innerHTML = '<div style="padding:24px;color:var(--text-dim);font-size:12px;">Keine Tasks.</div>'; return; }
-  var byId = {}; allNodes.forEach(function(n) { byId[n.id] = n; });
-  var validEdges = allEdges.filter(function(e) { return byId[e.from] && byId[e.to]; });
-  var connected = {}; validEdges.forEach(function(e) { connected[e.from] = 1; connected[e.to] = 1; });
-  // Cap: ALLE verbundenen Nodes behalten (sonst brechen Spawn-Kanten ab!), Rest jüngste.
-  var CAP = 230, nodes;
-  if (allNodes.length <= CAP) nodes = allNodes.slice();
-  else {
-    var conn = allNodes.filter(function(n) { return connected[n.id]; });
-    var stand = allNodes.filter(function(n) { return !connected[n.id]; }).sort(function(a, b) { return b.ts - a.ts; });
-    nodes = conn.concat(stand.slice(0, Math.max(0, CAP - conn.length)));
-  }
-  var nset = {}; nodes.forEach(function(n) { nset[n.id] = 1; });
-  var links = validEdges.filter(function(e) { return nset[e.from] && nset[e.to]; }).map(function(e) { return { s: byId[e.from], t: byId[e.to] }; });
-  var childrenOf = {}; links.forEach(function(l) { (childrenOf[l.s.id] = childrenOf[l.s.id] || []).push(l.t.id); });
-  var wfs = {}; nodes.forEach(function(n) { if (n.workflow) { (wfs[n.workflow] = wfs[n.workflow] || []).push(n); } });
+// ── Tage / Gruppen / Layout-Helfer ──
+function tgNodeStart(n) { return n.started || n.ts; }
+function tgNodeEnd(n) { return n.ended || ((n.status === 'gestartet' || n.status === 'waiting') ? Math.floor(Date.now() / 1000) : tgNodeStart(n)); }
+function tgDayLabel(secs) { var d = new Date(secs * 1000); return ('0' + d.getDate()).slice(-2) + '.' + ('0' + (d.getMonth() + 1)).slice(-2) + '.'; }
+function tgComputeDays(nodes) {
+  if (!nodes.length) { graphOpts.days = []; return; }
+  var mn = 1e18, mx = 0;
+  nodes.forEach(function(n) { var s = tgNodeStart(n); if (s < mn) mn = s; if (s > mx) mx = s; });
+  function mid(secs) { var d = new Date(secs * 1000); d.setHours(0, 0, 0, 0); return Math.floor(d.getTime() / 1000); }
+  var days = [], cur = mid(mn), end = mid(mx), guard = 0;
+  while (cur <= end && guard++ < 500) { days.push(cur); cur = mid(cur + 90000); }
+  graphOpts.days = days;
+}
+function tgDayWindow() {
+  if (graphOpts.dayIdx == null || !graphOpts.days.length) return null;
+  var d = graphOpts.days[graphOpts.dayIdx];
+  return { t0: d, t1: d + 86400 };
+}
+function tgRoots(nodes, byId) {
+  var cache = {};
+  function rootOf(id) { var seen = {}, cur = id, guard = 0; while (guard++ < 300) { if (cache[cur] != null) { cur = cache[cur]; break; } var n = byId[cur]; if (!n || !n.parent || !byId[n.parent] || seen[cur]) break; seen[cur] = 1; cur = n.parent; } return cur; }
+  nodes.forEach(function(n) { n._root = rootOf(n.id); cache[n.id] = n._root; });
+}
+function tgGroupKey(n, treeSize) {
+  if ((treeSize[n._root] || 1) > 1) return 'tree:' + n._root;
+  var base = (n.label || n.modul || 'task').toLowerCase().split(/[.\s:_\-]/)[0];
+  return 'tool:' + (base || 'task');
+}
+function tgGroupColor(key) { var h = 0; for (var i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0; return 'hsl(' + (h % 360) + ',68%,60%)'; }
+function tgGroupName(key, sample) {
+  if (key.slice(0, 5) === 'tree:') { var l = (sample.label || '').replace(/^ZIEL:\s*/i, ''); return (l || 'Spawn-Baum').slice(0, 24); }
+  return key.slice(5);
+}
+
+function buildGraphShell(box) {
+  box.innerHTML = '';
+  tgInjectCss();
+  var ctr = document.createElement('div'); ctr.id = 'tg-controls';
+  ctr.style.cssText = 'position:absolute;top:0;left:0;right:0;height:34px;display:flex;align-items:center;gap:14px;padding:0 12px;z-index:30;background:rgba(8,11,17,0.9);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);';
+  ctr.innerHTML =
+      '<span style="display:flex;gap:5px;align-items:center;">Layout '
+        + '<select id="tg-layout" class="btn btn-sm" style="font-size:11px;padding:1px 4px;"><option value="force">Kraft</option><option value="time">Zeit &rarr;</option><option value="size">Gr&ouml;&szlig;e</option></select></span>'
+    + '<span style="display:flex;gap:7px;align-items:center;flex:1;min-width:120px;">Tag '
+        + '<input id="tg-day-txt" placeholder="alle" title="z.B. 23.06" style="width:58px;background:var(--bg-surface);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 5px;font-size:11px;">'
+        + '<input id="tg-day-slider" type="range" min="0" max="0" value="0" style="flex:1;max-width:340px;accent-color:var(--cyan);cursor:pointer;">'
+        + '<span id="tg-day-lbl" style="color:var(--cyan);min-width:62px;font-weight:700;">alle Tage</span>'
+        + '<button id="tg-day-all" class="btn btn-sm" style="font-size:10px;padding:1px 7px;">alle</button></span>'
+    + '<label style="display:flex;gap:4px;align-items:center;cursor:pointer;white-space:nowrap;"><input id="tg-group" type="checkbox" checked style="accent-color:var(--cyan);">gruppieren</label>';
+  var canvas = document.createElement('div'); canvas.id = 'tg-canvas';
+  canvas.style.cssText = 'position:absolute;top:34px;left:0;right:0;bottom:0;overflow:hidden;';
+  box.appendChild(ctr); box.appendChild(canvas);
+  var rr = function() { renderTaskGraph(graphData.nodes, graphData.edges); };
+  ge('tg-layout').addEventListener('change', function() { graphOpts.layout = this.value; rr(); });
+  ge('tg-group').addEventListener('change', function() { graphOpts.group = this.checked; rr(); });
+  ge('tg-day-all').addEventListener('click', function() { graphOpts.dayIdx = null; tgSyncDayUi(); rr(); });
+  ge('tg-day-slider').addEventListener('input', function() { graphOpts.dayIdx = +this.value; tgSyncDayUi(); rr(); });
+  ge('tg-day-txt').addEventListener('change', function() {
+    var v = (this.value || '').trim();
+    if (!v) { graphOpts.dayIdx = null; tgSyncDayUi(); rr(); return; }
+    var m = v.match(/(\d{1,2})[.\/](\d{1,2})(?:[.\/](\d{2,4}))?/); if (!m) return;
+    var dd = +m[1], mm = +m[2] - 1, lastY = graphOpts.days.length ? new Date(graphOpts.days[graphOpts.days.length - 1] * 1000).getFullYear() : new Date().getFullYear();
+    var yy = m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : lastY;
+    var target = new Date(yy, mm, dd, 0, 0, 0, 0).getTime() / 1000;
+    var idx = -1, best = 1e18;
+    graphOpts.days.forEach(function(d, i) { var diff = Math.abs(d - target); if (diff < best) { best = diff; idx = i; } });
+    if (idx >= 0 && best < 43200) { graphOpts.dayIdx = idx; tgSyncDayUi(); rr(); }
+  });
+}
+function tgSyncDayUi() {
+  var sl = ge('tg-day-slider'), lbl = ge('tg-day-lbl'), txt = ge('tg-day-txt'); if (!sl) return;
+  if (graphOpts.dayIdx == null) { lbl.textContent = 'alle Tage'; txt.value = ''; }
+  else { var secs = graphOpts.days[graphOpts.dayIdx]; sl.value = graphOpts.dayIdx; lbl.textContent = tgDayLabel(secs); txt.value = tgDayLabel(secs).replace(/\.$/, ''); }
+}
+function buildDaySlider() { var sl = ge('tg-day-slider'); if (!sl) return; sl.max = Math.max(0, graphOpts.days.length - 1); sl.value = sl.max; tgSyncDayUi(); }
+
+function tgLayoutForce(nodes, links, groupOf) {
   var WW = Math.max(900, Math.min(2200, 240 + nodes.length * 7)), WH = Math.round(WW * 0.62);
   nodes.forEach(function(n) { n.x = WW / 2 + (Math.random() - 0.5) * WW * 0.7; n.y = WH / 2 + (Math.random() - 0.5) * WH * 0.7; n.vx = 0; n.vy = 0; });
+  var groups = {}; nodes.forEach(function(n) { var k = groupOf(n); (groups[k] = groups[k] || []).push(n); });
   for (var step = 0; step < 170; step++) {
     for (var a = 0; a < nodes.length; a++) { for (var b = a + 1; b < nodes.length; b++) {
       var na = nodes[a], nb = nodes[b], dx = na.x - nb.x, dy = na.y - nb.y, d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2);
       var f = 1500 / d2, fx = dx / d * f, fy = dy / d * f; na.vx += fx; na.vy += fy; nb.vx -= fx; nb.vy -= fy;
     } }
     links.forEach(function(l) { var dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 55) * 0.025, fx = dx / d * f, fy = dy / d * f; l.s.vx += fx; l.s.vy += fy; l.t.vx -= fx; l.t.vy -= fy; });
-    Object.keys(wfs).forEach(function(w) { var grp = wfs[w], cx = 0, cy = 0; grp.forEach(function(n) { cx += n.x; cy += n.y; }); cx /= grp.length; cy /= grp.length; grp.forEach(function(n) { n.vx += (cx - n.x) * 0.03; n.vy += (cy - n.y) * 0.03; }); });
+    Object.keys(groups).forEach(function(k) { var grp = groups[k], cx = 0, cy = 0; grp.forEach(function(n) { cx += n.x; cy += n.y; }); cx /= grp.length; cy /= grp.length; grp.forEach(function(n) { n.vx += (cx - n.x) * 0.055; n.vy += (cy - n.y) * 0.055; }); });
     nodes.forEach(function(n) { n.vx += (WW / 2 - n.x) * 0.003; n.vy += (WH / 2 - n.y) * 0.003; n.vx *= 0.86; n.vy *= 0.86; n.x += Math.max(-16, Math.min(16, n.vx)); n.y += Math.max(-16, Math.min(16, n.vy)); n.x = Math.max(22, Math.min(WW - 22, n.x)); n.y = Math.max(26, Math.min(WH - 22, n.y)); });
   }
+}
+function tgLayoutTime(nodes, links, win, groupOf) {
+  var t0, t1;
+  if (win) { t0 = win.t0; t1 = win.t1; }
+  else { t0 = 1e18; t1 = 0; nodes.forEach(function(n) { var s = tgNodeStart(n); if (s < t0) t0 = s; if (s > t1) t1 = s; }); if (t1 <= t0) t1 = t0 + 1; }
+  var TW = Math.max(1100, nodes.length * 9), TH = Math.round(TW * 0.52);
+  graphOpts._timeAxis = { t0: t0, t1: t1, x0: 50, x1: TW - 50, y0: 0, y1: TH };
+  var gi = 0, gidx = {}; nodes.forEach(function(n) { var k = groupOf(n); if (!(k in gidx)) gidx[k] = gi++; });
+  var nb = Math.max(1, gi);
+  nodes.forEach(function(n) { var s = Math.max(t0, Math.min(t1, tgNodeStart(n))); n.x = 50 + (s - t0) / (t1 - t0) * (TW - 100); n.y = TH * (gidx[groupOf(n)] + 0.5) / nb + (Math.random() - 0.5) * 34; n.vy = 0; n._fx = n.x; });
+  for (var step = 0; step < 90; step++) {
+    for (var a = 0; a < nodes.length; a++) { for (var b = a + 1; b < nodes.length; b++) {
+      var na = nodes[a], nb2 = nodes[b], dx = na.x - nb2.x, dy = na.y - nb2.y, d2 = dx * dx + dy * dy + 0.01; if (d2 > 9000) continue;
+      var d = Math.sqrt(d2), f = 850 / d2, fy = dy / d * f; na.vy += fy; nb2.vy -= fy;
+    } }
+    nodes.forEach(function(n) { n.vy *= 0.8; n.y += Math.max(-14, Math.min(14, n.vy)); n.x = n._fx; });
+  }
+}
+function tgLayoutSize(nodes, links) {
+  var sorted = nodes.slice().sort(function(a, b) { return (b.spawned || 0) - (a.spawned || 0) || tgNodeStart(b) - tgNodeStart(a); });
+  var TW = Math.max(1100, nodes.length * 9), cols = Math.max(1, Math.round(Math.sqrt(nodes.length) * 1.6));
+  sorted.forEach(function(n, i) { var c = i % cols, r = Math.floor(i / cols); n.x = 50 + c * (TW - 100) / Math.max(1, cols - 1); n.y = 50 + r * 48; });
+}
+
+function renderTaskGraph(allNodes, allEdges) {
+  var outer = ge('aufgaben-graph');
+  if (!document.getElementById('tg-canvas')) buildGraphShell(outer);
+  var box = ge('tg-canvas');
+  var W = box.clientWidth || 900, Hh = box.clientHeight || 560;
+  if (!allNodes.length) { box.innerHTML = '<div style="padding:24px;color:var(--text-dim);font-size:12px;">Keine Tasks.</div>'; return; }
+  // Tages-Filter (Overlap: Task sichtbar, wenn [start,end] den gewählten Tag schneidet)
+  var win = tgDayWindow();
+  var pool = win ? allNodes.filter(function(n) { return tgNodeEnd(n) >= win.t0 && tgNodeStart(n) < win.t1; }) : allNodes;
+  if (!pool.length) { box.innerHTML = '<div style="padding:24px;color:var(--text-dim);font-size:12px;">Keine Tasks an diesem Tag.</div>'; return; }
+  var byId = {}; pool.forEach(function(n) { byId[n.id] = n; });
+  var validEdges = allEdges.filter(function(e) { return byId[e.from] && byId[e.to]; });
+  var connected = {}; validEdges.forEach(function(e) { connected[e.from] = 1; connected[e.to] = 1; });
+  // Cap: ALLE verbundenen Nodes behalten (sonst brechen Spawn-Kanten ab!), Rest jüngste.
+  var CAP = 230, nodes;
+  if (pool.length <= CAP) nodes = pool.slice();
+  else {
+    var conn = pool.filter(function(n) { return connected[n.id]; });
+    var stand = pool.filter(function(n) { return !connected[n.id]; }).sort(function(a, b) { return b.ts - a.ts; });
+    nodes = conn.concat(stand.slice(0, Math.max(0, CAP - conn.length)));
+  }
+  var nset = {}; nodes.forEach(function(n) { nset[n.id] = 1; });
+  var links = validEdges.filter(function(e) { return nset[e.from] && nset[e.to]; }).map(function(e) { return { s: byId[e.from], t: byId[e.to] }; });
+  var childrenOf = {}; links.forEach(function(l) { (childrenOf[l.s.id] = childrenOf[l.s.id] || []).push(l.t.id); });
+  // Gruppierung: Spawn-Baum-Wurzel oder (standalone) Tool-Familie
+  tgRoots(nodes, byId);
+  var treeSize = {}; nodes.forEach(function(n) { treeSize[n._root] = (treeSize[n._root] || 0) + 1; });
+  var groupOf = graphOpts.group ? function(n) { return tgGroupKey(n, treeSize); } : function() { return 'all'; };
+  // Layout
+  if (graphOpts.layout === 'time') tgLayoutTime(nodes, links, win, groupOf);
+  else if (graphOpts.layout === 'size') tgLayoutSize(nodes, links);
+  else tgLayoutForce(nodes, links, groupOf);
+  var groups = {}; nodes.forEach(function(n) { var k = groupOf(n); (groups[k] = groups[k] || []).push(n); });
   var sc = { success: '#36b339', failed: '#e0483a', cancelled: '#c79133', gestartet: '#19c5ff', erstellt: '#7790aa', waiting: '#19c5ff', erledigt: '#36b339' };
   var NS = 'http://www.w3.org/2000/svg';
   box.innerHTML = '';
-  tgInjectCss();
   var svg = document.createElementNS(NS, 'svg'); svg.setAttribute('width', W); svg.setAttribute('height', Hh); svg.style.display = 'block'; svg.style.cursor = 'grab'; svg.setAttribute('class', 'tg-svg');
   var g = document.createElementNS(NS, 'g'); svg.appendChild(g);
+  if (graphOpts.group && graphOpts.layout === 'force') Object.keys(groups).forEach(function(k) { var grp = groups[k]; if (grp.length < 2) return; var cx = 0, cy = 0; grp.forEach(function(n) { cx += n.x; cy += n.y; }); cx /= grp.length; cy /= grp.length; var rad = 0; grp.forEach(function(n) { var dd = Math.sqrt((n.x - cx) * (n.x - cx) + (n.y - cy) * (n.y - cy)); if (dd > rad) rad = dd; }); rad += 24; var col = tgGroupColor(k); var ha = document.createElementNS(NS, 'circle'); ha.setAttribute('cx', cx.toFixed(1)); ha.setAttribute('cy', cy.toFixed(1)); ha.setAttribute('r', rad.toFixed(1)); ha.setAttribute('fill', col); ha.setAttribute('opacity', '0.06'); ha.setAttribute('stroke', col); ha.setAttribute('stroke-opacity', '0.22'); g.appendChild(ha); var gl = document.createElementNS(NS, 'text'); gl.setAttribute('x', cx.toFixed(1)); gl.setAttribute('y', (cy - rad + 12).toFixed(1)); gl.setAttribute('fill', col); gl.setAttribute('font-size', '10'); gl.setAttribute('text-anchor', 'middle'); gl.setAttribute('class', 'tg-label'); gl.style.pointerEvents = 'none'; gl.textContent = tgGroupName(k, grp[0]); g.appendChild(gl); });
+  if (graphOpts.layout === 'time' && graphOpts._timeAxis) {
+    var ax = graphOpts._timeAxis;
+    for (var ti = 0; ti <= 6; ti++) {
+      var fx = ax.x0 + (ax.x1 - ax.x0) * ti / 6, ft = ax.t0 + (ax.t1 - ax.t0) * ti / 6;
+      var tln = document.createElementNS(NS, 'line'); tln.setAttribute('x1', fx.toFixed(1)); tln.setAttribute('y1', ax.y0); tln.setAttribute('x2', fx.toFixed(1)); tln.setAttribute('y2', ax.y1); tln.setAttribute('stroke', 'rgba(120,160,200,0.13)'); tln.setAttribute('stroke-width', '1'); g.appendChild(tln);
+      var tlb = document.createElementNS(NS, 'text'); tlb.setAttribute('x', fx.toFixed(1)); tlb.setAttribute('y', ax.y0 + 11); tlb.setAttribute('fill', '#7fb0c8'); tlb.setAttribute('font-size', '10'); tlb.setAttribute('text-anchor', 'middle'); tlb.setAttribute('class', 'tg-label'); tlb.style.pointerEvents = 'none';
+      var dt = new Date(ft * 1000); tlb.textContent = ('0' + dt.getHours()).slice(-2) + ':' + ('0' + dt.getMinutes()).slice(-2);
+      g.appendChild(tlb);
+    }
+  }
   var pathEls = [];
   links.forEach(function(l) {
     var mx = (l.s.x + l.t.x) / 2, my = (l.s.y + l.t.y) / 2, dx = l.t.x - l.s.x, dy = l.t.y - l.s.y;
@@ -3660,11 +3793,13 @@ function renderTaskGraph(allNodes, allEdges) {
   var card = document.createElement('div'); card.style.cssText = 'position:absolute;display:none;z-index:50;background:#12161f;border:1px solid #19c5ff;border-radius:8px;padding:9px 11px;font-size:11px;color:#dfe;box-shadow:0 6px 22px rgba(0,0,0,0.65);max-width:280px;pointer-events:none;line-height:1.55;'; box.appendChild(card);
   var detail = document.createElement('div'); detail.id = 'taskgraph-detail'; detail.style.cssText = 'position:absolute;display:none;top:8px;right:8px;z-index:60;width:300px;max-height:92%;overflow:auto;background:#12161f;border:1px solid #2a3340;border-radius:8px;padding:12px;font-size:11px;color:#cdd;box-shadow:0 6px 22px rgba(0,0,0,0.65);'; box.appendChild(detail);
   var leg = document.createElement('div'); leg.style.cssText = 'position:absolute;top:8px;left:12px;font-size:10px;color:var(--text-dim);background:rgba(10,14,22,0.72);padding:6px 9px;border-radius:6px;line-height:1.7;pointer-events:none;';
-  leg.innerHTML = '<b style="color:var(--text);">Task-Graph</b> · ' + nodes.length + ' Nodes · ' + links.length + ' Spawn-Kanten · ' + Object.keys(wfs).length + ' Workflows<br><span style="color:#36b339;">●</span> ok <span style="color:#e0483a;">●</span> failed <span style="color:#19c5ff;">●</span> läuft <span style="color:#7790aa;">●</span> erstellt · Größe = #Subtasks · Hover = Baum+Infos · Klick = Detail · Mausrad = Zoom · Ziehen = Pan · Doppelklick = einpassen';
+  leg.innerHTML = '<b style="color:var(--text);">Task-Graph</b> · ' + nodes.length + ' Nodes · ' + links.length + ' Spawn-Kanten · ' + Object.keys(groups).length + ' Gruppen' + (win ? ' · <span style="color:var(--cyan);">Tag ' + tgDayLabel(win.t0) + '</span>' : '') + (graphOpts.layout === 'time' ? ' · Zeit → links früh, rechts spät' : '') + '<br><span style="color:#36b339;">●</span> ok <span style="color:#e0483a;">●</span> failed <span style="color:#19c5ff;">●</span> läuft <span style="color:#7790aa;">●</span> erstellt · Größe = #Subtasks · Hover = Baum+Infos · Klick = Detail · Mausrad = Zoom · Ziehen = Pan · Doppelklick = einpassen';
   box.appendChild(leg);
   // Kamera: Graph-Bounds -> in Container einpassen (Fit). Zoom/Pan geclamped, Doppelklick = Fit.
   var bxmin = 1e9, bymin = 1e9, bxmax = -1e9, bymax = -1e9;
   nodes.forEach(function(n) { var pad = ((n.spawned || 0) >= 3 || n.workflow) ? 132 : 8; bxmin = Math.min(bxmin, n.x - n._r - 8); bymin = Math.min(bymin, n.y - n._r - 8); bxmax = Math.max(bxmax, n.x + n._r + pad); bymax = Math.max(bymax, n.y + n._r + 8); });
+  // Im Zeit-Layout die ganze 0–24h-Achse einpassen (sonst zoomt es auf einen Zeit-Burst)
+  if (graphOpts.layout === 'time' && graphOpts._timeAxis) { var ax2 = graphOpts._timeAxis; bxmin = Math.min(bxmin, ax2.x0 - 16); bxmax = Math.max(bxmax, ax2.x1 + 16); bymin = Math.min(bymin, ax2.y0); bymax = Math.max(bymax, ax2.y1); }
   var bw = Math.max(1, bxmax - bxmin), bh = Math.max(1, bymax - bymin), bcx = (bxmin + bxmax) / 2, bcy = (bymin + bymax) / 2;
   var fit = Math.min(W / (bw + 30), Hh / (bh + 30)); if (!isFinite(fit) || fit <= 0) fit = 1;
   var kMin = fit * 0.5, kMax = Math.max(fit * 6, 4);

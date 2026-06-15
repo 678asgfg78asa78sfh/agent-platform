@@ -4552,7 +4552,7 @@ async fn tasks_graph(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
         nodes.push(serde_json::json!({
             "id": n.id, "label": n.label, "modul": n.modul, "status": n.status,
             "workflow": n.workflow, "stage": n.stage, "typ": n.typ, "parent": n.parent,
-            "ts": n.ts, "duration_s": duration_s, "spawned": spawned,
+            "ts": n.ts, "started": n.started, "ended": n.ended, "duration_s": duration_s, "spawned": spawned,
             "first_child_delay_s": first_child_delay, "tokens": tokens,
             "preview": n.preview, "params": n.params,
         }));
