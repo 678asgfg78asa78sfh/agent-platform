@@ -3583,7 +3583,7 @@ function fmtTok(t) { if (!t) return '0'; return t >= 1000 ? (t / 1000).toFixed(1
 function tgInjectCss() {
   if (document.getElementById('taskgraph-css')) return;
   var st = document.createElement('style'); st.id = 'taskgraph-css';
-  st.textContent = '#aufgaben-graph{background:radial-gradient(circle at 50% 36%,rgba(25,197,255,0.07),transparent 60%),linear-gradient(#0b0f17,#070a10);}'
+  st.textContent = '#aufgaben-graph{background:radial-gradient(circle at 50% 36%,rgba(25,197,255,0.07),transparent 60%),linear-gradient(#0b0f17,#070a10);min-height:60vh;}'
     + '.tg-svg{background-image:radial-gradient(rgba(120,160,200,0.055) 1px,transparent 1px);background-size:26px 26px;animation:tgFade .55s ease;}'
     + '@keyframes tgFade{from{opacity:0}to{opacity:1}}'
     + '.tg-node{transition:opacity .18s ease;cursor:pointer;}'
@@ -3613,7 +3613,8 @@ function renderTaskGraph(allNodes, allEdges) {
   var links = validEdges.filter(function(e) { return nset[e.from] && nset[e.to]; }).map(function(e) { return { s: byId[e.from], t: byId[e.to] }; });
   var childrenOf = {}; links.forEach(function(l) { (childrenOf[l.s.id] = childrenOf[l.s.id] || []).push(l.t.id); });
   var wfs = {}; nodes.forEach(function(n) { if (n.workflow) { (wfs[n.workflow] = wfs[n.workflow] || []).push(n); } });
-  nodes.forEach(function(n) { n.x = W / 2 + (Math.random() - 0.5) * W * 0.7; n.y = Hh / 2 + (Math.random() - 0.5) * Hh * 0.7; n.vx = 0; n.vy = 0; });
+  var WW = Math.max(900, Math.min(2200, 240 + nodes.length * 7)), WH = Math.round(WW * 0.62);
+  nodes.forEach(function(n) { n.x = WW / 2 + (Math.random() - 0.5) * WW * 0.7; n.y = WH / 2 + (Math.random() - 0.5) * WH * 0.7; n.vx = 0; n.vy = 0; });
   for (var step = 0; step < 170; step++) {
     for (var a = 0; a < nodes.length; a++) { for (var b = a + 1; b < nodes.length; b++) {
       var na = nodes[a], nb = nodes[b], dx = na.x - nb.x, dy = na.y - nb.y, d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2);
@@ -3621,7 +3622,7 @@ function renderTaskGraph(allNodes, allEdges) {
     } }
     links.forEach(function(l) { var dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 55) * 0.025, fx = dx / d * f, fy = dy / d * f; l.s.vx += fx; l.s.vy += fy; l.t.vx -= fx; l.t.vy -= fy; });
     Object.keys(wfs).forEach(function(w) { var grp = wfs[w], cx = 0, cy = 0; grp.forEach(function(n) { cx += n.x; cy += n.y; }); cx /= grp.length; cy /= grp.length; grp.forEach(function(n) { n.vx += (cx - n.x) * 0.03; n.vy += (cy - n.y) * 0.03; }); });
-    nodes.forEach(function(n) { n.vx += (W / 2 - n.x) * 0.003; n.vy += (Hh / 2 - n.y) * 0.003; n.vx *= 0.86; n.vy *= 0.86; n.x += Math.max(-16, Math.min(16, n.vx)); n.y += Math.max(-16, Math.min(16, n.vy)); n.x = Math.max(22, Math.min(W - 22, n.x)); n.y = Math.max(26, Math.min(Hh - 22, n.y)); });
+    nodes.forEach(function(n) { n.vx += (WW / 2 - n.x) * 0.003; n.vy += (WH / 2 - n.y) * 0.003; n.vx *= 0.86; n.vy *= 0.86; n.x += Math.max(-16, Math.min(16, n.vx)); n.y += Math.max(-16, Math.min(16, n.vy)); n.x = Math.max(22, Math.min(WW - 22, n.x)); n.y = Math.max(26, Math.min(WH - 22, n.y)); });
   }
   var sc = { success: '#36b339', failed: '#e0483a', cancelled: '#c79133', gestartet: '#19c5ff', erstellt: '#7790aa', waiting: '#19c5ff', erledigt: '#36b339' };
   var NS = 'http://www.w3.org/2000/svg';
@@ -3659,16 +3660,30 @@ function renderTaskGraph(allNodes, allEdges) {
   var card = document.createElement('div'); card.style.cssText = 'position:absolute;display:none;z-index:50;background:#12161f;border:1px solid #19c5ff;border-radius:8px;padding:9px 11px;font-size:11px;color:#dfe;box-shadow:0 6px 22px rgba(0,0,0,0.65);max-width:280px;pointer-events:none;line-height:1.55;'; box.appendChild(card);
   var detail = document.createElement('div'); detail.id = 'taskgraph-detail'; detail.style.cssText = 'position:absolute;display:none;top:8px;right:8px;z-index:60;width:300px;max-height:92%;overflow:auto;background:#12161f;border:1px solid #2a3340;border-radius:8px;padding:12px;font-size:11px;color:#cdd;box-shadow:0 6px 22px rgba(0,0,0,0.65);'; box.appendChild(detail);
   var leg = document.createElement('div'); leg.style.cssText = 'position:absolute;top:8px;left:12px;font-size:10px;color:var(--text-dim);background:rgba(10,14,22,0.72);padding:6px 9px;border-radius:6px;line-height:1.7;pointer-events:none;';
-  leg.innerHTML = '<b style="color:var(--text);">Task-Graph</b> · ' + nodes.length + ' Nodes · ' + links.length + ' Spawn-Kanten · ' + Object.keys(wfs).length + ' Workflows<br><span style="color:#36b339;">●</span> ok <span style="color:#e0483a;">●</span> failed <span style="color:#19c5ff;">●</span> läuft <span style="color:#7790aa;">●</span> erstellt · Größe = #Subtasks · Hover = Baum+Infos · Klick = Detail · Mausrad = Zoom, Ziehen = Pan';
+  leg.innerHTML = '<b style="color:var(--text);">Task-Graph</b> · ' + nodes.length + ' Nodes · ' + links.length + ' Spawn-Kanten · ' + Object.keys(wfs).length + ' Workflows<br><span style="color:#36b339;">●</span> ok <span style="color:#e0483a;">●</span> failed <span style="color:#19c5ff;">●</span> läuft <span style="color:#7790aa;">●</span> erstellt · Größe = #Subtasks · Hover = Baum+Infos · Klick = Detail · Mausrad = Zoom · Ziehen = Pan · Doppelklick = einpassen';
   box.appendChild(leg);
-  var tf = { x: 0, y: 0, k: 1 };
-  function applyTf() { g.setAttribute('transform', 'translate(' + tf.x + ',' + tf.y + ') scale(' + tf.k + ')'); }
-  svg.addEventListener('wheel', function(ev) { ev.preventDefault(); var rc = svg.getBoundingClientRect(), mx = ev.clientX - rc.left, my = ev.clientY - rc.top, dk = ev.deltaY < 0 ? 1.12 : 0.89, nk = Math.max(0.3, Math.min(4, tf.k * dk)); tf.x = mx - (mx - tf.x) * (nk / tf.k); tf.y = my - (my - tf.y) * (nk / tf.k); tf.k = nk; applyTf(); }, { passive: false });
+  // Kamera: Graph-Bounds -> in Container einpassen (Fit). Zoom/Pan geclamped, Doppelklick = Fit.
+  var bxmin = 1e9, bymin = 1e9, bxmax = -1e9, bymax = -1e9;
+  nodes.forEach(function(n) { var pad = ((n.spawned || 0) >= 3 || n.workflow) ? 132 : 8; bxmin = Math.min(bxmin, n.x - n._r - 8); bymin = Math.min(bymin, n.y - n._r - 8); bxmax = Math.max(bxmax, n.x + n._r + pad); bymax = Math.max(bymax, n.y + n._r + 8); });
+  var bw = Math.max(1, bxmax - bxmin), bh = Math.max(1, bymax - bymin), bcx = (bxmin + bxmax) / 2, bcy = (bymin + bymax) / 2;
+  var fit = Math.min(W / (bw + 30), Hh / (bh + 30)); if (!isFinite(fit) || fit <= 0) fit = 1;
+  var kMin = fit * 0.5, kMax = Math.max(fit * 6, 4);
+  var tf = { k: fit, x: 0, y: 0 };
+  function clampPan() {
+    var gw = bw * tf.k, gh = bh * tf.k, m = 30;
+    if (gw <= W) tf.x = W / 2 - bcx * tf.k; else tf.x = Math.min(m - bxmin * tf.k, Math.max(W - m - bxmax * tf.k, tf.x));
+    if (gh <= Hh) tf.y = Hh / 2 - bcy * tf.k; else tf.y = Math.min(m - bymin * tf.k, Math.max(Hh - m - bymax * tf.k, tf.y));
+  }
+  function applyTf() { clampPan(); g.setAttribute('transform', 'translate(' + tf.x.toFixed(1) + ',' + tf.y.toFixed(1) + ') scale(' + tf.k.toFixed(3) + ')'); }
+  function fitView() { tf.k = fit; applyTf(); }
+  fitView();
+  svg.addEventListener('wheel', function(ev) { ev.preventDefault(); var rc = svg.getBoundingClientRect(), mx = ev.clientX - rc.left, my = ev.clientY - rc.top, dk = ev.deltaY < 0 ? 1.12 : 0.89, nk = Math.max(kMin, Math.min(kMax, tf.k * dk)); tf.x = mx - (mx - tf.x) * (nk / tf.k); tf.y = my - (my - tf.y) * (nk / tf.k); tf.k = nk; applyTf(); }, { passive: false });
   var drag = null;
   svg.addEventListener('mousedown', function(ev) { if (ev.target.tagName === 'circle') return; drag = { x: ev.clientX - tf.x, y: ev.clientY - tf.y }; svg.style.cursor = 'grabbing'; detail.style.display = 'none'; });
   svg.addEventListener('mousemove', function(ev) { if (!drag) return; tf.x = ev.clientX - drag.x; tf.y = ev.clientY - drag.y; applyTf(); });
   svg.addEventListener('mouseup', function() { drag = null; svg.style.cursor = 'grab'; });
   svg.addEventListener('mouseleave', function() { drag = null; });
+  svg.addEventListener('dblclick', function(ev) { ev.preventDefault(); fitView(); });
   function subtree(root) { var set = {}, st = [root.id]; while (st.length) { var id = st.pop(); if (set[id]) continue; set[id] = 1; (childrenOf[id] || []).forEach(function(c) { st.push(c); }); } return set; }
   function highlight(n) { var set = subtree(n); nodes.forEach(function(m) { circEls[m.id].style.opacity = set[m.id] ? 1 : 0.12; }); links.forEach(function(l) { l._ln.setAttribute('stroke', (set[l.s.id] && set[l.t.id]) ? 'rgba(25,197,255,0.9)' : 'rgba(25,197,255,0.05)'); }); }
   function clearHi() { nodes.forEach(function(m) { circEls[m.id].style.opacity = 1; }); links.forEach(function(l) { l._ln.setAttribute('stroke', 'rgba(25,197,255,0.28)'); }); card.style.display = 'none'; }
