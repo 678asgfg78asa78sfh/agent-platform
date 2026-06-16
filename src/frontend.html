@@ -3852,26 +3852,26 @@ function renderTaskGraph(allNodes, allEdges) {
       + (n.params ? '<div style="margin-top:6px;color:var(--text-dim);font-size:10px;">Params:</div><div style="white-space:pre-wrap;word-break:break-word;background:#0a0e16;padding:5px;border-radius:4px;font-size:10px;">' + escHtml(n.params) + '</div>' : '')
       + (n.preview ? '<div style="margin-top:6px;color:var(--text-dim);font-size:10px;">Ergebnis:</div><div style="white-space:pre-wrap;word-break:break-word;background:#0a0e16;padding:5px;border-radius:4px;font-size:10px;max-height:170px;overflow:auto;">' + escHtml(n.preview) + '</div>' : '');
   }
-  // ── Live-Physik (nur Kraft-Layout): Nodes ziehbar, Nachbarn folgen federnd, sanftes Wiegen "im Wind" ──
+  // ── Physik NUR bei Beruehrung: Node ziehen -> Nachbarn federn nach; sonst eingefroren (kein Eigenleben) ──
   if (graphOpts.layout === 'force') {
-    var WWl = Math.max(900, Math.min(2200, 240 + nodes.length * 7)), WHl = Math.round(WWl * 0.62);
-    var dragN = null, windT0 = performance.now();
+    var dragN = null;
+    nodes.forEach(function(n) { n.vx = 0; n.vy = 0; n.ax = n.x; n.ay = n.y; });
     function tgStep() {
       for (var a = 0; a < nodes.length; a++) { for (var b = a + 1; b < nodes.length; b++) {
         var na = nodes[a], nb = nodes[b], dx = na.x - nb.x, dy = na.y - nb.y, d2 = dx * dx + dy * dy + 0.01;
         if (d2 > 90000) continue;
         var d = Math.sqrt(d2), f = 1400 / d2, fx = dx / d * f, fy = dy / d * f; na.vx += fx; na.vy += fy; nb.vx -= fx; nb.vy -= fy;
       } }
-      links.forEach(function(l) { var dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 58) * 0.045, fx = dx / d * f, fy = dy / d * f; l.s.vx += fx; l.s.vy += fy; l.t.vx -= fx; l.t.vy -= fy; });
-      Object.keys(groups).forEach(function(k) { var grp = groups[k]; if (grp.length < 2) return; var cx = 0, cy = 0; grp.forEach(function(n) { cx += n.x; cy += n.y; }); cx /= grp.length; cy /= grp.length; grp.forEach(function(n) { n.vx += (cx - n.x) * 0.04; n.vy += (cy - n.y) * 0.04; }); });
-      var w = (performance.now() - windT0) / 1000;
-      nodes.forEach(function(n, i) {
-        n.vx += (WWl / 2 - n.x) * 0.002; n.vy += (WHl / 2 - n.y) * 0.002;
-        n.vx += Math.sin(w * 0.7 + i * 0.55) * 0.045; n.vy += Math.cos(w * 0.6 + i * 0.9) * 0.045;
+      links.forEach(function(l) { var dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = (d - 58) * 0.05, fx = dx / d * f, fy = dy / d * f; l.s.vx += fx; l.s.vy += fy; l.t.vx -= fx; l.t.vy -= fy; });
+      var energy = 0;
+      nodes.forEach(function(n) {
         if (n === dragN) { n.vx = 0; n.vy = 0; return; }
-        n.vx *= 0.9; n.vy *= 0.9;
-        n.x += Math.max(-30, Math.min(30, n.vx)); n.y += Math.max(-30, Math.min(30, n.vy));
+        n.vx += (n.ax - n.x) * 0.08; n.vy += (n.ay - n.y) * 0.08;
+        n.vx *= 0.78; n.vy *= 0.78;
+        n.x += Math.max(-32, Math.min(32, n.vx)); n.y += Math.max(-32, Math.min(32, n.vy));
+        energy += n.vx * n.vx + n.vy * n.vy;
       });
+      return energy;
     }
     function tgDraw() {
       links.forEach(function(l) { l._ln.setAttribute('d', tgEdgeD(l.s, l.t)); });
@@ -3880,12 +3880,13 @@ function renderTaskGraph(allNodes, allEdges) {
     }
     function tgLoop() {
       if (!svg.isConnected || ge('aufgaben-graph').style.display === 'none') { tgRaf = null; return; }
-      tgStep(); tgDraw(); tgRaf = requestAnimationFrame(tgLoop);
+      var e = tgStep(); tgDraw();
+      if (dragN || e > 0.4) tgRaf = requestAnimationFrame(tgLoop); else tgRaf = null;
     }
-    tgRaf = requestAnimationFrame(tgLoop);
-    nodes.forEach(function(n) { circEls[n.id].addEventListener('mousedown', function(ev) { ev.stopPropagation(); dragN = n; svg.style.cursor = 'grabbing'; }); });
-    window.addEventListener('mousemove', function(ev) { if (!dragN) return; var rc = svg.getBoundingClientRect(); dragN.x = (ev.clientX - rc.left - tf.x) / tf.k; dragN.y = (ev.clientY - rc.top - tf.y) / tf.k; });
-    window.addEventListener('mouseup', function() { if (dragN) { dragN = null; svg.style.cursor = 'grab'; } });
+    function tgKick() { if (!tgRaf) tgRaf = requestAnimationFrame(tgLoop); }
+    nodes.forEach(function(n) { circEls[n.id].addEventListener('mousedown', function(ev) { ev.stopPropagation(); dragN = n; n.vx = 0; n.vy = 0; svg.style.cursor = 'grabbing'; tgKick(); }); });
+    window.addEventListener('mousemove', function(ev) { if (!dragN) return; var rc = svg.getBoundingClientRect(); dragN.x = (ev.clientX - rc.left - tf.x) / tf.k; dragN.y = (ev.clientY - rc.top - tf.y) / tf.k; tgKick(); });
+    window.addEventListener('mouseup', function() { if (dragN) { dragN = null; svg.style.cursor = 'grab'; tgKick(); } });
   }
 }
 
