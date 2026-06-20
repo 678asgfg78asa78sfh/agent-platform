@@ -2358,7 +2358,7 @@ async fn exec_tool_unified_inner(
     }
 
     if let Some(ref m) = modul {
-        if !has_permission_with_py(m, tool_name, py_modules) {
+        if !has_permission_with_py(m, tool_name, py_modules, config_snapshot) {
             return (
                 false,
                 format!(
@@ -2689,10 +2689,12 @@ fn build_agent_meta_config_snapshot(config_snapshot: &AgentConfig) -> serde_json
 
 /// Check if a module has permission to use a tool
 /// py_modules wird gebraucht um Tool→Modulname aufzuloesen
+/// config wird gebraucht um die Zone des verlinkten Moduls zu pruefen (R2: cross-zone links grant no permission)
 pub fn has_permission_with_py(
     modul: &ModulConfig,
     tool_name: &str,
     py_modules: &[crate::loader::PyModuleMeta],
+    config: &AgentConfig,
 ) -> bool {
     let perms = &modul.berechtigungen;
     // Fuer Python-Tools: finde den Modulnamen der dieses Tool hat
@@ -2700,12 +2702,23 @@ pub fn has_permission_with_py(
         for tool in &py_mod.tools {
             if tool.name == tool_name {
                 let perm = format!("py.{}", py_mod.name);
+                let actor_zone = modul.secure.as_deref();
                 // Exact match statt substring (war Bypass: "chat.mail" matched py_mod "mail").
-                let has_perm = perms.iter().any(|p| p == &perm || p == "py.*")
-                    || modul.linked_modules.iter().any(|link_id| {
-                        link_id == &py_mod.name || link_id.starts_with(&format!("{}.", py_mod.name))
-                    });
-                return has_perm;
+                // R2: link_id muss name oder name.* matchen UND selbe Zone haben.
+                let link_ok = modul.linked_modules.iter().any(|link_id| {
+                    let matches_name = link_id == &py_mod.name
+                        || link_id.starts_with(&format!("{}.", py_mod.name));
+                    if !matches_name {
+                        return false;
+                    }
+                    let link_zone = config
+                        .module
+                        .iter()
+                        .find(|m| &m.id == link_id)
+                        .and_then(|m| m.secure.as_deref());
+                    crate::security::access_allowed(actor_zone, link_zone)
+                });
+                return perms.iter().any(|p| p == &perm || p == "py.*") || link_ok;
             }
         }
     }
@@ -3202,7 +3215,7 @@ mod tests {
 
         let py_mods = vec![py_mod("mail", &["mail.send"])];
         assert!(
-            !has_permission_with_py(&modul, "mail.send", &py_mods),
+            !has_permission_with_py(&modul, "mail.send", &py_mods, &AgentConfig::default()),
             "chat.mail link must NOT grant access to py.mail tools"
         );
     }
@@ -3214,7 +3227,7 @@ mod tests {
         modul.linked_modules = vec!["mailadmin.inst1".into()];
         let py_mods = vec![py_mod("mail", &["mail.send"])];
         assert!(
-            !has_permission_with_py(&modul, "mail.send", &py_mods),
+            !has_permission_with_py(&modul, "mail.send", &py_mods, &AgentConfig::default()),
             "'mailadmin' link must NOT match py_mod 'mail'"
         );
     }
@@ -3225,7 +3238,7 @@ mod tests {
         let mut modul = make_modul("chat", vec![]);
         modul.linked_modules = vec!["mail.privat".into()];
         let py_mods = vec![py_mod("mail", &["mail.send"])];
-        assert!(has_permission_with_py(&modul, "mail.send", &py_mods));
+        assert!(has_permission_with_py(&modul, "mail.send", &py_mods, &AgentConfig::default()));
     }
 
     #[test]
@@ -3233,14 +3246,45 @@ mod tests {
         let mut modul = make_modul("chat", vec![]);
         modul.linked_modules = vec!["mail".into()]; // exactly the py_mod name
         let py_mods = vec![py_mod("mail", &["mail.send"])];
-        assert!(has_permission_with_py(&modul, "mail.send", &py_mods));
+        assert!(has_permission_with_py(&modul, "mail.send", &py_mods, &AgentConfig::default()));
     }
 
     #[test]
     fn test_has_permission_py_explicit_grant() {
         let modul = make_modul("chat", vec!["py.mail".into()]);
         let py_mods = vec![py_mod("mail", &["mail.send"])];
-        assert!(has_permission_with_py(&modul, "mail.send", &py_mods));
+        assert!(has_permission_with_py(&modul, "mail.send", &py_mods, &AgentConfig::default()));
+    }
+
+    #[test]
+    fn cross_zone_link_is_not_permission() {
+        let py_mods = vec![py_mod("rss_verwaltung", &["rss_verwaltung.fetch"])];
+
+        // acme module links a PUBLIC rss_verwaltung — cross-zone, must NOT grant permission
+        let mut cfg = AgentConfig::default();
+        let mut pub_link = make_modul("rss_verwaltung", vec![]);
+        pub_link.id = "rss_verwaltung.default".into();
+        pub_link.secure = None; // public
+        cfg.module.push(pub_link);
+
+        let mut acme = make_modul("chat", vec![]);
+        acme.secure = Some("acme".into());
+        acme.linked_modules = vec!["rss_verwaltung.default".into()];
+        assert!(
+            !has_permission_with_py(&acme, "rss_verwaltung.fetch", &py_mods, &cfg),
+            "cross-zone link (acme→public) must NOT grant permission"
+        );
+
+        // same-zone link DOES grant permission
+        let mut acme_link = make_modul("rss_verwaltung", vec![]);
+        acme_link.id = "rss_verwaltung.acme".into();
+        acme_link.secure = Some("acme".into());
+        cfg.module.push(acme_link);
+        acme.linked_modules = vec!["rss_verwaltung.acme".into()];
+        assert!(
+            has_permission_with_py(&acme, "rss_verwaltung.fetch", &py_mods, &cfg),
+            "same-zone link (acme→acme) MUST grant permission"
+        );
     }
 
     #[test]

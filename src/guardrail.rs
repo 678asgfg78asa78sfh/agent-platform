@@ -311,7 +311,7 @@ pub fn validate_response(
 
         // Permission check (catches linked-modules drift)
         if let Some(m) = modul {
-            if !crate::tools::has_permission_with_py(m, &tool_name, ctx.py_modules) {
+            if !crate::tools::has_permission_with_py(m, &tool_name, ctx.py_modules, ctx.cfg) {
                 errs.push(ValidationError {
                     field: format!("{}.name", prefix),
                     code: "no_permission".into(),
