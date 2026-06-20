@@ -49,6 +49,28 @@ pub fn safe_relative_path(p: &str) -> Option<String> {
     Some(p.to_string())
 }
 
+// ─── Compartments (secure tenant isolation) ───────────
+
+/// Exakte Tool-Namen, die ein SECURE-Compartment brechen (NIE für secure actor).
+pub const COMPARTMENT_BREAKING_TOOLS: &[&str] = &["agent.spawn", "shell.exec"];
+
+/// Modul-Familien (Prefix `name.`), die ein Compartment brechen.
+pub const COMPARTMENT_BREAKING_PREFIXES: &[&str] = &["agent_meta.", "module_builder."];
+
+/// True, wenn `tool_name` innerhalb einer SECURE-Zone verboten ist.
+pub fn is_compartment_breaking_tool(tool_name: &str) -> bool {
+    COMPARTMENT_BREAKING_TOOLS.contains(&tool_name)
+        || COMPARTMENT_BREAKING_PREFIXES
+            .iter()
+            .any(|p| tool_name.starts_with(p))
+}
+
+/// Zugriff nur innerhalb desselben Compartments. None = public.
+/// public↔public erlaubt; jeder Cross-Label-Zugriff (auch public↔secure) verboten.
+pub fn access_allowed(actor: Option<&str>, target: Option<&str>) -> bool {
+    actor == target
+}
+
 // ─── SSRF protection ──────────────────────────────────
 
 /// Check if a URL resolves to a dangerous address (private, loopback, link-local, metadata).
@@ -659,6 +681,25 @@ mod tests {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
+    }
+
+    #[test]
+    fn test_access_allowed_matrix() {
+        assert!(access_allowed(None, None));                    // public→public
+        assert!(access_allowed(Some("acme"), Some("acme")));    // gleiche Zone
+        assert!(!access_allowed(Some("acme"), Some("globex"))); // andere Zone
+        assert!(!access_allowed(Some("acme"), None));           // Zone→public (kein Ausbruch)
+        assert!(!access_allowed(None, Some("acme")));           // public→Zone (von außen)
+    }
+
+    #[test]
+    fn test_compartment_breaking_tools() {
+        assert!(is_compartment_breaking_tool("agent.spawn"));
+        assert!(is_compartment_breaking_tool("shell.exec"));
+        assert!(is_compartment_breaking_tool("agent_meta.status"));
+        assert!(is_compartment_breaking_tool("module_builder.create"));
+        assert!(!is_compartment_breaking_tool("rag.suchen"));
+        assert!(!is_compartment_breaking_tool("websearch"));
     }
 
     #[test]
