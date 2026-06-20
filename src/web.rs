@@ -1826,6 +1826,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/planner/decide", axum::routing::post(planner_decide))
         .route("/api/planner/scan", axum::routing::post(planner_scan))
         .route(
+            "/api/security/compartments",
+            axum::routing::get(security_compartments),
+        )
+        .route(
             "/api/home/{modul_id}/{path}",
             axum::routing::get(read_home_file),
         )
@@ -4599,6 +4603,31 @@ async fn planner_proposals(State(s): State<Arc<AppState>>) -> Json<serde_json::V
         }
     }
     Json(serde_json::json!({"error": data, "proposals": [], "count": 0}))
+}
+
+/// SECURE-Compartments: konfigurierte Zonen + Validierungs-Verstoesse fuers UI.
+async fn security_compartments(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let cfg = s.config.read().await;
+    let violations: Vec<serde_json::Value> = crate::security::validate_compartments(&cfg)
+        .into_iter()
+        .map(|v| {
+            serde_json::json!({
+                "module_id": v.module_id,
+                "severity": format!("{:?}", v.severity),
+                "message": v.message,
+            })
+        })
+        .collect();
+    let zones: Vec<serde_json::Value> = cfg
+        .module
+        .iter()
+        .filter_map(|m| {
+            m.secure
+                .as_deref()
+                .map(|z| serde_json::json!({"id": m.id, "zone": z}))
+        })
+        .collect();
+    Json(serde_json::json!({"zones": zones, "violations": violations}))
 }
 
 /// Redaktionsplan: Kreislauf-Status (Autopilot an/aus, Auto-Crawl-Plan, Zaehler,
