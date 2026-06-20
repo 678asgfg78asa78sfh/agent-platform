@@ -1138,6 +1138,34 @@ fn preferred_agent_endpoint<'a>(
         .or_else(|| candidates.first().copied())
 }
 
+/// Liefert den zu benutzenden RAG-Pool-Namen — fail closed für SECURE-Module.
+/// public: heutiges Verhalten (bound oder "shared"). secure: Pool MUSS gesetzt,
+/// existieren und dasselbe Label tragen — sonst Err (kein shared-Fallback).
+pub fn resolve_rag_pool(
+    modul: &crate::types::ModulConfig,
+    pools: &[crate::types::RagPool],
+) -> Result<String, String> {
+    match modul.secure.as_deref() {
+        None => Ok(modul.rag_pool.as_deref().unwrap_or("shared").to_string()),
+        Some(label) => {
+            let pool_id = modul.rag_pool.as_deref().ok_or_else(|| {
+                format!("DENIED: secure-Modul '{}' hat keinen RAG-Pool (kein shared-Fallback)", modul.id)
+            })?;
+            let pool = pools.iter().find(|p| p.id == pool_id).ok_or_else(|| {
+                format!("DENIED: RAG-Pool '{}' existiert nicht", pool_id)
+            })?;
+            if pool.secure.as_deref() == Some(label) {
+                Ok(pool_id.to_string())
+            } else {
+                Err(format!(
+                    "DENIED: secure-Modul '{}' (Zone {}) darf nicht auf Pool '{}' (Zone {:?})",
+                    modul.id, label, pool_id, pool.secure
+                ))
+            }
+        }
+    }
+}
+
 /// Execute a tool call with permission checking
 pub async fn execute_tool(
     tool_name: &str,
@@ -1179,15 +1207,21 @@ pub async fn execute_tool(
         // RAG tools
         "rag.suchen" => {
             let query = params.first().map(|s| s.as_str()).unwrap_or("");
-            let pool = modul.rag_pool.as_deref().unwrap_or("shared");
+            let pool = match resolve_rag_pool(modul, &config.rag_pools) {
+                Ok(p) => p,
+                Err(e) => return ToolResult::fail(e),
+            };
             // Embedding handled by caller (cycle.rs/web.rs) when embedding_backend is configured
-            modules::rag::suchen(&pipeline.base, pool, query, None).await
+            modules::rag::suchen(&pipeline.base, &pool, query, None).await
         }
         "rag.speichern" => {
             let text = params.first().map(|s| s.as_str()).unwrap_or("");
-            let pool = modul.rag_pool.as_deref().unwrap_or("shared");
+            let pool = match resolve_rag_pool(modul, &config.rag_pools) {
+                Ok(p) => p,
+                Err(e) => return ToolResult::fail(e),
+            };
             // Embedding handled by caller (cycle.rs/web.rs) when embedding_backend is configured
-            modules::rag::speichern(&pipeline.base, pool, text, None, None).await
+            modules::rag::speichern(&pipeline.base, &pool, text, None, None).await
         }
 
         // Interne Chat/Agent Notifications
@@ -3414,5 +3448,33 @@ mod tests {
             has_permission(&temp_explicit, "shell.exec"),
             "Temp-Agent mit expliziter shell-Permission darf"
         );
+    }
+
+    #[test]
+    fn secure_rag_pool_resolution_fails_closed() {
+        use crate::types::RagPool;
+        let pools = vec![
+            RagPool { id: "acme".into(), name: "acme".into(), typ: crate::types::RagTyp::Private, secure: Some("acme".into()) },
+            RagPool { id: "shared".into(), name: "shared".into(), typ: crate::types::RagTyp::Shared, secure: None },
+        ];
+        // public Modul → unverändert
+        let mut public = make_modul("chat", vec![]);
+        public.rag_pool = Some("shared".into());
+        assert_eq!(resolve_rag_pool(&public, &pools).unwrap(), "shared");
+        // secure mit passendem Pool → ok
+        let mut sec_ok = make_modul("chat", vec![]);
+        sec_ok.secure = Some("acme".into());
+        sec_ok.rag_pool = Some("acme".into());
+        assert_eq!(resolve_rag_pool(&sec_ok, &pools).unwrap(), "acme");
+        // secure, Pool fehlt → Fehler
+        let mut sec_nopool = make_modul("chat", vec![]);
+        sec_nopool.secure = Some("acme".into());
+        sec_nopool.rag_pool = None;
+        assert!(resolve_rag_pool(&sec_nopool, &pools).is_err());
+        // secure, Pool nicht secure / falsches Label → Fehler
+        let mut sec_wrong = make_modul("chat", vec![]);
+        sec_wrong.secure = Some("acme".into());
+        sec_wrong.rag_pool = Some("shared".into());
+        assert!(resolve_rag_pool(&sec_wrong, &pools).is_err());
     }
 }
