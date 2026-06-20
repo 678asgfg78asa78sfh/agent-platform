@@ -958,6 +958,14 @@ def home_dir(config):
     return os.path.realpath(os.path.abspath(os.path.join(os.getcwd(), "agent-data", "home", "coding")))
 
 
+def effective_allow_project_root(config):
+    # SECURE-Compartments (R5): ist confine_home_only gesetzt, wird der Workspace
+    # hart aufs Modul-Home begrenzt — allow_project_root wird ignoriert.
+    if cfg_bool(config.get("confine_home_only"), False):
+        return False
+    return cfg_bool(config.get("allow_project_root"), False)
+
+
 def workspace_root(config, payload=None, task=None):
     payload = payload or {}
     if task and task.get("workspace"):
@@ -966,7 +974,7 @@ def workspace_root(config, payload=None, task=None):
         raw = payload.get("workspace") or payload.get("workspace_root") or config.get("workspace_root") or ""
     home = home_dir(config)
     project = str(config.get("project_root") or "").strip()
-    if raw in {"$PROJECT_ROOT", "{project_root}", "project_root"} and cfg_bool(config.get("allow_project_root"), False):
+    if raw in {"$PROJECT_ROOT", "{project_root}", "project_root"} and effective_allow_project_root(config):
         raw = project
     if not raw:
         raw = home
@@ -974,7 +982,7 @@ def workspace_root(config, payload=None, task=None):
         raw = os.path.join(home, str(raw))
     root = os.path.realpath(os.path.abspath(str(raw)))
     allowed = [home]
-    if cfg_bool(config.get("allow_project_root"), False) and project:
+    if effective_allow_project_root(config) and project:
         allowed.append(os.path.realpath(os.path.abspath(project)))
     if not any(is_within(root, a) for a in allowed):
         return None, f"Workspace nicht erlaubt: {root}. Erlaubt: {allowed}"
