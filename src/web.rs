@@ -1199,14 +1199,23 @@ fn enhancer_fail_policy(m: &ModulConfig) -> String {
         .to_ascii_lowercase()
 }
 
-fn enhancer_rag_pool(m: &ModulConfig) -> String {
-    m.settings
+fn enhancer_rag_pool(m: &ModulConfig, pools: &[crate::types::RagPool]) -> Option<String> {
+    let candidate = m
+        .settings
         .enhancer_rag_pool
         .as_deref()
         .or(m.rag_pool.as_deref())
         .unwrap_or("Enhancer")
         .trim()
-        .to_string()
+        .to_string();
+    match m.secure.as_deref() {
+        None => Some(candidate),
+        Some(label) => pools
+            .iter()
+            .find(|p| p.id == candidate)
+            .filter(|p| p.secure.as_deref() == Some(label))
+            .map(|_| candidate),
+    }
 }
 
 fn enhancer_store_rag(m: &ModulConfig) -> bool {
@@ -1328,12 +1337,15 @@ fn update_last_user_message_text(messages: &mut serde_json::Value, text: &str) {
 async fn enhancer_memory_excerpt(
     state: &Arc<AppState>,
     enhancer: &ModulConfig,
+    pools: &[crate::types::RagPool],
     query: &str,
 ) -> String {
     if !enhancer_store_rag(enhancer) || query.trim().is_empty() {
         return String::new();
     }
-    let pool = enhancer_rag_pool(enhancer);
+    let Some(pool) = enhancer_rag_pool(enhancer, pools) else {
+        return String::new();
+    };
     let result = crate::modules::rag::suchen(&state.pipeline.base, &pool, query, None).await;
     if result.success {
         util::safe_truncate(&result.data, 3500).to_string()
@@ -1346,6 +1358,7 @@ async fn store_enhancer_note(
     state: &Arc<AppState>,
     chat_modul_id: &str,
     enhancer: &ModulConfig,
+    pools: &[crate::types::RagPool],
     stage: &str,
     original_input: &str,
     current_input: &str,
@@ -1355,6 +1368,9 @@ async fn store_enhancer_note(
     if !enhancer_store_rag(enhancer) {
         return;
     }
+    let Some(pool) = enhancer_rag_pool(enhancer, pools) else {
+        return;
+    };
     let note = format!(
         "ENHANCER_RAG_NOTE\ncaptured_at_utc: {}\nchat_modul_id: {}\nenhancer_id: {}\nstage: {}\nmode: {}\naction: {}\nflags: {}\nreason: {}\noriginal_input:\n{}\ncurrent_input:\n{}\noutput_text:\n{}\nnotes:\n{}",
         chrono::Utc::now().to_rfc3339(),
@@ -1370,7 +1386,6 @@ async fn store_enhancer_note(
         util::safe_truncate(output_text.unwrap_or(""), 6000),
         util::safe_truncate(decision.notes.as_deref().unwrap_or(""), 6000),
     );
-    let pool = enhancer_rag_pool(enhancer);
     let _ = crate::modules::rag::speichern(&state.pipeline.base, &pool, &note, None, None).await;
 }
 
@@ -1398,7 +1413,7 @@ async fn run_one_enhancer(
     } else {
         current_input.to_string()
     };
-    let memory = enhancer_memory_excerpt(state, enhancer, &memory_query).await;
+    let memory = enhancer_memory_excerpt(state, enhancer, &config.rag_pools, &memory_query).await;
     let evidence = messages
         .map(|m| compact_chat_evidence(m, 7000))
         .unwrap_or_default();
@@ -1555,6 +1570,7 @@ async fn apply_chat_enhancers(
             state,
             &chat_modul.id,
             &enhancer,
+            &config.rag_pools,
             stage,
             original_input,
             &text,
@@ -7662,5 +7678,72 @@ mod tests {
         let text =
             "Plan\n<tool>editor.replace{aenderung:x,pfad:modules/DEEPDIVE/module.py}<tool_call|>";
         assert_eq!(strip_tool_tags(text), "Plan");
+    }
+
+    #[test]
+    fn enhancer_rag_pool_fails_closed_for_secure() {
+        use crate::types::{RagPool, RagTyp};
+
+        let make_modul = |secure: Option<&str>, rag_pool: Option<&str>, enhancer_rag_pool: Option<&str>| {
+            ModulConfig {
+                id: "enhancer.test".into(),
+                typ: "enhancer".into(),
+                name: "enhancer.test".into(),
+                display_name: "Test Enhancer".into(),
+                llm_backend: "llm".into(),
+                backup_llm: None,
+                berechtigungen: vec![],
+                timeout_s: 30,
+                retry: 0,
+                settings: ModulSettings {
+                    enhancer_rag_pool: enhancer_rag_pool.map(String::from),
+                    ..ModulSettings::default()
+                },
+                identity: ModulIdentity::default(),
+                rag_pool: rag_pool.map(String::from),
+                secure: secure.map(String::from),
+                linked_modules: vec![],
+                input_enhancers: vec![],
+                output_enhancers: vec![],
+                combined_enhancers: vec![],
+                persistent: false,
+                spawned_by: None,
+                spawn_ttl_s: None,
+                created_at: None,
+                scheduler_interval_ms: None,
+                max_concurrent_tasks: None,
+                token_budget: None,
+                token_budget_warning: None,
+            }
+        };
+
+        let pools = vec![
+            RagPool { id: "acme-pool".into(), name: "acme-pool".into(), typ: RagTyp::Private, secure: Some("acme".into()) },
+            RagPool { id: "public-pool".into(), name: "public-pool".into(), typ: RagTyp::Shared, secure: None },
+        ];
+
+        // public module → Some(candidate), no pool check
+        let public = make_modul(None, None, None);
+        assert_eq!(enhancer_rag_pool(&public, &pools), Some("Enhancer".into()));
+
+        // public with explicit enhancer_rag_pool → Some(that pool)
+        let public_explicit = make_modul(None, None, Some("public-pool"));
+        assert_eq!(enhancer_rag_pool(&public_explicit, &pools), Some("public-pool".into()));
+
+        // secure with matching same-label pool → Some
+        let sec_ok = make_modul(Some("acme"), None, Some("acme-pool"));
+        assert_eq!(enhancer_rag_pool(&sec_ok, &pools), Some("acme-pool".into()));
+
+        // secure with pool that has wrong label → None
+        let sec_wrong_label = make_modul(Some("acme"), None, Some("public-pool"));
+        assert_eq!(enhancer_rag_pool(&sec_wrong_label, &pools), None);
+
+        // secure with pool that does not exist → None
+        let sec_missing = make_modul(Some("acme"), None, Some("nonexistent-pool"));
+        assert_eq!(enhancer_rag_pool(&sec_missing, &pools), None);
+
+        // secure with no pool configured → defaults to "Enhancer" which doesn't exist in pools → None
+        let sec_no_pool = make_modul(Some("acme"), None, None);
+        assert_eq!(enhancer_rag_pool(&sec_no_pool, &pools), None);
     }
 }

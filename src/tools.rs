@@ -2258,13 +2258,17 @@ async fn exec_tool_unified_inner(
     }
     // For RAG tools, pre-compute embedding if configured
     if tool_name == "rag.speichern" || tool_name == "rag.suchen" {
-        let pool = config_snapshot
+        let modul_cfg = config_snapshot
             .module
             .iter()
-            .find(|m| m.id == modul_id || m.name == modul_id)
-            .and_then(|m| m.rag_pool.as_deref())
-            .unwrap_or("shared")
-            .to_string();
+            .find(|m| m.id == modul_id || m.name == modul_id);
+        let pool = match modul_cfg {
+            Some(m) => match resolve_rag_pool(m, &config_snapshot.rag_pools) {
+                Ok(p) => p,
+                Err(e) => return (false, e),
+            },
+            None => "shared".to_string(),
+        };
         if let Some(embed_id) = config_snapshot.embedding_backend.clone() {
             let text = params.first().map(|s| s.as_str()).unwrap_or("");
             if tool_name == "rag.speichern" {
