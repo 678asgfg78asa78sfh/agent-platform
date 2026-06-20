@@ -2164,6 +2164,26 @@ fn link_id_matches_py_module(link_id: &str, py_name: &str) -> bool {
     link_id == py_name || link_id.starts_with(&format!("{}.", py_name))
 }
 
+/// R1+R4: Darf `actor` `tool_name` auf `target` aufrufen?
+/// target=None ⇒ eigenes/built-in Tool (Ziel-Zone = actor-Zone).
+pub fn compartment_call_allowed(
+    actor: Option<&crate::types::ModulConfig>,
+    target: Option<&crate::types::ModulConfig>,
+    tool_name: &str,
+) -> bool {
+    let actor_zone = actor.and_then(|m| m.secure.as_deref());
+    if actor_zone.is_some() && crate::security::is_compartment_breaking_tool(tool_name) {
+        return false; // R4
+    }
+    // target=None means built-in/own tool → treat as same zone as actor.
+    // target=Some(module) with secure=None means public module → use None (public).
+    let target_zone = match target {
+        None => actor_zone,
+        Some(m) => m.secure.as_deref(),
+    };
+    crate::security::access_allowed(actor_zone, target_zone) // R1
+}
+
 fn linked_py_settings_module<'a>(
     caller: Option<&ModulConfig>,
     tool_name: &str,
@@ -2216,6 +2236,19 @@ async fn exec_tool_unified_inner(
     task_id: Option<&str>,
     args: Option<&serde_json::Value>,
 ) -> (bool, String) {
+    // R4: secure actor darf compartment-brechende Tools nie aufrufen (vor jeder Ausführung).
+    {
+        let actor_modul = config_snapshot
+            .module
+            .iter()
+            .find(|m| m.id == modul_id || m.name == modul_id);
+        if !compartment_call_allowed(actor_modul, None, tool_name) {
+            return (
+                false,
+                format!("DENIED: Compartment — '{}' darf Tool '{}' nicht aufrufen", modul_id, tool_name),
+            );
+        }
+    }
     if tool_name == "toolresult.lesen" {
         let handle = params.first().map(|s| s.trim()).unwrap_or("");
         let from = params.get(1).and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0);
@@ -2396,6 +2429,17 @@ async fn exec_tool_unified_inner(
         .unwrap_or(modul_id);
     audit_api_vault_uses(pipeline, settings_actor, tool_name, &resolved_uses);
     audit_credential_vault_uses(pipeline, settings_actor, tool_name, &resolved_credentials);
+    // R1: secure actor darf Python-Tool nur aufrufen, wenn Target-Modul in derselben Zone liegt.
+    if !compartment_call_allowed(modul.as_ref(), settings_module, tool_name) {
+        return (
+            false,
+            format!(
+                "DENIED: Compartment — '{}' darf Tool '{}' (andere Zone) nicht aufrufen",
+                modul.as_ref().map(|m| m.id.as_str()).unwrap_or(modul_id),
+                tool_name
+            ),
+        );
+    }
     if let Some(py_result) = execute_python_tool(
         tool_name,
         params,
@@ -3452,6 +3496,27 @@ mod tests {
             has_permission(&temp_explicit, "shell.exec"),
             "Temp-Agent mit expliziter shell-Permission darf"
         );
+    }
+
+    #[test]
+    fn dispatch_gate_blocks_cross_zone_and_breaking_tools() {
+        let mut acme = make_modul("chat", vec![]);
+        acme.id = "chat.acme".into();
+        acme.secure = Some("acme".into());
+        let public_target = make_modul("websearch", vec![]); // secure=None
+        let mut acme_target = make_modul("rss_verwaltung", vec![]);
+        acme_target.secure = Some("acme".into());
+        // acme → public tool: denied
+        assert!(!compartment_call_allowed(Some(&acme), Some(&public_target), "rss.fetch"));
+        // acme → acme tool: allowed
+        assert!(compartment_call_allowed(Some(&acme), Some(&acme_target), "rss.fetch"));
+        // acme → breaking tool (even with no target): denied
+        assert!(!compartment_call_allowed(Some(&acme), None, "agent.spawn"));
+        assert!(!compartment_call_allowed(Some(&acme), None, "agent_meta.status"));
+        assert!(!compartment_call_allowed(Some(&acme), None, "script.exec"));
+        // public → public: allowed
+        let pub_actor = make_modul("chat", vec![]);
+        assert!(compartment_call_allowed(Some(&pub_actor), Some(&public_target), "websearch"));
     }
 
     #[test]

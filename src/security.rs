@@ -52,7 +52,7 @@ pub fn safe_relative_path(p: &str) -> Option<String> {
 // ─── Compartments (secure tenant isolation) ───────────
 
 /// Exakte Tool-Namen, die ein SECURE-Compartment brechen (NIE für secure actor).
-pub const COMPARTMENT_BREAKING_TOOLS: &[&str] = &["agent.spawn", "shell.exec"];
+pub const COMPARTMENT_BREAKING_TOOLS: &[&str] = &["agent.spawn", "shell.exec", "script.exec"];
 
 /// Modul-Familien (Prefix `name.`), die ein Compartment brechen.
 pub const COMPARTMENT_BREAKING_PREFIXES: &[&str] = &["agent_meta.", "module_builder."];
@@ -696,6 +696,7 @@ mod tests {
     fn test_compartment_breaking_tools() {
         assert!(is_compartment_breaking_tool("agent.spawn"));
         assert!(is_compartment_breaking_tool("shell.exec"));
+        assert!(is_compartment_breaking_tool("script.exec"));
         assert!(is_compartment_breaking_tool("agent_meta.status"));
         assert!(is_compartment_breaking_tool("module_builder.create"));
         assert!(!is_compartment_breaking_tool("rag.suchen"));
