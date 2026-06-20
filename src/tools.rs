@@ -1547,6 +1547,9 @@ pub async fn execute_tool(
                     system_prompt: prompt.to_string(),
                 },
                 rag_pool: basis.rag_pool.clone(),
+                // Worker erbt die Compartment-Zone des Spawners (sonst bräche ein
+                // Spawn aus der SECURE-Zone aus — Defense-in-Depth zu R4).
+                secure: basis.secure.clone(),
             };
 
             // Create the task for the temp agent
@@ -2700,6 +2703,7 @@ mod tests {
             settings: ModulSettings::default(),
             identity: ModulIdentity::default(),
             rag_pool: None,
+            secure: None,
             linked_modules: vec![],
             input_enhancers: vec![],
             output_enhancers: vec![],

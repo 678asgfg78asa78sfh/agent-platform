@@ -822,6 +822,7 @@ mod tests {
                 ..Default::default()
             },
             rag_pool: None,
+            secure: None,
             linked_modules: vec![],
             input_enhancers: vec![],
             output_enhancers: vec![],

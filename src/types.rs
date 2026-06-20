@@ -239,6 +239,9 @@ pub struct ModulConfig {
     pub settings: ModulSettings,
     pub identity: ModulIdentity,
     pub rag_pool: Option<String>, // id des RAG pools (oder None)
+    /// Compartment-Label (Mandanten-Isolation). None = public.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure: Option<String>,
 
     // ── v1.0 Neue Felder ─────────────────────
     #[serde(default)]
@@ -462,6 +465,8 @@ pub struct RagPool {
     pub id: String,
     pub name: String, // "shared", "mail", "projekte"
     pub typ: RagTyp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1192,4 +1197,22 @@ pub struct BenchmarkCompareReport {
     pub report_a: BenchmarkReport,
     pub report_b: BenchmarkReport,
     pub winner_per_case: Vec<(String, String)>, // (case_id, "A"|"B"|"tie")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rag_pool_secure_roundtrips_and_defaults_none() {
+        let without: RagPool = serde_json::from_str(
+            r#"{"id":"p","name":"shared","typ":"Shared"}"#,
+        ).unwrap();
+        assert_eq!(without.secure, None);
+
+        let with_label: RagPool = serde_json::from_str(
+            r#"{"id":"p","name":"acme","typ":"Private","secure":"acme"}"#,
+        ).unwrap();
+        assert_eq!(with_label.secure.as_deref(), Some("acme"));
+    }
 }

@@ -2393,6 +2393,7 @@ mod tests {
             settings: Default::default(),
             identity: Default::default(),
             rag_pool: None,
+            secure: None,
             linked_modules: vec![],
             input_enhancers: vec![],
             output_enhancers: vec![],

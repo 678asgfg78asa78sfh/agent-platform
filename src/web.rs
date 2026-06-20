@@ -7362,6 +7362,7 @@ mod tests {
             settings: ModulSettings::default(),
             identity: ModulIdentity::default(),
             rag_pool: Some("DeepDive".into()),
+            secure: None,
             linked_modules: vec![],
             input_enhancers: vec![],
             output_enhancers: vec![],
