@@ -2473,7 +2473,11 @@ pub async fn execute_python_tool(
     for py_mod in py_modules {
         for tool in &py_mod.tools {
             if tool.name == tool_name {
-                let platform_config = if py_mod.name == "agent_meta" {
+                let actor_is_secure = instance_config
+                    .get("secure")
+                    .and_then(|v| v.as_str())
+                    .is_some();
+                let platform_config = if py_mod.name == "agent_meta" && !actor_is_secure {
                     let mut cfg = instance_config.clone();
                     if !cfg.is_object() {
                         cfg = serde_json::json!({});
