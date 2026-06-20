@@ -2391,15 +2391,17 @@ async fn exec_tool_unified_inner(
             map.insert("tool_modul_id".into(), serde_json::json!(tool_module.id));
             map.insert("tool_modul_typ".into(), serde_json::json!(tool_module.typ));
         }
-        let project_root = pipeline.base.parent().unwrap_or(&pipeline.base);
-        map.insert(
-            "project_root".into(),
-            serde_json::json!(project_root.to_string_lossy()),
-        );
-        map.insert(
-            "modules_dir".into(),
-            serde_json::json!(project_root.join("modules").to_string_lossy()),
-        );
+        if modul.as_ref().and_then(|m| m.secure.as_deref()).is_none() {
+            let project_root = pipeline.base.parent().unwrap_or(&pipeline.base);
+            map.insert(
+                "project_root".into(),
+                serde_json::json!(project_root.to_string_lossy()),
+            );
+            map.insert(
+                "modules_dir".into(),
+                serde_json::json!(project_root.join("modules").to_string_lossy()),
+            );
+        }
         if let Some(current_task_id) = task_id {
             let root_task_id = current_task_id
                 .split_once('#')
@@ -2418,6 +2420,7 @@ async fn exec_tool_unified_inner(
                 }
             }
         }
+        apply_secure_markers(map, modul.as_ref());
     }
     let resolved_uses =
         crate::util::resolve_api_key_aliases_in_json(&mut instance_config, config_snapshot);
@@ -2777,6 +2780,18 @@ fn has_rag_access(modul: &ModulConfig) -> bool {
                 .rag_pool
                 .as_deref()
                 .is_some_and(|pool| !pool.trim().is_empty()))
+}
+
+/// R5: secure-Module bekommen Home-only-Marker; project_root/modules_dir
+/// werden vom Aufrufer für secure NICHT injiziert.
+pub fn apply_secure_markers(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    modul: Option<&crate::types::ModulConfig>,
+) {
+    if let Some(label) = modul.and_then(|m| m.secure.as_deref()) {
+        map.insert("secure".into(), serde_json::json!(label));
+        map.insert("confine_home_only".into(), serde_json::json!(true));
+    }
 }
 
 #[cfg(test)]
@@ -3589,5 +3604,21 @@ mod tests {
         sec_wrong.secure = Some("acme".into());
         sec_wrong.rag_pool = Some("shared".into());
         assert!(resolve_rag_pool(&sec_wrong, &pools).is_err());
+    }
+
+    #[test]
+    fn secure_module_config_is_home_confined() {
+        let mut acme = make_modul("chat", vec![]);
+        acme.secure = Some("acme".into());
+        let mut map = serde_json::Map::new();
+        apply_secure_markers(&mut map, Some(&acme));
+        assert_eq!(map.get("secure").and_then(|v| v.as_str()), Some("acme"));
+        assert_eq!(map.get("confine_home_only").and_then(|v| v.as_bool()), Some(true));
+
+        let public = make_modul("chat", vec![]);
+        let mut map2 = serde_json::Map::new();
+        apply_secure_markers(&mut map2, Some(&public));
+        assert!(map2.get("secure").is_none());
+        assert!(map2.get("confine_home_only").is_none());
     }
 }
