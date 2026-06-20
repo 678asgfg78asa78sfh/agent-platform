@@ -2803,6 +2803,45 @@ mod tests {
     use super::*;
     use crate::types::{LlmBackend, LlmTyp, ModulIdentity, ModulSettings};
 
+    #[test]
+    fn acme_and_public_are_isolated() {
+        use crate::types::{RagPool, RagTyp};
+        let pools = vec![
+            RagPool {
+                id: "acme".into(),
+                name: "acme".into(),
+                typ: RagTyp::Private,
+                secure: Some("acme".into()),
+            },
+            RagPool {
+                id: "shared".into(),
+                name: "shared".into(),
+                typ: RagTyp::Shared,
+                secure: None,
+            },
+        ];
+        let mut acme = make_modul("chat", vec![]);
+        acme.id = "chat.acme".into();
+        acme.secure = Some("acme".into());
+        acme.rag_pool = Some("acme".into());
+        let mut pubc = make_modul("chat", vec![]);
+        pubc.id = "chat.pub".into();
+        pubc.rag_pool = Some("shared".into());
+
+        // RAG: acme bekommt nur den acme-Pool, public nur shared.
+        assert_eq!(resolve_rag_pool(&acme, &pools).unwrap(), "acme");
+        assert_eq!(resolve_rag_pool(&pubc, &pools).unwrap(), "shared");
+
+        // Tool-Calls quer über Zonen sind beidseitig gesperrt, gleiche Zone erlaubt.
+        let mut acme_tool = make_modul("rss_verwaltung", vec![]);
+        acme_tool.secure = Some("acme".into());
+        let pub_tool = make_modul("rss_verwaltung", vec![]);
+        assert!(!compartment_call_allowed(Some(&pubc), Some(&acme_tool), "rss.fetch"));
+        assert!(!compartment_call_allowed(Some(&acme), Some(&pub_tool), "rss.fetch"));
+        assert!(compartment_call_allowed(Some(&acme), Some(&acme_tool), "rss.fetch"));
+        assert!(compartment_call_allowed(Some(&pubc), Some(&pub_tool), "rss.fetch"));
+    }
+
     fn make_modul(typ: &str, berechtigungen: Vec<String>) -> ModulConfig {
         ModulConfig {
             id: "test".into(),
