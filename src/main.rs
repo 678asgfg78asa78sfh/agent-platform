@@ -105,6 +105,22 @@ async fn main() {
             let _ = util::atomic_write(&config_path, json.as_bytes());
         }
     }
+    // Startup compartment validator: detect and disable misconfigured secure modules.
+    for v in crate::security::validate_compartments(&config) {
+        match v.severity {
+            crate::security::Severity::Error => tracing::error!(
+                module_id = %v.module_id,
+                "Compartment-Verletzung: {} — Modul deaktiviert",
+                v.message
+            ),
+            crate::security::Severity::Warning => tracing::warn!(
+                module_id = %v.module_id,
+                "Compartment-Warnung: {}",
+                v.message
+            ),
+        }
+    }
+
     let admin_port = config.web_port;
     let bind_address = config.bind_address.clone();
 

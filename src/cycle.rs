@@ -377,10 +377,12 @@ impl Orchestrator {
 
             // 1. Config lesen, Modul-IDs sammeln
             let cfg = self.config.read().await;
+            let blocked = crate::security::blocked_module_ids(&cfg);
             let modul_ids: Vec<String> = cfg
                 .module
                 .iter()
                 .filter(|m| m.typ != "enhancer")
+                .filter(|m| !blocked.contains(&m.id))
                 .map(|m| m.id.clone())
                 .collect();
             let cleanup_cfg = cfg.cleanup.clone();

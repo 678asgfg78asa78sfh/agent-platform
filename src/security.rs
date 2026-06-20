@@ -15,7 +15,7 @@ use axum::{
     response::Response,
 };
 
-use crate::types::{AgentConfig, LlmTyp};
+use crate::types::{AgentConfig, LlmTyp, ModulConfig};
 
 // ─── Path sanitization ────────────────────────────────
 
@@ -50,6 +50,163 @@ pub fn safe_relative_path(p: &str) -> Option<String> {
 }
 
 // ─── Compartments (secure tenant isolation) ───────────
+
+// ── Startup validator ─────────────────────────────────
+
+/// Severity of a compartment configuration violation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+/// A single violation found by `validate_compartments`.
+#[derive(Debug, Clone)]
+pub struct CompartmentViolation {
+    pub module_id: String,
+    pub severity: Severity,
+    pub message: String,
+}
+
+/// Validate all secure modules in `cfg` and return every violation found.
+/// Call at startup to detect misconfigured compartments before scheduling.
+pub fn validate_compartments(cfg: &AgentConfig) -> Vec<CompartmentViolation> {
+    let mut out = Vec::new();
+
+    for m in &cfg.module {
+        let zone = match &m.secure {
+            Some(z) => z.clone(),
+            None => continue, // public modules are out of scope
+        };
+
+        // R3: must have a rag_pool, it must exist in cfg.rag_pools, and its zone must match.
+        match &m.rag_pool {
+            None => {
+                out.push(CompartmentViolation {
+                    module_id: m.id.clone(),
+                    severity: Severity::Error,
+                    message: format!(
+                        "Secure module '{}' (zone '{zone}') hat keinen rag_pool",
+                        m.id
+                    ),
+                });
+            }
+            Some(pool_id) => {
+                match cfg.rag_pools.iter().find(|p| &p.id == pool_id) {
+                    None => {
+                        out.push(CompartmentViolation {
+                            module_id: m.id.clone(),
+                            severity: Severity::Error,
+                            message: format!(
+                                "Secure module '{}' (zone '{zone}') referenziert unbekannten rag_pool '{pool_id}'",
+                                m.id
+                            ),
+                        });
+                    }
+                    Some(pool) => {
+                        if pool.secure.as_deref() != Some(zone.as_str()) {
+                            out.push(CompartmentViolation {
+                                module_id: m.id.clone(),
+                                severity: Severity::Error,
+                                message: format!(
+                                    "Secure module '{}' (zone '{zone}') referenziert rag_pool '{pool_id}' mit falscher Zone ({:?})",
+                                    m.id, pool.secure
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // R2: linked_modules targets must be in the same zone.
+        for link_id in &m.linked_modules {
+            let target_zone = cfg.module.iter()
+                .find(|t| &t.id == link_id)
+                .map(|t| t.secure.as_deref());
+            match target_zone {
+                Some(tz) if tz != Some(zone.as_str()) => {
+                    out.push(CompartmentViolation {
+                        module_id: m.id.clone(),
+                        severity: Severity::Error,
+                        message: format!(
+                            "Secure module '{}' (zone '{zone}') ist mit '{}' (Zone {:?}) verknüpft — Zonen-Mismatch",
+                            m.id, link_id, tz
+                        ),
+                    });
+                }
+                None => {
+                    // Target not found at all — treat as a zone mismatch/unknown
+                    out.push(CompartmentViolation {
+                        module_id: m.id.clone(),
+                        severity: Severity::Error,
+                        message: format!(
+                            "Secure module '{}' (zone '{zone}') ist mit unbekanntem Modul '{}' verknüpft",
+                            m.id, link_id
+                        ),
+                    });
+                }
+                _ => {} // same zone — OK
+            }
+        }
+
+        // R4: must not grant compartment-breaking capabilities.
+        if let Some(reason) = grants_breaking_capability(m) {
+            out.push(CompartmentViolation {
+                module_id: m.id.clone(),
+                severity: Severity::Error,
+                message: format!(
+                    "Secure module '{}' (zone '{zone}') gewährt brechende Berechtigung: {reason}",
+                    m.id
+                ),
+            });
+        }
+
+        // WARN: LLM backend must be self-hosted (prompts must not leave the box).
+        if let Some(backend) = cfg.llm_backends.iter().find(|b| b.id == m.llm_backend) {
+            if !is_self_hosted_llm_url(&backend.url) {
+                out.push(CompartmentViolation {
+                    module_id: m.id.clone(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "Secure module '{}' (zone '{zone}') nutzt nicht-lokales LLM-Backend '{}' — Prompts verlassen die Box",
+                        m.id, backend.id
+                    ),
+                });
+            }
+        }
+    }
+
+    out
+}
+
+/// Returns the set of module IDs that have at least one `Severity::Error` violation.
+/// These modules should be excluded from scheduling.
+pub fn blocked_module_ids(cfg: &AgentConfig) -> std::collections::HashSet<String> {
+    validate_compartments(cfg)
+        .into_iter()
+        .filter(|v| v.severity == Severity::Error)
+        .map(|v| v.module_id)
+        .collect()
+}
+
+/// Check whether a module grants any compartment-breaking capability via its
+/// berechtigungen (permission strings) or linked_modules.
+fn grants_breaking_capability(m: &ModulConfig) -> Option<String> {
+    const BREAKING_PERMS: &[&str] = &["shell", "shell.exec", "script", "script.exec", "agent.spawn"];
+    for p in &m.berechtigungen {
+        if BREAKING_PERMS.contains(&p.as_str()) || is_compartment_breaking_tool(p) {
+            return Some(format!("Permission '{p}'"));
+        }
+    }
+    for link in &m.linked_modules {
+        if COMPARTMENT_BREAKING_PREFIXES.iter().any(|pre| link.starts_with(pre))
+            || link == "agent_meta" || link == "module_builder" {
+            return Some(format!("Link '{link}'"));
+        }
+    }
+    None
+}
 
 /// Exakte Tool-Namen, die ein SECURE-Compartment brechen (NIE für secure actor).
 pub const COMPARTMENT_BREAKING_TOOLS: &[&str] = &["agent.spawn", "shell.exec", "script.exec"];
@@ -564,6 +721,62 @@ impl RateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_modul(id: &str) -> crate::types::ModulConfig {
+        use crate::types::{ModulIdentity, ModulSettings};
+        crate::types::ModulConfig {
+            id: id.into(),
+            typ: "chat".into(),
+            name: id.into(),
+            display_name: id.into(),
+            llm_backend: "x".into(),
+            backup_llm: None,
+            berechtigungen: vec![],
+            timeout_s: 30,
+            retry: 0,
+            settings: ModulSettings::default(),
+            identity: ModulIdentity::default(),
+            rag_pool: None,
+            secure: None,
+            linked_modules: vec![],
+            input_enhancers: vec![],
+            output_enhancers: vec![],
+            combined_enhancers: vec![],
+            persistent: true,
+            spawned_by: None,
+            spawn_ttl_s: None,
+            created_at: None,
+            scheduler_interval_ms: None,
+            max_concurrent_tasks: None,
+            token_budget: None,
+            token_budget_warning: None,
+        }
+    }
+
+    #[test]
+    fn validate_flags_misconfigured_secure_module() {
+        use crate::types::{RagPool, RagTyp};
+        let mut cfg = AgentConfig::default();
+        cfg.rag_pools = vec![RagPool {
+            id: "acme".into(),
+            name: "acme".into(),
+            typ: RagTyp::Private,
+            secure: Some("acme".into()),
+        }];
+        let mut good = test_modul("chat.acme");
+        good.secure = Some("acme".into());
+        good.rag_pool = Some("acme".into());
+        let mut bad = test_modul("chat.bad");
+        bad.secure = Some("acme".into());
+        bad.rag_pool = None; // no secure RAG → Error
+        cfg.module = vec![good, bad];
+        let v = validate_compartments(&cfg);
+        let blocked = blocked_module_ids(&cfg);
+        assert!(v.iter().any(|x| x.module_id == "chat.bad" && x.severity == Severity::Error));
+        assert!(!v.iter().any(|x| x.module_id == "chat.acme" && x.severity == Severity::Error));
+        assert!(blocked.contains("chat.bad"));
+        assert!(!blocked.contains("chat.acme"));
+    }
 
     #[test]
     fn test_safe_id_basic() {
