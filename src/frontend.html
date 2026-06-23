@@ -1374,6 +1374,7 @@ body::after {
         <option value="ollama">Ollama</option>
         <option value="anthropic">Anthropic Claude</option>
         <option value="grok">Grok (xAI)</option>
+        <option value="claude-cli">Claude Code (lokal, claude -p)</option>
       </select>
     </div>
     <div class="form-row"><label>URL</label><input type="text" id="llm-url" placeholder="http://localhost:11434" /></div>
@@ -5694,7 +5695,7 @@ ge('llm-fetch-models').addEventListener('click', function() {
   updateLlmProviderUi(false);
   var url = ge('llm-url').value.trim();
   var apikey = ge('llm-apikey').value.trim();
-  if (!url) { toast('URL eingeben', 'error'); return; }
+  if (!url && provider !== 'claude-cli') { toast('URL eingeben', 'error'); return; }
 
   var backendId = ge('llm-id').value.trim();
   var modelMaxToolRounds = readNullableIntAllowZero('llm-max-tool-rounds');
@@ -5745,6 +5746,7 @@ function uniqueLlmId(baseId) {
 }
 
 var LLM_PROVIDER_DEFAULT_URLS = {
+  'claude-cli': '',
   llamacpp: '',
   openrouter: 'https://openrouter.ai/api',
   nvidia: 'https://integrate.api.nvidia.com/v1',
@@ -5757,6 +5759,7 @@ var LLM_PROVIDER_DEFAULT_URLS = {
 };
 
 var LLM_PROVIDER_PLACEHOLDERS = {
+  'claude-cli': 'claude (Binary-Pfad, optional)',
   llamacpp: 'http://192.168.x.x:8080',
   openrouter: 'https://openrouter.ai/api',
   nvidia: 'https://integrate.api.nvidia.com/v1',
@@ -5769,6 +5772,7 @@ var LLM_PROVIDER_PLACEHOLDERS = {
 };
 
 var LLM_PROVIDER_DEFAULT_MODELS = {
+  'claude-cli': 'sonnet',
   nvidia: 'minimaxai/minimax-m3',
   deepseek: 'deepseek-v4-flash'
 };
@@ -5778,6 +5782,7 @@ function llmProviderToTyp(provider) {
   if (provider === 'anthropic') return 'Anthropic';
   if (provider === 'grok') return 'Grok';
   if (provider === 'deepseek') return 'DeepSeek';
+  if (provider === 'claude-cli') return 'ClaudeCode';
   return 'OpenAICompat';
 }
 
@@ -5787,6 +5792,7 @@ function providerFromBackend(backend) {
   if (backend.typ === 'Anthropic') return 'anthropic';
   if (backend.typ === 'Grok') return 'grok';
   if (backend.typ === 'DeepSeek') return 'deepseek';
+  if (backend.typ === 'ClaudeCode') return 'claude-cli';
   var url = (backend.url || '').toLowerCase();
   if (url.indexOf('api.deepseek.com') >= 0) return 'deepseek';
   if (url.indexOf('openrouter') >= 0) return 'openrouter';
@@ -5806,6 +5812,7 @@ function providerLabel(provider) {
   if (provider === 'ollama') return 'Ollama';
   if (provider === 'anthropic') return 'Claude';
   if (provider === 'grok') return 'Grok';
+  if (provider === 'claude-cli') return 'Claude Code (claude -p)';
   return provider || 'LLM';
 }
 
@@ -5831,6 +5838,12 @@ function updateLlmProviderUi(forceDefault, allowEmptyDefault) {
     ge('llm-reasoning-mode').value = 'off';
     ge('llm-reasoning-exclude').checked = true;
   }
+  var isCli = provider === 'claude-cli';
+  var urlRow = urlEl.closest ? urlEl.closest('.form-row') : null;
+  if (urlRow) urlRow.style.display = isCli ? 'none' : '';
+  var apikeyEl2 = ge('llm-apikey');
+  var apikeyRow = (apikeyEl2 && apikeyEl2.closest) ? apikeyEl2.closest('.form-row') : null;
+  if (apikeyRow) apikeyRow.style.display = isCli ? 'none' : '';
   clearLlmModelPicker();
 }
 
@@ -5865,7 +5878,7 @@ ge('llm-submit').addEventListener('click', function() {
       system_prompt: ge('llm-system-prompt').value.trim() || 'Du bist ein hilfreicher Assistent.',
     },
   };
-  if (!entry.url || !entry.model) { toast('URL and model required', 'error'); return; }
+  if ((!entry.url && provider !== 'claude-cli') || !entry.model) { toast('URL and model required', 'error'); return; }
   if (editingLlmIdx === -1) {
     if (appConfig.llm_backends.some(function(b) { return b.id === entry.id; })) { toast('ID already exists', 'error'); return; }
     appConfig.llm_backends.push(entry);
@@ -5883,7 +5896,7 @@ ge('llm-test').addEventListener('click', function() {
   updateLlmProviderUi(false);
   var model = ge('llm-model').value.trim();
   var url = ge('llm-url').value.trim();
-  if (!url || !model) { toast('URL und Model eingeben', 'error'); return; }
+  if ((!url && provider !== 'claude-cli') || !model) { toast('URL und Model eingeben', 'error'); return; }
   toast('Teste LLM Gem ...', 'info');
   var testMaxToolRounds = readNullableIntAllowZero('llm-max-tool-rounds');
   apiFetch('POST', '/api/setup/test-backend', {
