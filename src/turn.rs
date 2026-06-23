@@ -276,7 +276,24 @@ impl TurnEngine<'_> {
                     if let Some((t_name, t_params)) = tools::parse_tool_call(&response) {
                         let schema = tools::schema_required_for(&t_name, modul, self.py_mods_snap);
                         let mut args = serde_json::Map::new();
-                        if let Some(ref schema_keys) = schema {
+                        // Wenn das Modell ein einzelnes JSON-Objekt als Argument
+                        // schickte (<tool>name({"a":"b"})</tool>), dessen Schluessel
+                        // als BENANNTE Args uebernehmen (robust, komma-sicher) statt
+                        // positional — analog zum nativen Function-Call.
+                        let single_json = if t_params.len() == 1 {
+                            serde_json::from_str::<serde_json::Value>(t_params[0].trim()).ok()
+                        } else {
+                            None
+                        };
+                        if let Some(serde_json::Value::Object(map)) = single_json {
+                            for (k, v) in map {
+                                let s = match v {
+                                    serde_json::Value::String(s) => s,
+                                    other => other.to_string(),
+                                };
+                                args.insert(k, serde_json::json!(s));
+                            }
+                        } else if let Some(ref schema_keys) = schema {
                             for (i, key) in schema_keys.iter().enumerate() {
                                 let val = t_params.get(i).cloned().unwrap_or_default();
                                 args.insert(key.clone(), serde_json::json!(val));

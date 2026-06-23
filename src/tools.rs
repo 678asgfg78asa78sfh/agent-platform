@@ -657,13 +657,21 @@ pub fn tools_prompt(modul: &ModulConfig) -> String {
         ));
     }
     prompt.push_str(
-        "WICHTIG - So benutzt du Tools:\n\
-         Du darfst nur Tools verwenden oder als verfuegbar nennen, die in diesem Systemprompt als [TOOL:...] stehen. \
-         Erfinde keine globalen Plattform-Tools. Wenn du nach deinen Faehigkeiten gefragt wirst, nutze agent.capabilities falls dieses Tool verfuegbar ist.\n\
-         Wenn du ein Tool nutzen willst, antworte AUSSCHLIESSLICH mit dem Tool-Call und NICHTS ANDEREM:\n\
-         <tool>name(param1, param2)</tool>\n\n\
-         EXAKTE SYNTAX: <tool> dann Toolname, dann Klammer auf, Parameter, Klammer zu, dann </tool>\n\
-         KEIN anderes Format! KEIN <tool:.../>! KEIN Markdown! NUR <tool>...</tool>\n\n"
+        "HOW TO CALL TOOLS / SO RUFST DU TOOLS AUF:\n\
+         You may only use the tools listed above as [TOOL:name(params)]; the names in the \
+         parentheses are the argument names. Do not invent tools. If asked about your \
+         capabilities, use agent.capabilities if available.\n\
+         PREFERRED — native function calling: call the tool the normal way, as a structured \
+         function/tool call with NAMED arguments (matching the listed argument names). This is \
+         the most reliable method and matches how you were trained. \
+         (Bevorzugt: natives Function-Calling mit benannten Argumenten.)\n\
+         FALLBACK — only if you cannot emit a native function call, write ONE line with a JSON \
+         object of named arguments:\n\
+         <tool>name({\"arg\": \"value\", \"arg2\": \"value2\"})</tool>\n\
+         Prefer this JSON form whenever a value can contain commas, quotes, code or HTML — it is \
+         unambiguous. For a single simple value, <tool>name(value)</tool> also works.\n\
+         Output ONLY the tool call (native call or the <tool> line) and nothing else. For normal \
+         conversation without a tool need, just answer directly.\n\n"
     );
 
     // Typspezifische Beispiele
@@ -751,7 +759,7 @@ pub fn tools_prompt(modul: &ModulConfig) -> String {
 
     prompt.push_str(
         "REGELN:\n\
-         - Wenn du ein Tool brauchst, antworte NUR mit dem <tool>...</tool> Tag. Kein Text davor oder danach.\n\
+         - Wenn du ein Tool brauchst, gib NUR den Tool-Call aus (nativer Function-Call ODER die <tool>...</tool>-Zeile), keinen Text davor oder danach.\n\
          - Du bekommst das Tool-Ergebnis zurück und antwortest dann dem User basierend auf dem Ergebnis.\n\
          - Wenn ein Tool FAILED meldet, entscheide im nächsten Schritt: korrigiert erneut versuchen, ein anderes erlaubtes Tool nutzen, oder ehrlich sagen warum es nicht geht.\n\
          - Für normale Gespräche ohne Tool-Bedarf antworte direkt ohne Tool-Call.\n\
@@ -836,17 +844,21 @@ fn parse_dsml_tool_call(text: &str) -> Option<(String, Vec<String>)> {
         }
         let value_start = after_open;
         let after_value = &rest[value_start..];
-        // Terminate on the DSML parameter close marker, not the first "</", so
-        // values that themselves contain "</" (HTML/JS/JSON payloads) survive intact.
-        let close_marker = "</parameter>";
-        let Some(close_rel) = after_value.find(close_marker) else {
+        // Terminate on the parameter close tag — either plain </parameter> or the
+        // DSML variant </｜｜DSML｜｜parameter>. Locate "parameter>" and back up to the
+        // "</" right before it. Avoids truncating values that contain "</"
+        // (HTML/JS/JSON payloads) AND matches the DSML-prefixed close tag.
+        let Some(close_marker_rel) = after_value.find("parameter>") else {
+            break;
+        };
+        let Some(close_rel) = after_value[..close_marker_rel].rfind("</") else {
             break;
         };
         let value = after_value[..close_rel].trim();
         if !value.is_empty() {
             params.push(clean_llm_delimiters(&clean_param(value)));
         }
-        rest = &after_value[close_rel + close_marker.len()..];
+        rest = &after_value[close_marker_rel + "parameter>".len()..];
     }
 
     Some((name, params))
