@@ -41,6 +41,163 @@ fn content_value_text(value: &serde_json::Value) -> String {
     }
 }
 
+/// Result of a `claude -p` subprocess call in plain-LLM mode.
+#[derive(Debug)]
+struct ClaudeCliResult {
+    text: String,
+    cost_usd: f64,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+/// Flatten an OpenAI-style message array into (system_prompt, transcript) for the
+/// claude CLI: `system` messages drive `--system-prompt`, the rest become a
+/// role-tagged transcript fed on stdin. Reuses `content_value_text` so string- and
+/// array-shaped content both work.
+fn flatten_messages(messages: &[serde_json::Value]) -> (String, String) {
+    let mut system_parts: Vec<String> = Vec::new();
+    let mut convo_parts: Vec<String> = Vec::new();
+    for m in messages {
+        let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+        let text = content_value_text(m.get("content").unwrap_or(&serde_json::Value::Null));
+        if text.trim().is_empty() {
+            continue;
+        }
+        if role == "system" {
+            system_parts.push(text);
+        } else {
+            let label = match role {
+                "assistant" => "Assistant",
+                "tool" => "Tool",
+                _ => "User",
+            };
+            convo_parts.push(format!("{label}: {text}"));
+        }
+    }
+    let mut system = system_parts.join("\n\n");
+    let mut prompt = convo_parts.join("\n\n");
+    // claude -p braucht einen Prompt auf stdin. Gibt es nur System-Messages,
+    // werden sie zum Prompt (sonst würde der Prozess auf Eingabe warten).
+    if prompt.is_empty() {
+        prompt = std::mem::take(&mut system);
+    }
+    (system, prompt)
+}
+
+/// Parse the single JSON object emitted by `claude -p --output-format json`.
+fn parse_claude_cli_json(stdout: &str) -> Result<ClaudeCliResult, String> {
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return Err("claude -p: leere Antwort".into());
+    }
+    let v: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
+        format!(
+            "claude -p JSON parse: {e} — Raw: {}",
+            trimmed.chars().take(300).collect::<String>()
+        )
+    })?;
+    if v.get("is_error").and_then(|b| b.as_bool()) == Some(true) {
+        let sub = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("error");
+        let res = v.get("result").and_then(|s| s.as_str()).unwrap_or("");
+        return Err(format!("claude -p Fehler ({sub}): {res}"));
+    }
+    let text = v
+        .get("result")
+        .and_then(|s| s.as_str())
+        .ok_or("claude -p: kein 'result' im JSON")?
+        .to_string();
+    let usage = v.get("usage");
+    let utok = |k: &str| {
+        usage
+            .and_then(|u| u.get(k))
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0)
+    };
+    Ok(ClaudeCliResult {
+        text,
+        cost_usd: v
+            .get("total_cost_usd")
+            .and_then(|c| c.as_f64())
+            .unwrap_or(0.0),
+        input_tokens: utok("input_tokens"),
+        output_tokens: utok("output_tokens"),
+    })
+}
+
+/// Run `claude -p` as a plain-LLM backend: own tools off, system prompt overridden,
+/// conversation on stdin, single JSON object back. No HTTP.
+async fn claude_cli_chat(
+    backend: &LlmBackend,
+    messages: &[serde_json::Value],
+) -> Result<ClaudeCliResult, String> {
+    use tokio::io::AsyncWriteExt;
+    let (system_prompt, prompt) = flatten_messages(messages);
+    let bin = backend.url.trim();
+    let bin = if bin.is_empty() { "claude" } else { bin };
+
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.arg("-p")
+        .arg("--output-format")
+        .arg("json")
+        .arg("--model")
+        .arg(&backend.model)
+        // Claude-Codes eigene Tools aus → reiner Text. Tool-Calling macht die
+        // Turn-Engine über Text-Parsing (parse_dsml_tool_call).
+        .arg("--allowedTools")
+        .arg("")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    if !system_prompt.is_empty() {
+        cmd.arg("--system-prompt").arg(&system_prompt);
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("claude -p spawn ({bin}): {e}"))?;
+    if let Some(ref mut stdin) = child.stdin {
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|e| format!("claude -p stdin: {e}"))?;
+        stdin.shutdown().await.ok();
+    }
+
+    let timeout_s = if backend.timeout_s == 0 {
+        120
+    } else {
+        backend.timeout_s
+    };
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_s),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(r) => r.map_err(|e| format!("claude -p Prozess: {e}"))?,
+        Err(_) => return Err(format!("claude -p Timeout ({timeout_s}s) — Prozess gekillt")),
+    };
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "claude -p Exit {}: {}",
+            output.status,
+            err.chars().take(500).collect::<String>()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result = parse_claude_cli_json(&stdout)?;
+    tracing::debug!(
+        "claude -p: {} in / {} out tokens (fiktiv ${:.4})",
+        result.input_tokens,
+        result.output_tokens,
+        result.cost_usd
+    );
+    Ok(result)
+}
+
 fn openai_compat_response_text(data: &serde_json::Value) -> String {
     for path in [
         "/choices/0/message/content",
@@ -776,6 +933,12 @@ impl LlmRouter {
                 }
                 parse_sse_deltas(resp, on_chunk, "anthropic").await
             }
+            LlmTyp::ClaudeCode => {
+                // Subprozess-Backend: kein echtes Streaming — Gesamttext einmalig senden.
+                let r = claude_cli_chat(&backend, messages).await?;
+                let _ = on_chunk.send(r.text.clone()).await;
+                Ok(r.text)
+            }
             LlmTyp::Embedding => Err("Embedding backend unterstützt kein Chat".into()),
         }
     }
@@ -1129,6 +1292,12 @@ impl LlmRouter {
                     Ok((content, data))
                 }
             }
+            LlmTyp::ClaudeCode => {
+                // Plain-LLM-Subprozess; Tool-Calls kommen als Text im result und
+                // werden von der Turn-Engine geparst → leeres Roh-JSON genügt.
+                let r = claude_cli_chat(backend, messages).await?;
+                Ok((r.text, serde_json::json!({})))
+            }
             LlmTyp::Embedding => Err("Embedding backend unterstützt kein Chat".into()),
         }
     }
@@ -1201,6 +1370,7 @@ impl LlmRouter {
             }
             LlmTyp::Anthropic => Err("Anthropic does not support embeddings directly".to_string()),
             LlmTyp::DeepSeek => Err("DeepSeek does not support embeddings directly".to_string()),
+            LlmTyp::ClaudeCode => Err("claude -p unterstützt keine Embeddings".to_string()),
         }
     }
 }
@@ -1270,6 +1440,67 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use tokio::sync::RwLock;
+
+    #[test]
+    fn test_flatten_messages_splits_system_and_tags_roles() {
+        let msgs = vec![
+            serde_json::json!({"role": "system", "content": "Du bist Bob."}),
+            serde_json::json!({"role": "user", "content": "Hallo"}),
+            serde_json::json!({"role": "assistant", "content": "Hi!"}),
+            serde_json::json!({"role": "tool", "content": "result=42"}),
+        ];
+        let (system, prompt) = flatten_messages(&msgs);
+        assert_eq!(system, "Du bist Bob.");
+        assert_eq!(prompt, "User: Hallo\n\nAssistant: Hi!\n\nTool: result=42");
+    }
+
+    #[test]
+    fn test_flatten_messages_handles_array_content_and_skips_empty() {
+        let msgs = vec![
+            serde_json::json!({"role": "user", "content": [
+                {"type": "text", "text": "Teil1"},
+                {"type": "text", "text": "Teil2"}
+            ]}),
+            serde_json::json!({"role": "assistant", "content": ""}),
+        ];
+        let (system, prompt) = flatten_messages(&msgs);
+        assert_eq!(system, "");
+        // content_value_text joins array text parts; empty assistant turn is skipped.
+        assert_eq!(prompt, "User: Teil1Teil2");
+    }
+
+    #[test]
+    fn test_flatten_messages_system_only_becomes_prompt() {
+        let msgs = vec![serde_json::json!({"role": "system", "content": "nur system"})];
+        let (system, prompt) = flatten_messages(&msgs);
+        assert_eq!(system, "");
+        assert_eq!(prompt, "nur system");
+    }
+
+    #[test]
+    fn test_parse_claude_cli_json_success() {
+        let out = r#"{"subtype":"success","is_error":false,"result":"42","total_cost_usd":0.05,"usage":{"input_tokens":3,"output_tokens":5}}"#;
+        let r = parse_claude_cli_json(out).unwrap();
+        assert_eq!(r.text, "42");
+        assert_eq!(r.input_tokens, 3);
+        assert_eq!(r.output_tokens, 5);
+        assert!((r.cost_usd - 0.05).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_parse_claude_cli_json_error_flag() {
+        let out = r#"{"is_error":true,"subtype":"error_max_turns","result":"too many turns"}"#;
+        let err = parse_claude_cli_json(out).unwrap_err();
+        assert!(err.contains("error_max_turns"));
+        assert!(err.contains("too many turns"));
+    }
+
+    #[test]
+    fn test_parse_claude_cli_json_garbage_and_missing_result() {
+        assert!(parse_claude_cli_json("not json at all").is_err());
+        assert!(parse_claude_cli_json("").is_err());
+        assert!(parse_claude_cli_json(r#"{"is_error":false}"#).is_err());
+    }
 
     #[test]
     fn test_openai_compat_endpoint_accepts_base_with_or_without_v1() {

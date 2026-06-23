@@ -296,6 +296,11 @@ pub fn validate_external_url(url: &str) -> Result<(), String> {
 /// may additionally use loopback, private LAN, CGNAT/Tailscale and IPv6 ULA
 /// addresses, but only for backend types that are commonly self-hosted.
 pub fn validate_llm_backend_url(typ: &LlmTyp, url: &str) -> Result<(), String> {
+    // ClaudeCode ist ein lokaler Subprozess (claude CLI), kein HTTP-Endpoint —
+    // `url` ist hier ein Binary-Pfad, daher greift die SSRF-URL-Prüfung nicht.
+    if matches!(typ, LlmTyp::ClaudeCode) {
+        return Ok(());
+    }
     match validate_external_url(url) {
         Ok(()) => Ok(()),
         Err(public_err) => {

@@ -220,6 +220,8 @@ pub enum LlmTyp {
     Anthropic,
     Grok,
     DeepSeek,
+    /// Lokale Claude Code CLI (`claude -p`) als reiner Text-LLM (Subprozess, kein HTTP).
+    ClaudeCode,
     Embedding,
 }
 
@@ -774,6 +776,20 @@ pub async fn test_backend_reachable(client: &reqwest::Client, b: &LlmBackend) ->
             }
         }
         LlmTyp::DeepSeek => format!("{}/models", b.url.trim_end_matches('/')),
+        LlmTyp::ClaudeCode => {
+            // Kein HTTP-Ping — Erreichbarkeit = `claude --version` exitet 0.
+            let bin = b.url.trim();
+            let bin = if bin.is_empty() { "claude" } else { bin };
+            return tokio::process::Command::new(bin)
+                .arg("--version")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+                .map(|s| s.success())
+                .unwrap_or(false);
+        }
         LlmTyp::Anthropic => {
             // Anthropic hat keinen /v1/models endpoint ohne auth — wir pingen die root
             b.url.trim_end_matches('/').to_string()

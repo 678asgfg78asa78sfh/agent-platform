@@ -5384,6 +5384,11 @@ async fn list_llm_models(
                 Err(e) => return Json(serde_json::json!({"error": e.to_string(), "models": []})),
             }
         }
+        crate::types::LlmTyp::ClaudeCode => sort_model_infos(vec![
+            model_info_from_id("opus", true),
+            model_info_from_id("sonnet", true),
+            model_info_from_id("haiku", true),
+        ]),
         crate::types::LlmTyp::Anthropic => {
             // GET /v1/models mit x-api-key Header
             let key = backend.api_key.as_deref().unwrap_or("");
@@ -6537,6 +6542,7 @@ pub async fn wizard_models(
             let typ = match req.provider.as_str() {
                 "Grok" => crate::types::LlmTyp::Grok,
                 "DeepSeek" => crate::types::LlmTyp::DeepSeek,
+                "ClaudeCode" => crate::types::LlmTyp::ClaudeCode,
                 _ => crate::types::LlmTyp::OpenAICompat,
             };
             if req.provider == "Local/LAN" {
@@ -7076,6 +7082,29 @@ async fn setup_models(
                 })
                 .unwrap_or_default()
         }
+        crate::types::LlmTyp::ClaudeCode => vec![
+            LlmModelInfo {
+                id: "opus".into(),
+                display_name: "Claude Opus (claude -p)".into(),
+                free: true,
+                context_window: None,
+                max_output_tokens: None,
+            },
+            LlmModelInfo {
+                id: "sonnet".into(),
+                display_name: "Claude Sonnet (claude -p)".into(),
+                free: true,
+                context_window: None,
+                max_output_tokens: None,
+            },
+            LlmModelInfo {
+                id: "haiku".into(),
+                display_name: "Claude Haiku (claude -p)".into(),
+                free: true,
+                context_window: None,
+                max_output_tokens: None,
+            },
+        ],
         crate::types::LlmTyp::Anthropic => vec![
             LlmModelInfo {
                 id: "claude-opus-4-7".into(),
