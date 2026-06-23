@@ -156,13 +156,17 @@ async fn claude_cli_chat(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("claude -p spawn ({bin}): {e}"))?;
-    if let Some(ref mut stdin) = child.stdin {
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .map_err(|e| format!("claude -p stdin: {e}"))?;
-        stdin.shutdown().await.ok();
-    }
+    // stdin nebenläufig schreiben, während stdout/stderr gedrained werden — sonst
+    // Deadlock, wenn der Prompt größer als der Pipe-Buffer (~64KB) ist und claude
+    // zu schreiben beginnt, bevor es den ganzen stdin gelesen hat.
+    let stdin = child.stdin.take();
+    let prompt_bytes = prompt.into_bytes();
+    let writer = async move {
+        if let Some(mut sin) = stdin {
+            let _ = sin.write_all(&prompt_bytes).await;
+            let _ = sin.shutdown().await;
+        }
+    };
 
     let timeout_s = if backend.timeout_s == 0 {
         120
@@ -171,7 +175,10 @@ async fn claude_cli_chat(
     };
     let output = match tokio::time::timeout(
         std::time::Duration::from_secs(timeout_s),
-        child.wait_with_output(),
+        async {
+            let (_, out) = tokio::join!(writer, child.wait_with_output());
+            out
+        },
     )
     .await
     {

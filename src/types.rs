@@ -777,18 +777,20 @@ pub async fn test_backend_reachable(client: &reqwest::Client, b: &LlmBackend) ->
         }
         LlmTyp::DeepSeek => format!("{}/models", b.url.trim_end_matches('/')),
         LlmTyp::ClaudeCode => {
-            // Kein HTTP-Ping — Erreichbarkeit = `claude --version` exitet 0.
+            // Kein HTTP-Ping — Erreichbarkeit = `claude --version` exitet 0, mit
+            // Timeout falls das Binary hängt.
             let bin = b.url.trim();
             let bin = if bin.is_empty() { "claude" } else { bin };
-            return tokio::process::Command::new(bin)
+            let probe = tokio::process::Command::new(bin)
                 .arg("--version")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status()
-                .await
-                .map(|s| s.success())
-                .unwrap_or(false);
+                .status();
+            return matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(10), probe).await,
+                Ok(Ok(s)) if s.success()
+            );
         }
         LlmTyp::Anthropic => {
             // Anthropic hat keinen /v1/models endpoint ohne auth — wir pingen die root

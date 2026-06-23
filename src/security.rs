@@ -297,8 +297,18 @@ pub fn validate_external_url(url: &str) -> Result<(), String> {
 /// addresses, but only for backend types that are commonly self-hosted.
 pub fn validate_llm_backend_url(typ: &LlmTyp, url: &str) -> Result<(), String> {
     // ClaudeCode ist ein lokaler Subprozess (claude CLI), kein HTTP-Endpoint —
-    // `url` ist hier ein Binary-Pfad, daher greift die SSRF-URL-Prüfung nicht.
+    // `url` ist hier der Binary-Name, daher keine SSRF-Prüfung. Aber als
+    // Defense-in-Depth (Secure-Compartments) nur einen PATH-aufgelösten
+    // Befehlsnamen ohne Pfad-Trenner/Whitespace zulassen, damit nicht über eine
+    // beschreibbare Config ein beliebiges Binary (z.B. /tmp/evil) gestartet wird.
     if matches!(typ, LlmTyp::ClaudeCode) {
+        let bin = url.trim();
+        if bin.is_empty() {
+            return Ok(());
+        }
+        if bin.contains('/') || bin.contains('\\') || bin.contains(char::is_whitespace) {
+            return Err("claude-Binary: nur ein Befehlsname ohne Pfad/Leerzeichen erlaubt".into());
+        }
         return Ok(());
     }
     match validate_external_url(url) {
