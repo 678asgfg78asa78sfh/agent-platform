@@ -40,15 +40,42 @@ def _strip_named_value(raw, allowed_keys):
             return value.strip()
     return s
 
+def _unescape_if_escaped(s):
+    """Modelle liefern Datei-Inhalt oft als EINEN String mit JSON-Escapes (\\n, \\t,
+    \\") statt echter Zeilenumbrueche. Woertlich geschrieben zerbricht das die Datei:
+    HTML/JS rendert literales \\n als Text, das charset-<meta> wird nicht geparst
+    (-> Mojibake). Heuristik: literales \\n vorhanden, aber praktisch keine echten
+    Newlines -> un-escapen. Echter mehrzeiliger Inhalt mit eingebetteten \\n-Strings
+    (echte Newlines vorhanden) bleibt unangetastet."""
+    if "\\n" not in s or s.count("\n") > 1:
+        return s
+    # Single-Pass: Backslash + Folgezeichen zusammen konsumieren, damit ein
+    # escapter Backslash (\\) korrekt erhalten bleibt (Regex/Windows-Pfade) und
+    # nicht faelschlich als \n etc. interpretiert wird.
+    mapping = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "'": "'", "\\": "\\"}
+    out = []
+    i = 0
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\" and i + 1 < n:
+            out.append(mapping.get(s[i + 1], "\\" + s[i + 1]))
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
 def _strip_content_wrapper(raw):
     s = _strip_named_value(raw, {"inhalt", "content", "code", "aenderung", "änderung", "text"})
     s = s.strip()
     for quote in ('"""', "'''"):
         if s.startswith(quote) and s.endswith(quote) and len(s) >= 6:
-            return s[3:-3].lstrip("\n")
+            return _unescape_if_escaped(s[3:-3].lstrip("\n"))
     if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
-        return s[1:-1]
-    return s
+        return _unescape_if_escaped(s[1:-1])
+    return _unescape_if_escaped(s)
 
 def _expand_path(path):
     return os.path.abspath(os.path.expandvars(os.path.expanduser(str(path))))
