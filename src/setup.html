@@ -366,6 +366,32 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
     <div class="result" data-preset="anthropic"></div>
   </div>
 
+  <!-- Claude Code CLI (claude -p) -->
+  <div class="card" data-preset="claudecli">
+    <header>
+      <h2>🤖 Claude Code (claude -p)</h2>
+      <span class="badge free" data-i18n="badge-claudecli">ABO · lokal</span>
+    </header>
+    <div class="desc" data-i18n="desc-claudecli">
+      Lokale Claude Code CLI als reiner Text-LLM. Nutzt dein bestehendes Claude-Abo (kein API-Key, kein Per-Call-Cost). Voraussetzung: <code>claude</code> ist installiert &amp; eingeloggt.
+    </div>
+    <div class="fields">
+      <label data-i18n="lbl-model">Model
+        <input type="text" data-field="model" value="sonnet" list="models-claudecli">
+        <datalist id="models-claudecli"></datalist>
+      </label>
+      <label>Binary-Pfad (optional)
+        <input type="text" data-field="url" placeholder="claude">
+      </label>
+    </div>
+    <div class="actions">
+      <button class="models secondary" data-preset="claudecli" data-i18n="btn-load-models">Load models</button>
+      <button class="test" data-preset="claudecli" data-i18n="btn-test">Test</button>
+      <button class="save secondary" data-preset="claudecli" data-i18n="btn-save" disabled>Save &amp; continue</button>
+    </div>
+    <div class="result" data-preset="claudecli"></div>
+  </div>
+
   <!-- llama.cpp -->
   <div class="card" data-preset="llamacpp">
     <header>
@@ -745,6 +771,15 @@ const PRESETS = {
     identity: {
       bot_name: 'Claude',
       greeting: 'Hi, Claude hier.',
+      system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
+    },
+  },
+  claudecli: {
+    id: 'claude-cli', name: 'Claude Code (claude -p)',
+    typ: 'ClaudeCode', url: '', timeout_s: 120,
+    identity: {
+      bot_name: 'Claude',
+      greeting: 'Hi, Claude hier (lokal via claude -p).',
       system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
     },
   },
