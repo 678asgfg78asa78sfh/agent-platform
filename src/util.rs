@@ -214,17 +214,24 @@ fn trim_wrapping_quotes(value: &str) -> &str {
 pub fn bearer_token_value(value: &str) -> &str {
     let mut token = trim_wrapping_quotes(value);
 
-    if token.len() >= "authorization:".len()
-        && token[.."authorization:".len()].eq_ignore_ascii_case("authorization:")
+    // Compare ASCII prefixes on the byte slice: slicing a &str at a fixed byte
+    // offset panics if that offset isn't a UTF-8 char boundary (non-ASCII input),
+    // whereas a matching ASCII byte prefix is guaranteed to land on a boundary.
+    let auth_prefix = b"authorization:";
+    if token.len() >= auth_prefix.len()
+        && token.as_bytes()[..auth_prefix.len()].eq_ignore_ascii_case(auth_prefix)
     {
-        token = trim_wrapping_quotes(&token["authorization:".len()..]);
+        token = trim_wrapping_quotes(&token[auth_prefix.len()..]);
     }
 
     if token.eq_ignore_ascii_case("bearer") {
         return "";
     }
-    if token.len() >= "bearer".len() && token[.."bearer".len()].eq_ignore_ascii_case("bearer") {
-        let rest = &token["bearer".len()..];
+    let bearer_prefix = b"bearer";
+    if token.len() >= bearer_prefix.len()
+        && token.as_bytes()[..bearer_prefix.len()].eq_ignore_ascii_case(bearer_prefix)
+    {
+        let rest = &token[bearer_prefix.len()..];
         if rest.chars().next().map_or(false, char::is_whitespace) {
             token = trim_wrapping_quotes(rest);
         }

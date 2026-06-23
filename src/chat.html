@@ -528,6 +528,7 @@ ge('notification-btn').addEventListener('click', function() {
   var panel = ge('notification-panel');
   var open = panel.style.display === 'block';
   ge('file-panel').style.display = 'none';
+  ge('modcfg-panel').style.display = 'none';
   panel.style.display = open ? 'none' : 'block';
   if (!open) loadNotifications(true);
 });
@@ -947,6 +948,7 @@ function showImageForm() {
 ge('planner-btn').addEventListener('click', function() {
   var p = ge('planner-panel');
   var open = p.style.display === 'block';
+  ge('modcfg-panel').style.display = 'none';
   p.style.display = open ? 'none' : 'block';
   if (!open) loadPlanner();
 });
@@ -1114,6 +1116,7 @@ var pipelineTimer = null;
 ge('pipeline-btn').addEventListener('click', function() {
   var p = ge('pipeline-panel');
   var open = p.style.display === 'block';
+  ge('modcfg-panel').style.display = 'none';
   p.style.display = open ? 'none' : 'block';
   if (pipelineTimer) { clearInterval(pipelineTimer); pipelineTimer = null; }
   if (!open) { loadPipeline(); pipelineTimer = setInterval(loadPipeline, 3500); }
@@ -1188,6 +1191,7 @@ var mediaLoaded = false;
 ge('media-btn').addEventListener('click', function() {
   var p = ge('media-panel');
   var open = p.style.display === 'block';
+  ge('modcfg-panel').style.display = 'none';
   p.style.display = open ? 'none' : 'block';
   if (!open) loadMedia();
 });

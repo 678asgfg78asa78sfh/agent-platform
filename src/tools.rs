@@ -836,14 +836,17 @@ fn parse_dsml_tool_call(text: &str) -> Option<(String, Vec<String>)> {
         }
         let value_start = after_open;
         let after_value = &rest[value_start..];
-        let Some(close_rel) = after_value.find("</") else {
+        // Terminate on the DSML parameter close marker, not the first "</", so
+        // values that themselves contain "</" (HTML/JS/JSON payloads) survive intact.
+        let close_marker = "</parameter>";
+        let Some(close_rel) = after_value.find(close_marker) else {
             break;
         };
         let value = after_value[..close_rel].trim();
         if !value.is_empty() {
             params.push(clean_llm_delimiters(&clean_param(value)));
         }
-        rest = &after_value[close_rel + 2..];
+        rest = &after_value[close_rel + close_marker.len()..];
     }
 
     Some((name, params))

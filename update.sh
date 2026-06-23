@@ -38,6 +38,7 @@ info() {
 
 detect_running_target() {
   local pid exe dir parent
+  local -a found=()
   while IFS= read -r pid; do
     [[ -n "$pid" ]] || continue
     exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
@@ -58,11 +59,21 @@ detect_running_target() {
         ;;
     esac
     if [[ -f "$dir/agent-data/config.json" || -f "$dir/Cargo.toml" ]]; then
-      printf '%s\n' "$dir"
-      return 0
+      # Skip duplicates (multiple PIDs of the same install)
+      local seen d
+      seen=0
+      for d in "${found[@]}"; do [[ "$d" == "$dir" ]] && { seen=1; break; }; done
+      [[ "$seen" == 1 ]] || found+=("$dir")
     fi
   done < <(pgrep -x agent 2>/dev/null || true)
-  return 1
+
+  [[ ${#found[@]} -gt 0 ]] || return 1
+  if [[ ${#found[@]} -gt 1 ]]; then
+    printf 'WARN: multiple running agent installations detected; using the first:\n' >&2
+    printf '  - %s\n' "${found[@]}" >&2
+  fi
+  printf '%s\n' "${found[0]}"
+  return 0
 }
 
 show_install_candidates() {

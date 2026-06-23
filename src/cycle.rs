@@ -529,13 +529,17 @@ impl Orchestrator {
 
     async fn tick_cron(&self) {
         let cfg = self.config.read().await;
+        // Blockierte Module duerfen auch ueber Cron/Autopilot NICHT feuern —
+        // sonst umgeht ein geblocktes Modul die run()-Sperre (Z. 380–387).
+        let blocked = crate::security::blocked_module_ids(&cfg);
         // Gefeuert werden cron-Module UND Autopilot-Module (settings.autopilot==true):
         // letztere tragen schedule + cron_anweisung (cron_typ "llm") direkt am Tool-Modul
         // (z.B. content_planner, typ "content_planner"). Vorher feuerte tick_cron NUR
         // typ=="cron" — der Autopilot-Scan lief deshalb NIE (der eigentliche Bug).
         for modul in cfg.module.iter().filter(|m| {
-            m.typ == "cron"
-                || m.settings.extra.get("autopilot").and_then(|v| v.as_bool()) == Some(true)
+            !blocked.contains(&m.id)
+                && (m.typ == "cron"
+                    || m.settings.extra.get("autopilot").and_then(|v| v.as_bool()) == Some(true))
         }) {
             let Some(ref schedule) = modul.settings.schedule else {
                 continue;

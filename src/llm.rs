@@ -938,15 +938,18 @@ impl LlmRouter {
                     let retry_after = retry_after_duration(resp.headers());
                     let body_text = resp.text().await.unwrap_or_default();
                     if !status.is_success() {
-                        if status.as_u16() == 429
-                            && attempt < OPENAI_COMPAT_TRANSIENT_RETRIES
-                            && let Some(wait) = retry_after.filter(|d| d.as_secs() <= 30)
-                        {
+                        if status.as_u16() == 429 && attempt < OPENAI_COMPAT_TRANSIENT_RETRIES {
+                            // Use a sane Retry-After if present, otherwise fall back to
+                            // standard backoff — a 429 with a missing/non-numeric/over-long
+                            // Retry-After header must still be retried, not failed hard.
+                            let wait = retry_after.filter(|d| d.as_secs() <= 30).unwrap_or_else(
+                                || std::time::Duration::from_millis(750 * attempt as u64),
+                            );
                             tracing::warn!(
-                                "LLM backend '{}' HTTP {} with Retry-After {}s (attempt {}/{})",
+                                "LLM backend '{}' HTTP {} — retry in {}ms (attempt {}/{})",
                                 backend.id,
                                 status,
-                                wait.as_secs(),
+                                wait.as_millis(),
                                 attempt,
                                 OPENAI_COMPAT_TRANSIENT_RETRIES
                             );
