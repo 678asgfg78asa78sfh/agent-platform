@@ -274,6 +274,29 @@ def _normalize_json_params(params):
     return expanded
 
 
+def _friendly_error(e, params):
+    """Rohe OS-Fehler in LLM-taugliche, handlungsleitende Meldungen uebersetzen,
+    damit das Modell sich selbst korrigieren kann statt einen Errno zu sehen."""
+    path = params[0] if isinstance(params, (list, tuple)) and params and isinstance(params[0], str) else ""
+    if isinstance(e, IsADirectoryError):
+        hint = (path.rstrip("/") + "/index.html") if path else "<datei>"
+        return (f"Pfad ist ein Verzeichnis, keine Datei: {path}. "
+                f"Gib den Pfad einer konkreten Datei an (z.B. {hint}).")
+    if isinstance(e, FileNotFoundError):
+        return (f"Datei/Verzeichnis nicht gefunden: {path}. Pruefe den Pfad "
+                f"(relativ zum Workspace) — mit editor.view oder files.list vorher schauen.")
+    if isinstance(e, PermissionError):
+        return f"Keine Schreib-/Leseberechtigung fuer: {path}."
+    if isinstance(e, NotADirectoryError):
+        return f"Ein Teil des Pfads ist eine Datei statt eines Verzeichnisses: {path}."
+    if isinstance(e, FileExistsError):
+        return (f"Existiert bereits: {path}. Nutze editor.overwrite zum Ueberschreiben "
+                f"oder einen anderen Dateinamen.")
+    if isinstance(e, UnicodeDecodeError):
+        return f"Datei ist nicht als UTF-8-Text lesbar (vermutlich binaer): {path}."
+    return f"Editor Fehler: {e}"
+
+
 def handle_tool(tool_name, params, config):
     try:
         params = _normalize_json_params(params)
@@ -295,7 +318,7 @@ def handle_tool(tool_name, params, config):
             return _info(params, config)
         return {"success": False, "data": f"Unbekanntes Tool: {tool_name}"}
     except Exception as e:
-        return {"success": False, "data": f"Editor Fehler: {e}"}
+        return {"success": False, "data": _friendly_error(e, params)}
 
 
 def _view(params, config):
