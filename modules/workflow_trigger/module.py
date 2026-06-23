@@ -1008,6 +1008,30 @@ def advance_review_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
         start_repair_task(wf, config, assets, review)
         return
 
+    # Reparatur-Budget erschoepft. Statt GAR KEIN Video zu produzieren (Pipeline lief
+    # bisher in review_failed und lieferte nichts): wenn der Reviewer kein hartes
+    # "reject" sieht und der Score brauchbar ist, die beste Version best-effort
+    # rendern. Aber NICHT automatisch hochladen — ein noch nicht perfektes Video soll
+    # nicht ungeprueft public gehen. (Shorts sind opt-in/post-render und duerfen den
+    # Haupt-Render ohnehin nie blockieren.)
+    decision = str(review.get("decision") or "").strip().lower()
+    score = int_param(review.get("score"), 0, 0, 100)
+    proceed_after = bool_param(wf.get("options", {}).get("quality_proceed_after_repairs"), cfg_bool(config, "quality_proceed_after_repairs", True))
+    proceed_min = int_param(wf.get("options", {}).get("quality_proceed_min_score"), cfg_int(config, "quality_proceed_min_score", 70), 0, 100)
+    if proceed_after and decision != "reject" and score >= proceed_min:
+        if not cfg_bool(config, "quality_best_effort_upload", False):
+            wf.setdefault("options", {})["auto_upload"] = False
+            upload_note = "Auto-Upload AUS (manuell pruefen)"
+        else:
+            upload_note = "Auto-Upload aktiv"
+        wf.setdefault("events", []).append(event(
+            "quality_proceed_best_effort",
+            f"Nach {repairs_used} Reparaturen best-effort gerendert (score={score}, decision={decision}; "
+            f"{upload_note}); offen: {review_summary(review)[:200]}",
+        ))
+        proceed_after_assets_approved(wf, config, assets=assets)
+        return
+
     wf["stage"] = "review_failed"
     mark_failed(wf, "Quality Gate blockiert TTS/Render: " + review_summary(review))
     save_synthesis(wf, config, status="review_failed", assets=assets)
