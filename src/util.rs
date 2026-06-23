@@ -193,6 +193,46 @@ pub fn resolve_api_key_alias_string(
     ))
 }
 
+fn trim_wrapping_quotes(value: &str) -> &str {
+    let mut s = value.trim();
+    loop {
+        let bytes = s.as_bytes();
+        if s.len() >= 2
+            && ((bytes[0] == b'"' && bytes[s.len() - 1] == b'"')
+                || (bytes[0] == b'\'' && bytes[s.len() - 1] == b'\''))
+        {
+            s = s[1..s.len() - 1].trim();
+            continue;
+        }
+        return s;
+    }
+}
+
+/// API key inputs in the UI are token-only fields, but users often paste a full
+/// Authorization header from provider examples. Normalize that before outbound
+/// Bearer auth so we never send `Bearer Bearer ...`.
+pub fn bearer_token_value(value: &str) -> &str {
+    let mut token = trim_wrapping_quotes(value);
+
+    if token.len() >= "authorization:".len()
+        && token[.."authorization:".len()].eq_ignore_ascii_case("authorization:")
+    {
+        token = trim_wrapping_quotes(&token["authorization:".len()..]);
+    }
+
+    if token.eq_ignore_ascii_case("bearer") {
+        return "";
+    }
+    if token.len() >= "bearer".len() && token[.."bearer".len()].eq_ignore_ascii_case("bearer") {
+        let rest = &token["bearer".len()..];
+        if rest.chars().next().map_or(false, char::is_whitespace) {
+            token = trim_wrapping_quotes(rest);
+        }
+    }
+
+    token
+}
+
 pub fn credential_vault_alias(id: &str, field: &str) -> String {
     format!("cred.{}.{}", id.trim(), field.trim())
 }
@@ -664,6 +704,19 @@ mod tests {
             Some(("chat.local".into(), Some("abc123".into())))
         );
         assert!(parse_chat_route("chat:../bad:abc123").is_none());
+    }
+
+    #[test]
+    fn bearer_token_value_accepts_raw_token_or_header() {
+        assert_eq!(bearer_token_value("nvapi-123"), "nvapi-123");
+        assert_eq!(bearer_token_value("Bearer nvapi-123"), "nvapi-123");
+        assert_eq!(bearer_token_value("bearer   nvapi-123"), "nvapi-123");
+        assert_eq!(
+            bearer_token_value("Authorization: Bearer nvapi-123"),
+            "nvapi-123"
+        );
+        assert_eq!(bearer_token_value("\"Bearer nvapi-123\""), "nvapi-123");
+        assert_eq!(bearer_token_value("Bearer"), "");
     }
 
     #[test]

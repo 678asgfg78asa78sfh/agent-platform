@@ -1090,7 +1090,7 @@ body::after {
             <input type="checkbox" id="wcfg-enabled"> Enabled</label></div>
           <div style="margin:8px 0;"><label>Provider
             <select id="wcfg-provider">
-              <option>Claude</option><option>OpenAI</option><option>Grok</option><option>DeepSeek</option><option>OpenRouter</option><option>Local/LAN</option>
+              <option>Claude</option><option>OpenAI</option><option>NVIDIA</option><option>Grok</option><option>DeepSeek</option><option>OpenRouter</option><option>Local/LAN</option>
             </select></label></div>
           <div style="margin:8px 0;"><label>API URL
             <input type="text" id="wcfg-url" style="width:320px;"></label></div>
@@ -1113,10 +1113,16 @@ body::after {
               <span class="model-filter-count" id="wcfg-model-count"></span>
             </div>
           </label></div>
-          <div style="margin:8px 0;"><label>Timeout (ms)
-            <input type="number" id="wcfg-timeout" value="30000" style="width:120px;"></label></div>
-          <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;">
-            <input type="checkbox" id="wcfg-codegen"> Allow code-gen (Phase 3)</label></div>
+	          <div style="margin:8px 0;"><label>Timeout (ms)
+	            <input type="number" id="wcfg-timeout" value="30000" style="width:120px;"></label></div>
+	          <div style="margin:8px 0;display:flex;gap:12px;flex-wrap:wrap;">
+	            <label>Context window tokens
+	              <input type="number" id="wcfg-context-window" placeholder="128000" style="width:140px;"></label>
+	            <label>Max output tokens
+	              <input type="number" id="wcfg-max-tokens" placeholder="8192" style="width:140px;"></label>
+	          </div>
+	          <div style="margin:8px 0;"><label style="display:inline-flex;gap:6px;align-items:center;">
+	            <input type="checkbox" id="wcfg-codegen"> Allow code-gen (Phase 3)</label></div>
           <div style="margin:8px 0;"><label>Max rounds/session
             <input type="number" id="wcfg-rounds" value="30" style="width:120px;"></label></div>
           <div style="margin:8px 0;"><label>Session timeout (s)
@@ -1361,6 +1367,7 @@ body::after {
       <select id="llm-typ">
         <option value="llamacpp">llama.cpp / LAN OpenAI-compatible</option>
         <option value="openrouter">OpenRouter</option>
+        <option value="nvidia">NVIDIA NIM</option>
         <option value="deepseek">DeepSeek</option>
         <option value="openai">OpenAI</option>
         <option value="custom-openai">Custom OpenAI-compatible</option>
@@ -1385,15 +1392,19 @@ body::after {
       </div>
       <div class="model-filter-row" id="llm-model-tools" style="display:none;">
         <input type="search" id="llm-model-search" placeholder="Modelle durchsuchen">
-        <label class="inline-check"><input type="checkbox" id="llm-model-free-only"> Gratis</label>
-        <span class="model-filter-count" id="llm-model-count"></span>
-      </div>
-    </div>
-    <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin:12px 0 6px;">Limits</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-      <div class="form-row"><label>Timeout (seconds)</label><input type="number" id="llm-timeout" value="120" /></div>
-      <div class="form-row"><label>Max output tokens</label><input type="number" id="llm-max-tokens" placeholder="leer = default" /></div>
-      <div class="form-row"><label>Thinking / Reasoning</label>
+	        <label class="inline-check"><input type="checkbox" id="llm-model-free-only"> Gratis</label>
+	        <span class="model-filter-count" id="llm-model-count"></span>
+	      </div>
+	    </div>
+	    <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin:8px 0 6px;">Token Settings</div>
+	    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+	      <div class="form-row"><label>Context window tokens</label><input type="number" id="llm-context-window" placeholder="128000" /></div>
+	      <div class="form-row"><label>Max output tokens</label><input type="number" id="llm-max-tokens" placeholder="8192" /></div>
+	    </div>
+	    <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--cyan);margin:12px 0 6px;">Limits</div>
+	    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+	      <div class="form-row"><label>Timeout (seconds)</label><input type="number" id="llm-timeout" value="120" /></div>
+	      <div class="form-row"><label>Thinking / Reasoning</label>
         <select id="llm-reasoning-mode">
           <option value="">Provider default</option>
           <option value="off">Off</option>
@@ -1481,11 +1492,12 @@ body::after {
 
     <div class="form-row">
       <label>LLM Provider</label>
-      <select id="wizard-provider">
-        <option value="Grok">Grok / xAI</option>
-        <option value="DeepSeek">DeepSeek</option>
-        <option value="OpenAICompat">OpenAI Compatible</option>
-        <option value="Ollama">Ollama (local)</option>
+	      <select id="wizard-provider">
+	        <option value="Grok">Grok / xAI</option>
+	        <option value="NVIDIA">NVIDIA NIM</option>
+	        <option value="DeepSeek">DeepSeek</option>
+	        <option value="OpenAICompat">OpenAI Compatible</option>
+	        <option value="Ollama">Ollama (local)</option>
         <option value="Anthropic">Anthropic Claude</option>
       </select>
     </div>
@@ -1500,10 +1512,20 @@ body::after {
       <input type="password" id="wizard-apikey" placeholder="sk-..." />
     </div>
 
-    <div class="form-row">
-      <label>Model</label>
-      <input type="text" id="wizard-model" placeholder="model-name" />
-    </div>
+	    <div class="form-row">
+	      <label>Model</label>
+	      <input type="text" id="wizard-model" placeholder="model-name" />
+	    </div>
+
+	    <div class="form-row">
+	      <label>Context window tokens</label>
+	      <input type="number" id="wizard-context-window" placeholder="128000" />
+	    </div>
+
+	    <div class="form-row">
+	      <label>Max output tokens</label>
+	      <input type="number" id="wizard-max-tokens" placeholder="8192" />
+	    </div>
 
     <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:8px;">
       <button class="btn" onclick="closeModal('modal-agent-wizard')">Cancel</button>
@@ -1539,10 +1561,14 @@ body::after {
       <select id="mod-typ"></select>
       <div id="mod-typ-info" style="font-size:10px;color:var(--text-dim);margin-top:3px;"></div>
     </div>
-    <div class="form-row"><label>Instance ID</label><input type="text" id="mod-id" placeholder="z.B. chat.support, shell.deploy" /></div>
-    <div class="form-row"><label>Display Name</label><input type="text" id="mod-display-name" placeholder="Anzeigename" /></div>
-    <div class="form-row"><label>Backend / LLM Gem</label><select id="mod-llm-backend"></select></div>
-    <input type="hidden" id="mod-perms" />
+	    <div class="form-row"><label>Instance ID</label><input type="text" id="mod-id" placeholder="z.B. chat.support, shell.deploy" /></div>
+	    <div class="form-row"><label>Display Name</label><input type="text" id="mod-display-name" placeholder="Anzeigename" /></div>
+	    <div class="form-row"><label>Backend / LLM Gem</label><select id="mod-llm-backend"></select></div>
+	    <div id="mod-llm-limits" style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+	      <div class="form-row"><label>Context window tokens</label><input type="number" id="mod-llm-context-window" placeholder="128000" /></div>
+	      <div class="form-row"><label>Max output tokens</label><input type="number" id="mod-llm-max-tokens" placeholder="8192" /></div>
+	    </div>
+	    <input type="hidden" id="mod-perms" />
     <div id="mod-link-section" style="margin-top:10px;">
       <label style="color:var(--cyan);font-size:11px;text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:8px;">Linked Modules</label>
       <div id="mod-link-grid" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
@@ -1723,6 +1749,8 @@ function resetFormWizard() {
   if (ge('wizard-url'))         ge('wizard-url').value = 'https://api.x.ai';
   if (ge('wizard-apikey'))      ge('wizard-apikey').value = '';
   if (ge('wizard-model'))       ge('wizard-model').value = '';
+  if (ge('wizard-context-window')) ge('wizard-context-window').value = '';
+  if (ge('wizard-max-tokens'))  ge('wizard-max-tokens').value = '';
   if (ge('wizard-lang'))        ge('wizard-lang').value = 'de';
   if (ge('wizard-personality')) ge('wizard-personality').value = 'professional';
   if (ge('wizard-provider'))    ge('wizard-provider').value = 'Grok';
@@ -2432,6 +2460,7 @@ function normalizeVaultProvider(value) {
   if (!p) return '';
   if (p.indexOf('deepseek') >= 0) return 'deepseek';
   if (p.indexOf('openrouter') >= 0) return 'openrouter';
+  if (p.indexOf('nvidia') >= 0 || p.indexOf('nim') >= 0) return 'nvidia';
   if (p.indexOf('openai') >= 0 || p.indexOf('chatgpt') >= 0) return 'openai';
   if (p.indexOf('anthropic') >= 0 || p.indexOf('claude') >= 0) return 'anthropic';
   if (p.indexOf('grok') >= 0 || p.indexOf('x.ai') >= 0 || p === 'xai') return 'grok';
@@ -2462,6 +2491,7 @@ function applyLlmVaultProviderDefaults(value) {
 function wizardProviderFromLlmProvider(provider) {
   if (provider === 'deepseek') return 'DeepSeek';
   if (provider === 'openrouter') return 'OpenRouter';
+  if (provider === 'nvidia') return 'NVIDIA';
   if (provider === 'openai') return 'OpenAI';
   if (provider === 'anthropic') return 'Claude';
   if (provider === 'grok') return 'Grok';
@@ -2477,6 +2507,7 @@ function applyWizardVaultProviderDefaults(value) {
   var urls = {
     Claude: 'https://api.anthropic.com',
     OpenAI: 'https://api.openai.com',
+    NVIDIA: 'https://integrate.api.nvidia.com/v1',
     Grok: 'https://api.x.ai',
     OpenRouter: 'https://openrouter.ai/api',
     DeepSeek: 'https://api.deepseek.com',
@@ -2489,6 +2520,9 @@ function applyWizardVaultProviderDefaults(value) {
   if (urlEl && (!current || (next && known))) urlEl.value = next;
   if (label === 'DeepSeek' && ge('wcfg-model') && !ge('wcfg-model').value.trim()) {
     ge('wcfg-model').value = 'deepseek-v4-flash';
+  }
+  if (label === 'NVIDIA' && ge('wcfg-model') && !ge('wcfg-model').value.trim()) {
+    ge('wcfg-model').value = 'minimaxai/minimax-m3';
   }
   clearWizardModelPicker();
 }
@@ -4083,6 +4117,7 @@ function populateWizardSettings(cfg) {
   else if (llm.typ === 'DeepSeek')  providerLabel = 'DeepSeek';
   else if (llm.typ === 'OpenAICompat') {
     providerLabel = /openrouter/i.test(llm.url || '') ? 'OpenRouter'
+      : /integrate\.api\.nvidia\.com/i.test(llm.url || '') ? 'NVIDIA'
       : /api\.openai\.com/i.test(llm.url || '') ? 'OpenAI'
       : 'Local/LAN';
   }
@@ -4092,6 +4127,8 @@ function populateWizardSettings(cfg) {
   populateVaultAliasSelect('wcfg-key-vault', 'wcfg-key');
   if (ge('wcfg-model'))    ge('wcfg-model').value = llm.model || '';
   if (ge('wcfg-timeout'))  ge('wcfg-timeout').value = ((llm.timeout_s || 30) * 1000);
+  if (ge('wcfg-context-window')) ge('wcfg-context-window').value = llm.context_window || '';
+  if (ge('wcfg-max-tokens')) ge('wcfg-max-tokens').value = llm.max_tokens || '';
   if (ge('wcfg-codegen'))  ge('wcfg-codegen').checked = !!w.allow_code_gen;
   if (ge('wcfg-rounds'))   ge('wcfg-rounds').value = w.max_rounds_per_session || 30;
   if (ge('wcfg-session-timeout')) ge('wcfg-session-timeout').value = w.session_timeout_secs || 600;
@@ -4103,7 +4140,7 @@ function collectWizardSettings() {
   if (!ge('wcfg-enabled')) return null;
   var providerLabel = ge('wcfg-provider').value;
   var typ = 'Anthropic';
-  if (providerLabel === 'OpenAI' || providerLabel === 'OpenRouter' || providerLabel === 'Local/LAN') typ = 'OpenAICompat';
+  if (providerLabel === 'OpenAI' || providerLabel === 'OpenRouter' || providerLabel === 'NVIDIA' || providerLabel === 'Local/LAN') typ = 'OpenAICompat';
   else if (providerLabel === 'Grok') typ = 'Grok';
   else if (providerLabel === 'DeepSeek') typ = 'DeepSeek';
   else if (providerLabel === 'Claude') typ = 'Anthropic';
@@ -4114,8 +4151,9 @@ function collectWizardSettings() {
 	      url: ge('wcfg-url').value, api_key: ge('wcfg-key').value,
 	      model: ge('wcfg-model').value,
 	      timeout_s: Math.max(1, Math.round((parseInt(ge('wcfg-timeout').value, 10) || 30000) / 1000)),
+	      context_window: readNullableInt('wcfg-context-window'),
 	      identity: {bot_name: '', greeting: '', system_prompt: ''},
-	      max_tokens: null,
+	      max_tokens: readNullableInt('wcfg-max-tokens'),
 	      reasoning: providerLabel === 'DeepSeek' ? {enabled: false, exclude: true} : null
 	    },
     allow_code_gen: ge('wcfg-codegen').checked,
@@ -4142,7 +4180,7 @@ if (ge('wizard-settings-toggle')) {
     ge('wizard-settings-panel').classList.toggle('open');
   });
 }
-['wcfg-enabled','wcfg-provider','wcfg-url','wcfg-model','wcfg-timeout','wcfg-rounds','wcfg-session-timeout','wcfg-rate'].forEach(function(id) {
+['wcfg-enabled','wcfg-provider','wcfg-url','wcfg-model','wcfg-timeout','wcfg-context-window','wcfg-max-tokens','wcfg-rounds','wcfg-session-timeout','wcfg-rate'].forEach(function(id) {
   var el = ge(id);
   if (!el) return;
   el.addEventListener('input', updateWizardSettingsSummary);
@@ -4289,16 +4327,66 @@ document.addEventListener('DOMContentLoaded', refreshBackupsList);
 
 var wizardFetchedModels = [];
 var llmFetchedModels = [];
+var SAFE_AUTO_MAX_OUTPUT_TOKENS = 8192;
+
+function modelNumberValue(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.round(v) : null;
+  var s = String(v).trim().replace(/[,_]/g, '');
+  if (!s) return null;
+  var mul = 1;
+  var last = s.slice(-1).toLowerCase();
+  if (last === 'k' || last === 'm') {
+    mul = last === 'm' ? 1000000 : 1000;
+    s = s.slice(0, -1);
+  }
+  var n = parseFloat(s);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * mul) : null;
+}
+
+function firstModelNumber(m, keys) {
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    if (key.indexOf('.') >= 0) {
+      var cur = m;
+      key.split('.').forEach(function(part) { cur = cur && cur[part]; });
+      var nested = modelNumberValue(cur);
+      if (nested != null) return nested;
+    } else {
+      var n = modelNumberValue(m[key]);
+      if (n != null) return n;
+    }
+  }
+  return null;
+}
+
+function shortTokenCount(n) {
+  n = modelNumberValue(n);
+  if (n == null) return '';
+  if (n >= 1000000 && n % 1000000 === 0) return (n / 1000000) + 'M';
+  if (n >= 1000 && n % 1000 === 0) return (n / 1000) + 'K';
+  return String(n);
+}
+
+function suggestedMaxOutputTokens(model) {
+  var n = modelNumberValue(model && model.max_output_tokens);
+  if (n == null) return null;
+  return Math.min(n, SAFE_AUTO_MAX_OUTPUT_TOKENS);
+}
 
 function normalizeModelEntry(m) {
   if (!m) return null;
   if (typeof m === 'string') return {id: m, display_name: m, free: /:free$/i.test(m)};
   var id = String(m.id || m.name || '').trim();
   if (!id) return null;
+  var contextWindow = firstModelNumber(m, ['context_window', 'context_length', 'max_context_length', 'max_model_len', 'top_provider.context_length']);
+  var maxOutputTokens = firstModelNumber(m, ['max_output_tokens', 'max_completion_tokens', 'output_token_limit', 'max_tokens', 'top_provider.max_completion_tokens']);
   return {
     id: id,
     display_name: String(m.display_name || m.name || id),
-    free: !!m.free || /:free$/i.test(id)
+    free: !!m.free || /:free$/i.test(id),
+    context_window: contextWindow,
+    max_output_tokens: maxOutputTokens
   };
 }
 
@@ -4336,7 +4424,13 @@ function renderModelSelect(selectId, inputId, toolsId, searchId, freeId, countId
   filtered.forEach(function(m) {
     var opt = document.createElement('option');
     opt.value = m.id;
-    opt.textContent = (m.display_name && m.display_name !== m.id ? m.display_name + ' · ' : '') + m.id + (m.free ? ' · free' : '');
+    var bits = [];
+    if (m.display_name && m.display_name !== m.id) bits.push(m.display_name);
+    bits.push(m.id);
+    if (m.context_window) bits.push('ctx ' + shortTokenCount(m.context_window));
+    if (m.max_output_tokens) bits.push('out ' + shortTokenCount(m.max_output_tokens));
+    if (m.free) bits.push('free');
+    opt.textContent = bits.join(' · ');
     if (m.id === current) opt.selected = true;
     sel.appendChild(opt);
   });
@@ -4352,13 +4446,33 @@ function renderModelSelect(selectId, inputId, toolsId, searchId, freeId, countId
   if (selectFirst && filtered.length && (!current || !filtered.some(function(m) { return m.id === current; }))) {
     input.value = filtered[0].id;
     sel.value = filtered[0].id;
+    if (inputId === 'llm-model') applyLlmModelMetadata(filtered[0], true);
   }
   if (!filtered.length && models.length) {
     input.style.display = 'block';
     sel.style.display = 'none';
   }
-  sel.onchange = function() { input.value = this.value; };
+  sel.onchange = function() {
+    input.value = this.value;
+    if (inputId === 'llm-model') {
+      var selected = (models || []).find(function(m) { return m.id === input.value; });
+      applyLlmModelMetadata(selected, true);
+    }
+  };
   return filtered;
+}
+
+function applyLlmModelMetadata(model, force) {
+  if (!model) return;
+  var contextEl = ge('llm-context-window');
+  var maxEl = ge('llm-max-tokens');
+  if (contextEl && model.context_window && (force || !contextEl.value.trim())) {
+    contextEl.value = String(model.context_window);
+  }
+  var suggestedMax = suggestedMaxOutputTokens(model);
+  if (maxEl && suggestedMax && (force || !maxEl.value.trim())) {
+    maxEl.value = String(suggestedMax);
+  }
 }
 
 function renderWizardModelList(selectFirst) {
@@ -4464,14 +4578,18 @@ async function testWizardConnection() {
     var sel = ge('wcfg-provider');
     if (!sel) return;
     sel.addEventListener('change', function() {
-	      var urls = { Claude: 'https://api.anthropic.com', OpenAI: 'https://api.openai.com',
-	                   Grok: 'https://api.x.ai', OpenRouter: 'https://openrouter.ai/api',
-	                   DeepSeek: 'https://api.deepseek.com',
-	                   'Local/LAN': '' };
+		      var urls = { Claude: 'https://api.anthropic.com', OpenAI: 'https://api.openai.com',
+		                   NVIDIA: 'https://integrate.api.nvidia.com/v1',
+		                   Grok: 'https://api.x.ai', OpenRouter: 'https://openrouter.ai/api',
+		                   DeepSeek: 'https://api.deepseek.com',
+		                   'Local/LAN': '' };
 	      if (ge('wcfg-url')) ge('wcfg-url').value = urls[this.value] || '';
-	      if (this.value === 'DeepSeek' && ge('wcfg-model') && !ge('wcfg-model').value.trim()) {
-	        ge('wcfg-model').value = 'deepseek-v4-flash';
-	      }
+		      if (this.value === 'DeepSeek' && ge('wcfg-model') && !ge('wcfg-model').value.trim()) {
+		        ge('wcfg-model').value = 'deepseek-v4-flash';
+		      }
+		      if (this.value === 'NVIDIA' && ge('wcfg-model') && !ge('wcfg-model').value.trim()) {
+		        ge('wcfg-model').value = 'minimaxai/minimax-m3';
+		      }
 	      clearWizardModelPicker();
 	    });
   });
@@ -5114,11 +5232,12 @@ function renderModuleCards() {
     ge('mod-scheduler-interval').value = 2000;
     ge('mod-timeout').value = 30; ge('mod-retry').value = 0;
     ge('mod-bot-name').value = 'Agent'; ge('mod-greeting').value = 'Hallo!';
-    ge('mod-system-prompt').value = 'Du bist ein hilfreicher Assistent.';
-    ge('module-delete').style.display = 'none';
-    var firstTyp = availableModules.length > 0 ? availableModules[0].name : '';
-    ge('mod-typ').value = firstTyp;
-    updateModTypInfo();
+	    ge('mod-system-prompt').value = 'Du bist ein hilfreicher Assistent.';
+	    ge('module-delete').style.display = 'none';
+	    var firstTyp = availableModules.length > 0 ? availableModules[0].name : '';
+	    ge('mod-typ').value = firstTyp;
+	    updateModuleLlmLimitFields();
+	    updateModTypInfo();
     renderSettingsFields(firstTyp, {});
     openModal('modal-module');
   }
@@ -5532,6 +5651,7 @@ function editLlm(idx) {
   ge('llm-url').value = b.url; ge('llm-model').value = b.model;
   ge('llm-apikey').value = b.api_key || ''; ge('llm-timeout').value = b.timeout_s;
   populateVaultAliasSelect('llm-apikey-vault', 'llm-apikey');
+  ge('llm-context-window').value = b.context_window || '';
   ge('llm-max-tokens').value = b.max_tokens || '';
   setLlmReasoningForm(b);
   setLlmCostCapForm(b.cost_cap || null);
@@ -5555,6 +5675,7 @@ function openNewLlmGem() {
   ge('llm-apikey').value = '';
   populateVaultAliasSelect('llm-apikey-vault', 'llm-apikey');
   ge('llm-timeout').value = 120;
+  ge('llm-context-window').value = '';
   ge('llm-max-tokens').value = '';
   setLlmReasoningForm(null);
   setLlmCostCapForm(null);
@@ -5585,6 +5706,7 @@ ge('llm-fetch-models').addEventListener('click', function() {
     api_key: apikey || null,
     model: ge('llm-model').value.trim() || 'local',
     timeout_s: parseInt(ge('llm-timeout').value) || 120,
+    context_window: readNullableInt('llm-context-window'),
     max_tokens: parseInt(ge('llm-max-tokens').value) || null,
     reasoning: collectLlmReasoning(),
     max_tool_rounds: modelMaxToolRounds,
@@ -5603,6 +5725,7 @@ function _showModelList(models) {
     return;
   }
   renderLlmModelList(true);
+  applyLlmModelMetadata(llmFetchedModels.find(function(m) { return m.id === ge('llm-model').value; }), true);
   toast(llmFetchedModels.length + ' Modelle geladen', 'success');
 }
 
@@ -5624,6 +5747,7 @@ function uniqueLlmId(baseId) {
 var LLM_PROVIDER_DEFAULT_URLS = {
   llamacpp: '',
   openrouter: 'https://openrouter.ai/api',
+  nvidia: 'https://integrate.api.nvidia.com/v1',
   deepseek: 'https://api.deepseek.com',
   openai: 'https://api.openai.com',
   'custom-openai': '',
@@ -5635,6 +5759,7 @@ var LLM_PROVIDER_DEFAULT_URLS = {
 var LLM_PROVIDER_PLACEHOLDERS = {
   llamacpp: 'http://192.168.x.x:8080',
   openrouter: 'https://openrouter.ai/api',
+  nvidia: 'https://integrate.api.nvidia.com/v1',
   deepseek: 'https://api.deepseek.com',
   openai: 'https://api.openai.com',
   'custom-openai': 'https://host.example/v1',
@@ -5644,6 +5769,7 @@ var LLM_PROVIDER_PLACEHOLDERS = {
 };
 
 var LLM_PROVIDER_DEFAULT_MODELS = {
+  nvidia: 'minimaxai/minimax-m3',
   deepseek: 'deepseek-v4-flash'
 };
 
@@ -5664,6 +5790,7 @@ function providerFromBackend(backend) {
   var url = (backend.url || '').toLowerCase();
   if (url.indexOf('api.deepseek.com') >= 0) return 'deepseek';
   if (url.indexOf('openrouter') >= 0) return 'openrouter';
+  if (url.indexOf('integrate.api.nvidia.com') >= 0 || url.indexOf('api.nvidia.com') >= 0) return 'nvidia';
   if (url.indexOf('api.openai.com') >= 0) return 'openai';
   if (/localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[78][0-9]|9[0-9]|1[01][0-9]|12[0-7])\./.test(url)) return 'llamacpp';
   return 'custom-openai';
@@ -5672,6 +5799,7 @@ function providerFromBackend(backend) {
 function providerLabel(provider) {
   if (provider === 'llamacpp') return 'llama.cpp';
   if (provider === 'openrouter') return 'OpenRouter';
+  if (provider === 'nvidia') return 'NVIDIA';
   if (provider === 'deepseek') return 'DeepSeek';
   if (provider === 'openai') return 'OpenAI';
   if (provider === 'custom-openai') return 'OpenAI-compatible';
@@ -5717,14 +5845,16 @@ ge('llm-submit').addEventListener('click', function() {
   var id = ge('llm-id').value.trim();
   if (!id && editingLlmIdx === -1) id = uniqueLlmId(name + '-' + (model || typ));
   if (!id && editingLlmIdx >= 0) id = appConfig.llm_backends[editingLlmIdx].id;
-  var maxTokens = parseInt(ge('llm-max-tokens').value, 10) || null;
-  var maxToolRounds = readNullableIntAllowZero('llm-max-tool-rounds');
+	  var maxTokens = parseInt(ge('llm-max-tokens').value, 10) || null;
+	  var contextWindow = readNullableInt('llm-context-window');
+	  var maxToolRounds = readNullableIntAllowZero('llm-max-tool-rounds');
   var entry = {
     id: id, name: name,
     typ: typ, url: ge('llm-url').value.trim(),
-	    model: model, api_key: ge('llm-apikey').value.trim() || null,
-	    timeout_s: parseInt(ge('llm-timeout').value) || 120,
-	    max_tokens: maxTokens,
+		    model: model, api_key: ge('llm-apikey').value.trim() || null,
+		    timeout_s: parseInt(ge('llm-timeout').value) || 120,
+		    context_window: contextWindow,
+		    max_tokens: maxTokens,
 	    reasoning: collectLlmReasoning(),
 	    max_tool_rounds: maxToolRounds,
 	    cost_cap: collectLlmCostCap(),
@@ -5764,6 +5894,7 @@ ge('llm-test').addEventListener('click', function() {
     api_key: ge('llm-apikey').value.trim() || null,
     model: model,
     timeout_s: parseInt(ge('llm-timeout').value) || 120,
+    context_window: readNullableInt('llm-context-window'),
     max_tokens: parseInt(ge('llm-max-tokens').value) || 24,
     reasoning: collectLlmReasoning(),
     max_tool_rounds: testMaxToolRounds,
@@ -5787,10 +5918,17 @@ ge('modal-llm-cancel').addEventListener('click', function() { closeModal('modal-
 
 /* Agent Creation Wizard */
 ge('wizard-provider').addEventListener('change', function() {
-  var urls = { Grok: 'https://api.x.ai', DeepSeek: 'https://api.deepseek.com', OpenAICompat: 'https://api.openai.com', Ollama: 'http://localhost:11434', Anthropic: 'https://api.anthropic.com' };
+  var urls = { Grok: 'https://api.x.ai', NVIDIA: 'https://integrate.api.nvidia.com/v1', DeepSeek: 'https://api.deepseek.com', OpenAICompat: 'https://api.openai.com', Ollama: 'http://localhost:11434', Anthropic: 'https://api.anthropic.com' };
   ge('wizard-url').value = urls[this.value] || '';
   if (this.value === 'DeepSeek' && ge('wizard-model') && !ge('wizard-model').value.trim()) {
     ge('wizard-model').value = 'deepseek-v4-flash';
+  }
+  if (this.value === 'NVIDIA' && ge('wizard-model') && !ge('wizard-model').value.trim()) {
+    ge('wizard-model').value = 'minimaxai/minimax-m3';
+  }
+  if (this.value === 'NVIDIA') {
+    if (ge('wizard-context-window') && !ge('wizard-context-window').value.trim()) ge('wizard-context-window').value = '128000';
+    if (ge('wizard-max-tokens') && !ge('wizard-max-tokens').value.trim()) ge('wizard-max-tokens').value = '8192';
   }
 });
 
@@ -5818,10 +5956,13 @@ function finishWizard() {
 
   var lang = ge('wizard-lang').value;
   var personality = ge('wizard-personality').value;
-  var provider = ge('wizard-provider').value;
-  var url = ge('wizard-url').value.trim();
-  var apikey = ge('wizard-apikey').value.trim();
-  var model = ge('wizard-model').value.trim();
+	  var provider = ge('wizard-provider').value;
+	  var url = ge('wizard-url').value.trim();
+	  var apikey = ge('wizard-apikey').value.trim();
+	  var model = ge('wizard-model').value.trim();
+	  var backendTyp = provider === 'NVIDIA' ? 'OpenAICompat' : provider;
+	  var contextWindow = readNullableInt('wizard-context-window');
+	  var maxTokens = readNullableInt('wizard-max-tokens');
 
   if (!url) { toast('API URL required', 'error'); return; }
   if (!model) { toast('Model required', 'error'); return; }
@@ -5833,15 +5974,17 @@ function finishWizard() {
   var id = name.toLowerCase().replace(/[^a-z0-9]/g, '');
 
   // Create LLM backend entry
-  var backend = {
-    id: id,
-    name: name,
-    typ: provider,
-    url: url,
-	    api_key: apikey || null,
-	    model: model,
-	    timeout_s: 120,
-	    reasoning: provider === 'DeepSeek' ? {enabled: false, exclude: true} : null,
+	  var backend = {
+	    id: id,
+	    name: name,
+	    typ: backendTyp,
+	    url: url,
+		    api_key: apikey || null,
+		    model: model,
+		    timeout_s: 120,
+		    context_window: contextWindow,
+		    max_tokens: maxTokens,
+		    reasoning: provider === 'DeepSeek' ? {enabled: false, exclude: true} : null,
 	    identity: {
       bot_name: name,
       greeting: lang === 'de' ? 'Hallo! Ich bin ' + name + '.' : 'Hello! I am ' + name + '.',
@@ -5932,6 +6075,23 @@ ge('mod-perm-rag').addEventListener('change', updateDerivedPerms);
   var el = ge(id);
   if (el) el.addEventListener('input', renderEnhancerSlotPicker);
 });
+if (ge('mod-llm-backend')) ge('mod-llm-backend').addEventListener('change', updateModuleLlmLimitFields);
+
+function updateModuleLlmLimitFields() {
+  var backendId = ge('mod-llm-backend') ? ge('mod-llm-backend').value : '';
+  var backend = llmById(backendId);
+  if (ge('mod-llm-context-window')) ge('mod-llm-context-window').value = backend && backend.context_window ? String(backend.context_window) : '';
+  if (ge('mod-llm-max-tokens')) ge('mod-llm-max-tokens').value = backend && backend.max_tokens ? String(backend.max_tokens) : '';
+}
+
+function applyModuleLlmLimitFields(backendId) {
+  var backend = llmById(backendId);
+  if (!backend) return;
+  var contextWindow = readNullableInt('mod-llm-context-window');
+  var maxTokens = readNullableInt('mod-llm-max-tokens');
+  backend.context_window = contextWindow;
+  backend.max_tokens = maxTokens;
+}
 
 function editModule(idx) {
   editingModIdx = idx;
@@ -5943,6 +6103,7 @@ function editModule(idx) {
   ge('mod-display-name').value = m.display_name;
   ge('mod-typ').value = m.typ;
   ge('mod-llm-backend').value = m.llm_backend || '';
+  updateModuleLlmLimitFields();
   // Populate link grid and derive permissions from linked modules
   var linkedMods = m.linked_modules || [];
   populateLinkGrid(m.id, linkedMods);
@@ -5988,11 +6149,13 @@ ge('module-submit').addEventListener('click', function() {
   var mergedSettings = {};
   for (var k in oldSettings) { mergedSettings[k] = oldSettings[k]; }
   for (var k in newSettings) { mergedSettings[k] = newSettings[k]; }
-  var id = ge('mod-id').value.trim();
-  var entry = {
+	  var id = ge('mod-id').value.trim();
+	  var backendId = ge('mod-llm-backend').value || (typ === 'chat' && appConfig.llm_backends[0] ? appConfig.llm_backends[0].id : '');
+	  applyModuleLlmLimitFields(backendId);
+	  var entry = {
     id: id, name: id,
     display_name: ge('mod-display-name').value.trim() || id, typ: typ,
-    llm_backend: ge('mod-llm-backend').value || (typ === 'chat' && appConfig.llm_backends[0] ? appConfig.llm_backends[0].id : ''),
+	    llm_backend: backendId,
     backup_llm: editingModIdx >= 0 ? appConfig.module[editingModIdx].backup_llm : null,
     berechtigungen: perms,
     timeout_s: parseInt(ge('mod-timeout').value) || 30,

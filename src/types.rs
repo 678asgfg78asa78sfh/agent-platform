@@ -781,8 +781,9 @@ pub async fn test_backend_reachable(client: &reqwest::Client, b: &LlmBackend) ->
     };
     let mut req = client.get(&url);
     if let Some(ref key) = b.api_key {
-        if !key.is_empty() {
-            req = req.bearer_auth(key);
+        let token = crate::util::bearer_token_value(key);
+        if !token.is_empty() {
+            req = req.bearer_auth(token);
         }
     }
     matches!(req.send().await, Ok(r) if r.status().as_u16() < 500)
@@ -1205,14 +1206,13 @@ mod tests {
 
     #[test]
     fn rag_pool_secure_roundtrips_and_defaults_none() {
-        let without: RagPool = serde_json::from_str(
-            r#"{"id":"p","name":"shared","typ":"Shared"}"#,
-        ).unwrap();
+        let without: RagPool =
+            serde_json::from_str(r#"{"id":"p","name":"shared","typ":"Shared"}"#).unwrap();
         assert_eq!(without.secure, None);
 
-        let with_label: RagPool = serde_json::from_str(
-            r#"{"id":"p","name":"acme","typ":"Private","secure":"acme"}"#,
-        ).unwrap();
+        let with_label: RagPool =
+            serde_json::from_str(r#"{"id":"p","name":"acme","typ":"Private","secure":"acme"}"#)
+                .unwrap();
         assert_eq!(with_label.secure.as_deref(), Some("acme"));
     }
 }

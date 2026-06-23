@@ -782,6 +782,12 @@ pub fn parse_tool_call(text: &str) -> Option<(String, Vec<String>)> {
         return Some(call);
     }
 
+    // DeepSeek sometimes leaks DSML tool-call markup into content instead of
+    // returning OpenAI-style tool_calls. Recover the first invoke block.
+    if let Some(call) = parse_dsml_tool_call(text) {
+        return Some(call);
+    }
+
     // Gemma4 alternative: <tool:name(params)/> or <tool:name(key="value")/>
     if let Some(start) = text.find("<tool:") {
         let after = &text[start + 6..];
@@ -796,8 +802,51 @@ pub fn parse_tool_call(text: &str) -> Option<(String, Vec<String>)> {
 
 pub fn looks_like_malformed_tool_call(text: &str) -> bool {
     let lower = text.to_lowercase();
-    (lower.contains("<tool") || lower.contains("</tool_call>") || lower.contains("<tool_call"))
+    (lower.contains("<tool")
+        || lower.contains("</tool_call>")
+        || lower.contains("<tool_call")
+        || lower.contains("dsml"))
         && parse_tool_call(text).is_none()
+}
+
+fn parse_dsml_tool_call(text: &str) -> Option<(String, Vec<String>)> {
+    if !text.contains("DSML") {
+        return None;
+    }
+    let invoke_marker = "invoke name=\"";
+    let name_start = text.find(invoke_marker)? + invoke_marker.len();
+    let name_end = name_start + text[name_start..].find('"')?;
+    let name = text[name_start..name_end].trim().to_string();
+    if !is_valid_tool_name(&name) {
+        return None;
+    }
+
+    let mut params = Vec::new();
+    let mut rest = &text[name_end..];
+    while let Some(tag_start) = rest.find('<') {
+        let after_tag_start = &rest[tag_start + 1..];
+        let Some(open_end_rel) = after_tag_start.find('>') else {
+            break;
+        };
+        let tag = after_tag_start[..open_end_rel].trim();
+        let after_open = tag_start + 1 + open_end_rel + 1;
+        if tag.starts_with('/') || !tag.contains("parameter") {
+            rest = &rest[after_open..];
+            continue;
+        }
+        let value_start = after_open;
+        let after_value = &rest[value_start..];
+        let Some(close_rel) = after_value.find("</") else {
+            break;
+        };
+        let value = after_value[..close_rel].trim();
+        if !value.is_empty() {
+            params.push(clean_llm_delimiters(&clean_param(value)));
+        }
+        rest = &after_value[close_rel + 2..];
+    }
+
+    Some((name, params))
 }
 
 fn parse_tool_equals_call(text: &str) -> Option<(String, Vec<String>)> {
@@ -1149,11 +1198,15 @@ pub fn resolve_rag_pool(
         None => Ok(modul.rag_pool.as_deref().unwrap_or("shared").to_string()),
         Some(label) => {
             let pool_id = modul.rag_pool.as_deref().ok_or_else(|| {
-                format!("DENIED: secure-Modul '{}' hat keinen RAG-Pool (kein shared-Fallback)", modul.id)
+                format!(
+                    "DENIED: secure-Modul '{}' hat keinen RAG-Pool (kein shared-Fallback)",
+                    modul.id
+                )
             })?;
-            let pool = pools.iter().find(|p| p.id == pool_id).ok_or_else(|| {
-                format!("DENIED: RAG-Pool '{}' existiert nicht", pool_id)
-            })?;
+            let pool = pools
+                .iter()
+                .find(|p| p.id == pool_id)
+                .ok_or_else(|| format!("DENIED: RAG-Pool '{}' existiert nicht", pool_id))?;
             if pool.secure.as_deref() == Some(label) {
                 Ok(pool_id.to_string())
             } else {
@@ -1732,7 +1785,10 @@ fn read_persisted_result(
         .join(".tool_results")
         .join(format!("{}.txt", safe));
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return (false, format!("Handle '{}' nicht gefunden (evtl. abgelaufen).", safe));
+        return (
+            false,
+            format!("Handle '{}' nicht gefunden (evtl. abgelaufen).", safe),
+        );
     };
     let chars: Vec<char> = text.chars().collect();
     let total = chars.len();
@@ -1749,7 +1805,13 @@ fn read_persisted_result(
     } else {
         "\n[Ende des Ergebnisses]".into()
     };
-    (true, format!("[{}..{} von {} Zeichen]\n{}{}", start, end, total, slice, more))
+    (
+        true,
+        format!(
+            "[{}..{} von {} Zeichen]\n{}{}",
+            start, end, total, slice, more
+        ),
+    )
 }
 
 /// Formatiert ein Tool-Ergebnis fuer das LLM. Bei Ueberlaenge wird der volle
@@ -1839,7 +1901,11 @@ async fn exec_llm_script(
     let run_dir = home.join(".script_runs");
     let _ = std::fs::create_dir_all(&run_dir);
     let stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let script_path = run_dir.join(format!("script_{}_{}.py", stamp, &uuid::Uuid::new_v4().to_string()[..8]));
+    let script_path = run_dir.join(format!(
+        "script_{}_{}.py",
+        stamp,
+        &uuid::Uuid::new_v4().to_string()[..8]
+    ));
     let stub = concat!(
         "import sys, json\n",
         "MARKER = chr(1) + \"TOOL\" + chr(1)\n",
@@ -1914,14 +1980,19 @@ async fn exec_llm_script(
                             .as_array()
                             .map(|a| {
                                 a.iter()
-                                    .map(|v| v.as_str().map(String::from).unwrap_or_else(|| v.to_string()))
+                                    .map(|v| {
+                                        v.as_str()
+                                            .map(String::from)
+                                            .unwrap_or_else(|| v.to_string())
+                                    })
                                     .collect()
                             })
                             .unwrap_or_default();
                         if !allowed.contains(&name) {
                             serde_json::json!({"ok": false, "data": format!("Tool '{}' ist fuer dieses Modul nicht erlaubt.", name)})
                         } else {
-                            let sub_task_id = task_id.map(|t| format!("{}#script{}", t, tool_calls));
+                            let sub_task_id =
+                                task_id.map(|t| format!("{}#script{}", t, tool_calls));
                             let (ok, data) = Box::pin(exec_tool_unified(
                                 &name,
                                 &call_params,
@@ -1938,7 +2009,11 @@ async fn exec_llm_script(
                             pipeline.log(
                                 &modul.name,
                                 task_id,
-                                if ok { crate::types::LogTyp::Success } else { crate::types::LogTyp::Failed },
+                                if ok {
+                                    crate::types::LogTyp::Success
+                                } else {
+                                    crate::types::LogTyp::Failed
+                                },
                                 &format!(
                                     "script.exec → {}({}) = {}",
                                     name,
@@ -1949,7 +2024,9 @@ async fn exec_llm_script(
                             serde_json::json!({"ok": ok, "data": data})
                         }
                     }
-                    Err(e) => serde_json::json!({"ok": false, "data": format!("tool-request parse: {e}")}),
+                    Err(e) => {
+                        serde_json::json!({"ok": false, "data": format!("tool-request parse: {e}")})
+                    }
                 }
             };
             let mut line_out = response.to_string();
@@ -1964,11 +2041,18 @@ async fn exec_llm_script(
         }
     }
 
-    let status = match tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await {
+    let status = match tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await
+    {
         Ok(Ok(s)) => s,
         _ => {
             let _ = child.kill().await;
-            return (false, format!("Skript haengt nach stdout-Ende.\n{}", crate::util::safe_truncate(&output, 2000)));
+            return (
+                false,
+                format!(
+                    "Skript haengt nach stdout-Ende.\n{}",
+                    crate::util::safe_truncate(&output, 2000)
+                ),
+            );
         }
     };
     let mut stderr_tail = String::new();
@@ -2245,14 +2329,23 @@ async fn exec_tool_unified_inner(
         if !compartment_call_allowed(actor_modul, None, tool_name) {
             return (
                 false,
-                format!("DENIED: Compartment — '{}' darf Tool '{}' nicht aufrufen", modul_id, tool_name),
+                format!(
+                    "DENIED: Compartment — '{}' darf Tool '{}' nicht aufrufen",
+                    modul_id, tool_name
+                ),
             );
         }
     }
     if tool_name == "toolresult.lesen" {
         let handle = params.first().map(|s| s.trim()).unwrap_or("");
-        let from = params.get(1).and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(0);
-        let len = params.get(2).and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(4000);
+        let from = params
+            .get(1)
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let len = params
+            .get(2)
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(4000);
         return read_persisted_result(pipeline, modul_id, handle, from, len);
     }
     // Programmatic Tool Calling: eigener Pfad mit Subprozess + Tool-RPC.
@@ -2836,10 +2929,26 @@ mod tests {
         let mut acme_tool = make_modul("rss_verwaltung", vec![]);
         acme_tool.secure = Some("acme".into());
         let pub_tool = make_modul("rss_verwaltung", vec![]);
-        assert!(!compartment_call_allowed(Some(&pubc), Some(&acme_tool), "rss.fetch"));
-        assert!(!compartment_call_allowed(Some(&acme), Some(&pub_tool), "rss.fetch"));
-        assert!(compartment_call_allowed(Some(&acme), Some(&acme_tool), "rss.fetch"));
-        assert!(compartment_call_allowed(Some(&pubc), Some(&pub_tool), "rss.fetch"));
+        assert!(!compartment_call_allowed(
+            Some(&pubc),
+            Some(&acme_tool),
+            "rss.fetch"
+        ));
+        assert!(!compartment_call_allowed(
+            Some(&acme),
+            Some(&pub_tool),
+            "rss.fetch"
+        ));
+        assert!(compartment_call_allowed(
+            Some(&acme),
+            Some(&acme_tool),
+            "rss.fetch"
+        ));
+        assert!(compartment_call_allowed(
+            Some(&pubc),
+            Some(&pub_tool),
+            "rss.fetch"
+        ));
     }
 
     fn make_modul(typ: &str, berechtigungen: Vec<String>) -> ModulConfig {
@@ -2923,6 +3032,25 @@ mod tests {
         let (name, params) = parse_tool_call(input).unwrap();
         assert_eq!(name, "tavily.search");
         assert_eq!(params, vec!["Angela Merkel aktuelle Nachrichten"]);
+    }
+
+    #[test]
+    fn test_parse_tool_call_deepseek_dsml_format() {
+        let input = r#"<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="coding.start">
+<｜｜DSML｜｜parameter name="request_json" string="true">{
+"request": "Erweitere das bestehende Tetris Arcade HTML-Spiel.",
+"mode": "edit",
+"workspace": "agent-data/home/chat.deepseekdeepseekv4flash"
+}</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>"#;
+        let (name, params) = parse_tool_call(input).unwrap();
+        assert_eq!(name, "coding.start");
+        assert_eq!(params.len(), 1);
+        assert!(params[0].contains(r#""mode": "edit""#));
+        assert!(params[0].contains("agent-data/home/chat.deepseekdeepseekv4flash"));
+        assert!(!looks_like_malformed_tool_call(input));
     }
 
     #[test]
@@ -3296,7 +3424,12 @@ mod tests {
         let mut modul = make_modul("chat", vec![]);
         modul.linked_modules = vec!["mail.privat".into()];
         let py_mods = vec![py_mod("mail", &["mail.send"])];
-        assert!(has_permission_with_py(&modul, "mail.send", &py_mods, &AgentConfig::default()));
+        assert!(has_permission_with_py(
+            &modul,
+            "mail.send",
+            &py_mods,
+            &AgentConfig::default()
+        ));
     }
 
     #[test]
@@ -3304,14 +3437,24 @@ mod tests {
         let mut modul = make_modul("chat", vec![]);
         modul.linked_modules = vec!["mail".into()]; // exactly the py_mod name
         let py_mods = vec![py_mod("mail", &["mail.send"])];
-        assert!(has_permission_with_py(&modul, "mail.send", &py_mods, &AgentConfig::default()));
+        assert!(has_permission_with_py(
+            &modul,
+            "mail.send",
+            &py_mods,
+            &AgentConfig::default()
+        ));
     }
 
     #[test]
     fn test_has_permission_py_explicit_grant() {
         let modul = make_modul("chat", vec!["py.mail".into()]);
         let py_mods = vec![py_mod("mail", &["mail.send"])];
-        assert!(has_permission_with_py(&modul, "mail.send", &py_mods, &AgentConfig::default()));
+        assert!(has_permission_with_py(
+            &modul,
+            "mail.send",
+            &py_mods,
+            &AgentConfig::default()
+        ));
     }
 
     #[test]
@@ -3609,24 +3752,50 @@ mod tests {
         let mut acme_target = make_modul("rss_verwaltung", vec![]);
         acme_target.secure = Some("acme".into());
         // acme → public tool: denied
-        assert!(!compartment_call_allowed(Some(&acme), Some(&public_target), "rss.fetch"));
+        assert!(!compartment_call_allowed(
+            Some(&acme),
+            Some(&public_target),
+            "rss.fetch"
+        ));
         // acme → acme tool: allowed
-        assert!(compartment_call_allowed(Some(&acme), Some(&acme_target), "rss.fetch"));
+        assert!(compartment_call_allowed(
+            Some(&acme),
+            Some(&acme_target),
+            "rss.fetch"
+        ));
         // acme → breaking tool (even with no target): denied
         assert!(!compartment_call_allowed(Some(&acme), None, "agent.spawn"));
-        assert!(!compartment_call_allowed(Some(&acme), None, "agent_meta.status"));
+        assert!(!compartment_call_allowed(
+            Some(&acme),
+            None,
+            "agent_meta.status"
+        ));
         assert!(!compartment_call_allowed(Some(&acme), None, "script.exec"));
         // public → public: allowed
         let pub_actor = make_modul("chat", vec![]);
-        assert!(compartment_call_allowed(Some(&pub_actor), Some(&public_target), "websearch"));
+        assert!(compartment_call_allowed(
+            Some(&pub_actor),
+            Some(&public_target),
+            "websearch"
+        ));
     }
 
     #[test]
     fn secure_rag_pool_resolution_fails_closed() {
         use crate::types::RagPool;
         let pools = vec![
-            RagPool { id: "acme".into(), name: "acme".into(), typ: crate::types::RagTyp::Private, secure: Some("acme".into()) },
-            RagPool { id: "shared".into(), name: "shared".into(), typ: crate::types::RagTyp::Shared, secure: None },
+            RagPool {
+                id: "acme".into(),
+                name: "acme".into(),
+                typ: crate::types::RagTyp::Private,
+                secure: Some("acme".into()),
+            },
+            RagPool {
+                id: "shared".into(),
+                name: "shared".into(),
+                typ: crate::types::RagTyp::Shared,
+                secure: None,
+            },
         ];
         // public Modul → unverändert
         let mut public = make_modul("chat", vec![]);
@@ -3656,7 +3825,10 @@ mod tests {
         let mut map = serde_json::Map::new();
         apply_secure_markers(&mut map, Some(&acme));
         assert_eq!(map.get("secure").and_then(|v| v.as_str()), Some("acme"));
-        assert_eq!(map.get("confine_home_only").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            map.get("confine_home_only").and_then(|v| v.as_bool()),
+            Some(true)
+        );
 
         let public = make_modul("chat", vec![]);
         let mut map2 = serde_json::Map::new();

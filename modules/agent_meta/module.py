@@ -297,23 +297,40 @@ def _aufgaben(port, token):
     if not data:
         return _load_failed("/api/aufgaben", err)
 
-    erstellt = data.get("erstellt", [])
-    gestartet = data.get("gestartet", [])
-    erledigt = data.get("erledigt", [])
+    erstellt = _list_or_empty(data.get("erstellt"))
+    gestartet = _list_or_empty(data.get("gestartet"))
+    erledigt = _list_or_empty(data.get("erledigt"))
 
     lines = [f"Aufgaben: {len(erstellt)} wartend, {len(gestartet)} laufend, {len(erledigt)} erledigt", ""]
 
     for t in gestartet:
-        lines.append(f"  [LAUFEND]  {t.get('tool', t.get('anweisung', '?'))[:60]}")
+        lines.append(f"  [LAUFEND]  {_task_label(t)}")
     for t in erstellt:
-        lines.append(f"  [WARTEND]  {t.get('tool', t.get('anweisung', '?'))[:60]}")
+        lines.append(f"  [WARTEND]  {_task_label(t)}")
     for t in erledigt[-5:]:
-        status = t.get("status", "?")
-        tool = t.get("tool") or t.get("anweisung", "?")
-        result = (t.get("ergebnis") or "")[:60]
-        lines.append(f"  [{status:8s}] {str(tool)[:30]:30s} → {result}")
+        status = _task_value(t, "status", "?")[:8]
+        tool = _task_label(t, 30)
+        result = _task_value(t, "ergebnis", "")[:60]
+        lines.append(f"  [{status:8s}] {tool:30s} → {result}")
 
     return {"success": True, "data": "\n".join(lines)}
+
+def _list_or_empty(value):
+    return value if isinstance(value, list) else []
+
+def _task_value(task, key, default=""):
+    if not isinstance(task, dict):
+        return default
+    value = task.get(key)
+    if value is None:
+        return default
+    return str(value)
+
+def _task_label(task, limit=60):
+    if not isinstance(task, dict):
+        return "?"
+    label = task.get("tool") or task.get("anweisung") or task.get("id") or "?"
+    return str(label)[:limit]
 
 
 if __name__ == "__main__":

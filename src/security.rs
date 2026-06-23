@@ -91,10 +91,9 @@ pub fn validate_compartments(cfg: &AgentConfig) -> Vec<CompartmentViolation> {
                     ),
                 });
             }
-            Some(pool_id) => {
-                match cfg.rag_pools.iter().find(|p| &p.id == pool_id) {
-                    None => {
-                        out.push(CompartmentViolation {
+            Some(pool_id) => match cfg.rag_pools.iter().find(|p| &p.id == pool_id) {
+                None => {
+                    out.push(CompartmentViolation {
                             module_id: m.id.clone(),
                             severity: Severity::Error,
                             message: format!(
@@ -102,10 +101,10 @@ pub fn validate_compartments(cfg: &AgentConfig) -> Vec<CompartmentViolation> {
                                 m.id
                             ),
                         });
-                    }
-                    Some(pool) => {
-                        if pool.secure.as_deref() != Some(zone.as_str()) {
-                            out.push(CompartmentViolation {
+                }
+                Some(pool) => {
+                    if pool.secure.as_deref() != Some(zone.as_str()) {
+                        out.push(CompartmentViolation {
                                 module_id: m.id.clone(),
                                 severity: Severity::Error,
                                 message: format!(
@@ -113,15 +112,16 @@ pub fn validate_compartments(cfg: &AgentConfig) -> Vec<CompartmentViolation> {
                                     m.id, pool.secure
                                 ),
                             });
-                        }
                     }
                 }
-            }
+            },
         }
 
         // R2: linked_modules targets must be in the same zone.
         for link_id in &m.linked_modules {
-            let target_zone = cfg.module.iter()
+            let target_zone = cfg
+                .module
+                .iter()
                 .find(|t| &t.id == link_id)
                 .map(|t| t.secure.as_deref());
             match target_zone {
@@ -193,15 +193,25 @@ pub fn blocked_module_ids(cfg: &AgentConfig) -> std::collections::HashSet<String
 /// Check whether a module grants any compartment-breaking capability via its
 /// berechtigungen (permission strings) or linked_modules.
 fn grants_breaking_capability(m: &ModulConfig) -> Option<String> {
-    const BREAKING_PERMS: &[&str] = &["shell", "shell.exec", "script", "script.exec", "agent.spawn"];
+    const BREAKING_PERMS: &[&str] = &[
+        "shell",
+        "shell.exec",
+        "script",
+        "script.exec",
+        "agent.spawn",
+    ];
     for p in &m.berechtigungen {
         if BREAKING_PERMS.contains(&p.as_str()) || is_compartment_breaking_tool(p) {
             return Some(format!("Permission '{p}'"));
         }
     }
     for link in &m.linked_modules {
-        if COMPARTMENT_BREAKING_PREFIXES.iter().any(|pre| link.starts_with(pre))
-            || link == "agent_meta" || link == "module_builder" {
+        if COMPARTMENT_BREAKING_PREFIXES
+            .iter()
+            .any(|pre| link.starts_with(pre))
+            || link == "agent_meta"
+            || link == "module_builder"
+        {
             return Some(format!("Link '{link}'"));
         }
     }
@@ -772,8 +782,14 @@ mod tests {
         cfg.module = vec![good, bad];
         let v = validate_compartments(&cfg);
         let blocked = blocked_module_ids(&cfg);
-        assert!(v.iter().any(|x| x.module_id == "chat.bad" && x.severity == Severity::Error));
-        assert!(!v.iter().any(|x| x.module_id == "chat.acme" && x.severity == Severity::Error));
+        assert!(
+            v.iter()
+                .any(|x| x.module_id == "chat.bad" && x.severity == Severity::Error)
+        );
+        assert!(
+            !v.iter()
+                .any(|x| x.module_id == "chat.acme" && x.severity == Severity::Error)
+        );
         assert!(blocked.contains("chat.bad"));
         assert!(!blocked.contains("chat.acme"));
     }
@@ -898,11 +914,11 @@ mod tests {
 
     #[test]
     fn test_access_allowed_matrix() {
-        assert!(access_allowed(None, None));                    // public→public
-        assert!(access_allowed(Some("acme"), Some("acme")));    // gleiche Zone
+        assert!(access_allowed(None, None)); // public→public
+        assert!(access_allowed(Some("acme"), Some("acme"))); // gleiche Zone
         assert!(!access_allowed(Some("acme"), Some("globex"))); // andere Zone
-        assert!(!access_allowed(Some("acme"), None));           // Zone→public (kein Ausbruch)
-        assert!(!access_allowed(None, Some("acme")));           // public→Zone (von außen)
+        assert!(!access_allowed(Some("acme"), None)); // Zone→public (kein Ausbruch)
+        assert!(!access_allowed(None, Some("acme"))); // public→Zone (von außen)
     }
 
     #[test]

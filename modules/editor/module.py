@@ -10,6 +10,7 @@ MODULE = {
         "max_view_lines": {"type": "number", "label": "Max Zeilen pro View", "default": 80},
         "max_file_size_kb": {"type": "number", "label": "Max Dateigroesse KB", "default": 512},
         "max_backups": {"type": "number", "label": "Max Backups pro Datei", "default": 5},
+        "allowed_paths": {"type": "list", "label": "Zusaetzlich erlaubte Pfade", "default": []},
         "blocked_extensions": {"type": "list", "label": "Blockierte Endungen", "default": [".exe",".bin",".so",".dll",".zip",".tar",".gz",".png",".jpg",".gif",".pdf",".mp3",".mp4"]},
     },
     "tools": [
@@ -49,6 +50,35 @@ def _strip_content_wrapper(raw):
         return s[1:-1]
     return s
 
+def _expand_path(path):
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(str(path))))
+
+def _canonical_path(path):
+    return os.path.realpath(_expand_path(path))
+
+def _is_within(path, root):
+    try:
+        return os.path.commonpath([path, root]) == root
+    except (OSError, ValueError):
+        return False
+
+def _path_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = [value]
+    result = []
+    for item in values:
+        item = str(item or "").strip().strip('"').strip("'")
+        if item:
+            result.append(item)
+    return result
+
+def _has_parent_traversal(path):
+    return any(part == ".." for part in path.replace("\\", "/").split("/"))
+
 def _resolve_path(raw, config):
     """Pfad aufloesen und validieren. Returns (abs_path, error)."""
     p = _strip_named_value(raw, {"pfad", "path", "datei", "file", "pfad_und_bereich", "pfad_und_zeile"}).strip().strip('"').strip("'")
@@ -57,15 +87,20 @@ def _resolve_path(raw, config):
     # Home-Verzeichnis als Basis
     home = config.get("home_dir", "")
     if home:
-        home = os.path.abspath(home)
+        home = _canonical_path(home)
     modules_dir = config.get("modules_dir", "")
     if modules_dir:
-        modules_dir = os.path.abspath(modules_dir)
+        modules_dir = _canonical_path(modules_dir)
+    project_root = config.get("project_root", "")
+    if project_root:
+        project_root = _canonical_path(project_root)
 
     # Plattform-Module liegen NICHT im Agent-Home. Pfade aus module_builder
     # sind absichtlich "modules/<name>/module.py" und muessen auf den echten
     # Repo-Modules-Ordner zeigen, nicht auf agent-data/home/<agent>/modules.
     if not os.path.isabs(p) and modules_dir and (p_key == "modules" or p_key.startswith("modules/")):
+        if _has_parent_traversal(p_key):
+            return None, f"Pfad nicht erlaubt: {p}"
         rel = p_key.split("/", 1)[1] if "/" in p_key else ""
         p = os.path.join(modules_dir, rel)
     # Hauefiger Agentenfehler: "deepdive/module.py" statt
@@ -77,11 +112,19 @@ def _resolve_path(raw, config):
         first_dir = os.path.join(modules_dir, first_segment)
         if os.path.exists(candidate) or ("/" in p_key and os.path.isdir(first_dir)):
             p = candidate
+    # Repo-Pfade wie "src/tools.rs" oder "Cargo.toml" sollen auf den vom Core
+    # injizierten project_root zeigen, wenn sie dort existieren oder der Parent
+    # dort angelegt werden kann. Neue sonstige Dateien bleiben im Agent-Home.
+    if not os.path.isabs(p) and project_root:
+        candidate = os.path.join(project_root, p_key)
+        parent = os.path.dirname(candidate) or project_root
+        if os.path.exists(candidate) or ("/" in p_key and os.path.isdir(parent)):
+            p = candidate
     # Relativer Pfad → im Home joinen
-    elif not os.path.isabs(p) and home:
+    if not os.path.isabs(p) and home:
         p = os.path.join(home, p)
     # Absolut machen
-    p = os.path.abspath(p)
+    p = _expand_path(p)
 
     # Blocked extensions
     blocked = config.get("blocked_extensions", BLOCKED_EXT)
@@ -90,28 +133,27 @@ def _resolve_path(raw, config):
         return None, f"Blockierte Dateiendung: {ext}"
 
     # Allowed paths check — alle kanonisch machen
-    allowed = [os.path.realpath(os.path.abspath(a)) for a in config.get("allowed_paths", [])]
+    allowed = [_canonical_path(a) for a in _path_list(config.get("allowed_paths", []))]
     if home:
-        allowed.append(os.path.realpath(home))
+        allowed.append(home)
     if modules_dir:
-        allowed.append(os.path.realpath(modules_dir))
+        allowed.append(modules_dir)
+    if project_root:
+        allowed.append(project_root)
 
     if not allowed:
         return None, "Keine erlaubten Pfade konfiguriert"
 
     try:
-        canonical = os.path.realpath(p)
+        canonical = _canonical_path(p)
 
         ok = False
         for a in allowed:
-            try:
-                if os.path.commonpath([canonical, a]) == a:
-                    ok = True
-                    break
-            except (OSError, ValueError):
-                continue
+            if _is_within(canonical, a):
+                ok = True
+                break
         if not ok:
-            return None, f"Pfad nicht erlaubt: {p}"
+            return None, f"Pfad nicht erlaubt: {p} (canonical: {canonical})"
         return canonical, None
     except Exception as e:
         return None, f"Pfad-Fehler: {e}"
@@ -208,8 +250,33 @@ def _write_file(filepath, content):
 
 # ═══ Tool Handlers ═══════════════════════════════════
 
+def _normalize_json_params(params):
+    """Toleranz: manche Modelle uebergeben {"pfad":...,"inhalt":...} als EINEN String
+    statt positionaler Parameter. Hier expandieren wir das zu [pfad, inhalt]."""
+    if not params or not isinstance(params[0], str):
+        return params
+    s = params[0].strip()
+    if not (s.startswith("{") and s.endswith("}")
+            and ('"pfad"' in s or '"path"' in s or '"datei"' in s or '"file"' in s)):
+        return params
+    try:
+        obj = json.loads(s)
+        if not isinstance(obj, dict):
+            return params
+    except Exception:
+        return params
+    pfad = obj.get("pfad") or obj.get("path") or obj.get("datei") or obj.get("file") or ""
+    content = (obj.get("inhalt") or obj.get("content") or obj.get("code") or obj.get("text")
+               or obj.get("neuer_text") or obj.get("aenderung") or obj.get("änderung") or "")
+    expanded = [str(pfad)]
+    if content != "":
+        expanded.append(str(content))
+    return expanded
+
+
 def handle_tool(tool_name, params, config):
     try:
+        params = _normalize_json_params(params)
         if tool_name == "editor.view":
             return _view(params, config)
         elif tool_name == "editor.replace":

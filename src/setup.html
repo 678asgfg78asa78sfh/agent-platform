@@ -222,6 +222,38 @@ button:disabled { background: #333; color: #777; cursor: not-allowed; }
     <div class="result" data-preset="openrouter"></div>
   </div>
 
+  <!-- NVIDIA -->
+  <div class="card" data-preset="nvidia">
+    <header>
+      <h2>NVIDIA NIM</h2>
+      <span class="badge paid" data-i18n="badge-nvidia">NVIDIA · OpenAI-compatible</span>
+    </header>
+    <div class="desc" data-i18n="desc-nvidia">
+      NVIDIA hosted OpenAI-compatible API. Uses <code>https://integrate.api.nvidia.com/v1</code>;
+      get a key from NVIDIA API Catalog.
+    </div>
+    <div class="fields">
+      <label data-i18n="lbl-api-key">API key
+        <input type="password" data-field="api_key" placeholder="nvapi-...">
+      </label>
+      <label data-i18n="lbl-model">Model
+        <input type="text" data-field="model" value="minimaxai/minimax-m3" list="models-nvidia">
+        <datalist id="models-nvidia"></datalist>
+      </label>
+    </div>
+    <div class="model-tools" data-preset="nvidia">
+      <input type="search" class="model-search" data-preset="nvidia" placeholder="Modelle durchsuchen">
+      <label><input type="checkbox" class="model-free-only" data-preset="nvidia"> <span class="model-free-text">Nur gratis</span></label>
+      <span class="model-count" data-preset="nvidia"></span>
+    </div>
+    <div class="actions">
+      <button class="models secondary" data-preset="nvidia" data-i18n="btn-load-models">Load models</button>
+      <button class="test" data-preset="nvidia" data-i18n="btn-test">Test</button>
+      <button class="save secondary" data-preset="nvidia" data-i18n="btn-save" disabled>Save &amp; continue</button>
+    </div>
+    <div class="result" data-preset="nvidia"></div>
+  </div>
+
   <!-- DeepSeek -->
   <div class="card" data-preset="deepseek">
     <header>
@@ -383,9 +415,11 @@ const I18N = {
     'admin-token-hint': 'This protects the Agent Platform admin API over LAN. It is not your LLM API key.',
     'badge-openrouter': 'FREE · many models', 'badge-ollama': 'FREE · local/LAN',
     'badge-openai': 'PAID · GPT-5.x', 'badge-anthropic': 'PAID · Claude 4.x',
+    'badge-nvidia': 'NVIDIA · OpenAI-compatible',
     'badge-deepseek': 'PAID · direct API',
     'badge-llamacpp': 'LOCAL · OpenAI-compatible',
     'desc-openrouter': 'OpenRouter is an LLM aggregator with dozens of models (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) behind <em>one</em> API. Free models available (e.g. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>), paid flagship models on demand. Get an API key at <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (email only, no card required for free tier).',
+    'desc-nvidia': 'NVIDIA hosted OpenAI-compatible API. Uses <code>https://integrate.api.nvidia.com/v1</code>; get a key from NVIDIA API Catalog.',
     'desc-deepseek': 'Direct DeepSeek API with native thinking controls. Uses <code>https://api.deepseek.com</code>; get a key at <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a>.',
     'desc-ollama': 'If <code>ollama serve</code> runs locally or on your LAN: zero cloud. Pull a model first: <code>ollama pull llama3.2</code>. See <a href="https://ollama.com" target="_blank">ollama.com</a>.',
     'desc-openai': 'Standard OpenAI API. Get a key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.',
@@ -408,9 +442,11 @@ const I18N = {
     'admin-token-hint': 'Schuetzt die Agent-Platform-Admin-API im LAN. Das ist nicht dein LLM/API-Key.',
     'badge-openrouter': 'FREI · viele Modelle', 'badge-ollama': 'KOSTENLOS · lokal/LAN',
     'badge-openai': 'BEZAHLT · GPT-5.x', 'badge-anthropic': 'BEZAHLT · Claude 4.x',
+    'badge-nvidia': 'NVIDIA · OpenAI-kompatibel',
     'badge-deepseek': 'BEZAHLT · direkte API',
     'badge-llamacpp': 'LOKAL · OpenAI-kompatibel',
     'desc-openrouter': 'OpenRouter ist ein LLM-Aggregator mit dutzenden Modellen (GPT, Claude, Gemini, DeepSeek, Qwen, Grok, Kimi) hinter <em>einer</em> API. Freie Modelle verfügbar (z.B. <code>deepseek/deepseek-chat:free</code>, <code>qwen/qwen3-coder:free</code>), kostenpflichtige Top-Modelle on-demand. API-Key holen auf <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai/keys</a> (braucht nur Email, keine Karte für Free-Tier).',
+    'desc-nvidia': 'Gehostete NVIDIA API mit OpenAI-kompatiblem Format. Nutzt <code>https://integrate.api.nvidia.com/v1</code>; Key im NVIDIA API Catalog holen.',
     'desc-deepseek': 'Direkte DeepSeek API mit nativen Thinking-Controls. Nutzt <code>https://api.deepseek.com</code>; Key auf <a href="https://platform.deepseek.com/api_keys" target="_blank">platform.deepseek.com</a> holen.',
     'desc-ollama': 'Falls <code>ollama serve</code> lokal oder im LAN läuft: keine Cloud. Modell vorab ziehen: <code>ollama pull llama3.2</code>. Siehe <a href="https://ollama.com" target="_blank">ollama.com</a>.',
     'desc-openai': 'Standard OpenAI API. Key holen auf <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a>.',
@@ -428,6 +464,7 @@ const I18N = {
 };
 let CURRENT_LOCALE = localStorage.getItem('setup_locale') || 'en';
 const SETUP_TOKEN_PARAM = new URLSearchParams(window.location.search).get('token');
+const SAFE_AUTO_MAX_OUTPUT_TOKENS = 8192;
 if (SETUP_TOKEN_PARAM) {
   localStorage.setItem('api_auth_token', SETUP_TOKEN_PARAM);
   history.replaceState(null, '', window.location.pathname);
@@ -505,6 +542,45 @@ async function readSetupJson(res) {
 
 const SETUP_MODEL_CACHE = {};
 
+function setupModelNumberValue(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.round(v) : null;
+  let s = String(v).trim().replace(/[,_]/g, '');
+  if (!s) return null;
+  let mul = 1;
+  const last = s.slice(-1).toLowerCase();
+  if (last === 'k' || last === 'm') {
+    mul = last === 'm' ? 1000000 : 1000;
+    s = s.slice(0, -1);
+  }
+  const n = parseFloat(s);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * mul) : null;
+}
+
+function setupFirstModelNumber(m, keys) {
+  for (const key of keys) {
+    let cur = m;
+    for (const part of key.split('.')) cur = cur && cur[part];
+    const n = setupModelNumberValue(cur);
+    if (n != null) return n;
+  }
+  return null;
+}
+
+function setupShortTokenCount(n) {
+  n = setupModelNumberValue(n);
+  if (n == null) return '';
+  if (n >= 1000000 && n % 1000000 === 0) return (n / 1000000) + 'M';
+  if (n >= 1000 && n % 1000 === 0) return (n / 1000) + 'K';
+  return String(n);
+}
+
+function setupSuggestedMaxOutputTokens(model) {
+  const n = setupModelNumberValue(model && model.max_output_tokens);
+  if (n == null) return null;
+  return Math.min(n, SAFE_AUTO_MAX_OUTPUT_TOKENS);
+}
+
 function normalizeSetupModel(m) {
   if (!m) return null;
   if (typeof m === 'string') {
@@ -512,10 +588,14 @@ function normalizeSetupModel(m) {
   }
   const id = String(m.id || m.name || '').trim();
   if (!id) return null;
+  const contextWindow = setupFirstModelNumber(m, ['context_window', 'context_length', 'max_context_length', 'max_model_len', 'top_provider.context_length']);
+  const maxOutputTokens = setupFirstModelNumber(m, ['max_output_tokens', 'max_completion_tokens', 'output_token_limit', 'max_tokens', 'top_provider.max_completion_tokens']);
   return {
     id: id,
     display_name: String(m.display_name || m.name || id),
     free: !!m.free || /:free$/i.test(id),
+    context_window: contextWindow,
+    max_output_tokens: maxOutputTokens,
   };
 }
 
@@ -562,7 +642,13 @@ function renderSetupModelOptions(preset, setDefault) {
     models.forEach(function(m) {
       const opt = document.createElement('option');
       opt.value = m.id;
-      opt.label = (m.display_name && m.display_name !== m.id ? m.display_name + ' · ' : '') + (m.free ? 'free' : m.id);
+      const bits = [];
+      if (m.display_name && m.display_name !== m.id) bits.push(m.display_name);
+      bits.push(m.id);
+      if (m.context_window) bits.push('ctx ' + setupShortTokenCount(m.context_window));
+      if (m.max_output_tokens) bits.push('out ' + setupShortTokenCount(m.max_output_tokens));
+      if (m.free) bits.push('free');
+      opt.label = bits.join(' · ');
       datalist.appendChild(opt);
     });
   }
@@ -583,6 +669,13 @@ function renderSetupModelOptions(preset, setDefault) {
   return models;
 }
 
+function selectedSetupModel(preset) {
+  const card = document.querySelector('.card[data-preset="'+preset+'"]');
+  const modelInput = card && card.querySelector('input[data-field="model"]');
+  const model = modelInput ? modelInput.value.trim() : '';
+  return (SETUP_MODEL_CACHE[preset] || []).find(function(m) { return m.id === model; }) || null;
+}
+
 document.querySelectorAll('.model-search, .model-free-only').forEach(function(el) {
   const ev = el.classList.contains('model-search') ? 'input' : 'change';
   el.addEventListener(ev, function() {
@@ -600,6 +693,17 @@ const PRESETS = {
     identity: {
       bot_name: 'Assistent',
       greeting: 'Hi! Womit kann ich helfen?',
+      system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
+    },
+  },
+  nvidia: {
+    id: 'nvidia', name: 'NVIDIA NIM',
+    typ: 'OpenAICompat',
+    url: 'https://integrate.api.nvidia.com/v1',
+    timeout_s: 120,
+    identity: {
+      bot_name: 'Assistent',
+      greeting: 'Hi!',
       system_prompt: 'Du bist ein hilfreicher Assistent. Antworte kurz und präzise.',
     },
   },
@@ -658,16 +762,20 @@ const PRESETS = {
 function buildBackend(preset) {
   const card = document.querySelector('.card[data-preset="'+preset+'"]');
   const base = JSON.parse(JSON.stringify(PRESETS[preset]));
-  card.querySelectorAll('input[data-field]').forEach(function(inp) {
+	  card.querySelectorAll('input[data-field]').forEach(function(inp) {
     const k = inp.dataset.field;
     const v = inp.value.trim();
     if (!v) return;
     if (k === 'api_key') base.api_key = v;
     else if (k === 'url') base.url = v;
     else if (k === 'model') base.model = v;
-  });
-  return base;
-}
+	  });
+  const selected = selectedSetupModel(preset);
+  if (selected && selected.context_window) base.context_window = selected.context_window;
+  const suggestedMax = setupSuggestedMaxOutputTokens(selected);
+  if (suggestedMax) base.max_tokens = suggestedMax;
+		  return base;
+		}
 
 function showResult(preset, kind, msg) {
   const el = document.querySelector('.result[data-preset="'+preset+'"]');

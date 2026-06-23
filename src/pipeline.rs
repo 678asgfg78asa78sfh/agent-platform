@@ -692,12 +692,18 @@ mod tests {
         assert_eq!(failed, 0, "Task mit Retries darf nicht failen");
         assert_eq!(pipeline.gestartet().len(), 0);
         let loaded = pipeline.laden_by_id(&aufgabe.id).unwrap().unwrap();
-        assert_eq!(loaded.status, AufgabeStatus::Erstellt, "muss neu eingereiht sein");
+        assert_eq!(
+            loaded.status,
+            AufgabeStatus::Erstellt,
+            "muss neu eingereiht sein"
+        );
         assert_eq!(loaded.retry_count, 1);
 
         // Zweiter Neustart waehrend wieder gestartet: retry_count 1 -> 2 (noch ok)
         let mut again = loaded;
-        pipeline.verschieben(&mut again, AufgabeStatus::Gestartet).unwrap();
+        pipeline
+            .verschieben(&mut again, AufgabeStatus::Gestartet)
+            .unwrap();
         pipeline.fail_started_after_restart();
         let l2 = pipeline.laden_by_id(&aufgabe.id).unwrap().unwrap();
         assert_eq!(l2.status, AufgabeStatus::Erstellt);
@@ -705,7 +711,9 @@ mod tests {
 
         // Dritter: retry_count 2 == retry 2 -> jetzt failt es hart
         let mut again2 = l2;
-        pipeline.verschieben(&mut again2, AufgabeStatus::Gestartet).unwrap();
+        pipeline
+            .verschieben(&mut again2, AufgabeStatus::Gestartet)
+            .unwrap();
         let failed3 = pipeline.fail_started_after_restart();
         assert_eq!(failed3, 1);
         let l3 = pipeline.laden_by_id(&aufgabe.id).unwrap().unwrap();

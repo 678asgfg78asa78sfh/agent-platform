@@ -8,9 +8,140 @@ use tokio::sync::{Mutex, RwLock};
 
 /// Max Versuche pro Request fuer transiente Fehler (leerer Body, HTTP 408/429/5xx).
 const OPENAI_COMPAT_TRANSIENT_RETRIES: usize = 3;
+const DEFAULT_SAFE_MAX_OUTPUT_TOKENS: u32 = 8192;
+const CONTEXT_AS_OUTPUT_THRESHOLD_PERCENT: u64 = 80;
 
 fn is_transient_http_status(status: reqwest::StatusCode) -> bool {
-    matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
+    matches!(status.as_u16(), 408 | 500 | 502 | 503 | 504)
+}
+
+fn retry_after_duration(headers: &reqwest::header::HeaderMap) -> Option<std::time::Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_secs)
+}
+
+fn content_value_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .map(content_value_text)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(""),
+        serde_json::Value::Object(obj) => obj
+            .get("text")
+            .or_else(|| obj.get("content"))
+            .map(content_value_text)
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+fn openai_compat_response_text(data: &serde_json::Value) -> String {
+    for path in [
+        "/choices/0/message/content",
+        "/choices/0/text",
+        "/output_text",
+        "/text",
+        "/message/content",
+        "/response",
+    ] {
+        let text = data
+            .pointer(path)
+            .map(content_value_text)
+            .unwrap_or_default();
+        if !text.trim().is_empty() {
+            return text;
+        }
+    }
+    String::new()
+}
+
+fn estimate_provider_request_tokens(
+    messages: &[serde_json::Value],
+    tools: &[serde_json::Value],
+) -> u64 {
+    let messages_chars = serde_json::to_string(messages)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    let tools_chars = serde_json::to_string(tools).map(|s| s.len()).unwrap_or(0);
+    // Conservative guard estimate: provider tokenizers and JSON/tool overhead differ.
+    // Counting roughly one char as one token is intentionally pessimistic so we
+    // clamp before providers reject with context_length errors.
+    (messages_chars + tools_chars) as u64 + (messages.len() as u64 * 16) + (tools.len() as u64 * 64)
+}
+
+fn context_safety_margin(window: u32) -> u64 {
+    ((window as u64) / 50).clamp(1024, 8192)
+}
+
+fn bounded_max_tokens(
+    backend: &LlmBackend,
+    messages: &[serde_json::Value],
+    tools: &[serde_json::Value],
+    requested: u32,
+) -> Result<u32, String> {
+    let mut max_tokens = requested.max(1);
+    if let Some(window) = backend.context_window.filter(|w| *w > 0) {
+        let threshold = (window as u64 * CONTEXT_AS_OUTPUT_THRESHOLD_PERCENT) / 100;
+        if max_tokens as u64 >= threshold {
+            let clamped = max_tokens.min(DEFAULT_SAFE_MAX_OUTPUT_TOKENS);
+            tracing::warn!(
+                "LLM backend '{}' requested max_tokens {} is >= {}% of context_window {}; clamping to {}",
+                backend.id,
+                max_tokens,
+                CONTEXT_AS_OUTPUT_THRESHOLD_PERCENT,
+                window,
+                clamped
+            );
+            max_tokens = clamped;
+        }
+
+        let input_est = estimate_provider_request_tokens(messages, tools);
+        let reserve = context_safety_margin(window);
+        let window = window as u64;
+        if input_est + reserve >= window {
+            return Err(format!(
+                "Kontextfenster zu klein: geschaetzter Input ~{} Tokens + Reserve {} >= Fenster {}. Verlauf/Tool-Evidenz muss gekuerzt werden.",
+                input_est, reserve, window
+            ));
+        }
+        let available = window - input_est - reserve;
+        if max_tokens as u64 > available {
+            let clamped = available.max(1).min(u32::MAX as u64) as u32;
+            tracing::warn!(
+                "LLM backend '{}' max_tokens {} exceeds remaining context budget {}; clamping to {} (window {}, input_est {}, reserve {})",
+                backend.id,
+                max_tokens,
+                available,
+                clamped,
+                window,
+                input_est,
+                reserve
+            );
+            max_tokens = clamped;
+        }
+    }
+    Ok(max_tokens)
+}
+
+fn apply_bounded_max_tokens(
+    body: &mut serde_json::Value,
+    backend: &LlmBackend,
+    messages: &[serde_json::Value],
+    tools: &[serde_json::Value],
+    requested: Option<u32>,
+) -> Result<(), String> {
+    let Some(requested) = requested.filter(|v| *v > 0) else {
+        return Ok(());
+    };
+    body["max_tokens"] =
+        serde_json::json!(bounded_max_tokens(backend, messages, tools, requested)?);
+    Ok(())
 }
 
 /// Sende-/Verbindungsfehler von reqwest, die transient sind (Connection-Reset,
@@ -575,9 +706,13 @@ impl LlmRouter {
                 let key = backend.api_key.as_deref().unwrap_or("");
                 let safe_messages = provider_safe_messages(messages, &HashMap::new());
                 let mut body = serde_json::json!({"model": backend.model, "messages": safe_messages, "stream": true});
-                if let Some(max_tokens) = backend.max_tokens {
-                    body["max_tokens"] = serde_json::json!(max_tokens);
-                }
+                apply_bounded_max_tokens(
+                    &mut body,
+                    &backend,
+                    &safe_messages,
+                    &[],
+                    backend.max_tokens,
+                )?;
                 apply_provider_reasoning_config(&mut body, &backend);
                 let endpoint = match backend.typ {
                     LlmTyp::DeepSeek => deepseek_endpoint(&backend.url, "chat/completions"),
@@ -585,7 +720,8 @@ impl LlmRouter {
                 };
                 let resp = client
                     .post(endpoint)
-                    .header("Authorization", format!("Bearer {key}"))
+                    .bearer_auth(crate::util::bearer_token_value(key))
+                    .header("Accept", "text/event-stream")
                     .json(&body)
                     .send()
                     .await
@@ -612,7 +748,12 @@ impl LlmRouter {
                 // History kann role:"tool"/tool_calls aus frueheren Runden enthalten —
                 // muss auch im Streaming-Pfad ins Anthropic-Format konvertiert werden.
                 let non_sys = openai_messages_to_anthropic(&non_sys_raw);
-                let max_tokens = backend.max_tokens.unwrap_or(4096);
+                let max_tokens = bounded_max_tokens(
+                    &backend,
+                    &non_sys,
+                    &[],
+                    backend.max_tokens.unwrap_or(4096),
+                )?;
                 let mut body = serde_json::json!({
                     "model": backend.model,
                     "max_tokens": max_tokens,
@@ -745,9 +886,13 @@ impl LlmRouter {
                 let safe_messages = provider_safe_messages(messages, &canonical_to_alias);
                 let mut body =
                     serde_json::json!({"model": backend.model, "messages": safe_messages});
-                if let Some(max_tokens) = backend.max_tokens {
-                    body["max_tokens"] = serde_json::json!(max_tokens);
-                }
+                apply_bounded_max_tokens(
+                    &mut body,
+                    backend,
+                    &safe_messages,
+                    &safe_tools,
+                    backend.max_tokens,
+                )?;
                 apply_provider_reasoning_config(&mut body, backend);
                 if !safe_tools.is_empty() {
                     body["tools"] = serde_json::json!(safe_tools);
@@ -760,7 +905,8 @@ impl LlmRouter {
                 for attempt in 1..=OPENAI_COMPAT_TRANSIENT_RETRIES {
                     let resp = match client
                         .post(&endpoint)
-                        .header("Authorization", format!("Bearer {key}"))
+                        .bearer_auth(crate::util::bearer_token_value(key))
+                        .header("Accept", "application/json")
                         .json(&body)
                         .send()
                         .await
@@ -789,9 +935,25 @@ impl LlmRouter {
                         }
                     };
                     let status = resp.status();
+                    let retry_after = retry_after_duration(resp.headers());
                     let body_text = resp.text().await.unwrap_or_default();
                     if !status.is_success() {
-                        // 408/429/5xx sind bei OpenRouter/DeepSeek/lokalen Servern
+                        if status.as_u16() == 429
+                            && attempt < OPENAI_COMPAT_TRANSIENT_RETRIES
+                            && let Some(wait) = retry_after.filter(|d| d.as_secs() <= 30)
+                        {
+                            tracing::warn!(
+                                "LLM backend '{}' HTTP {} with Retry-After {}s (attempt {}/{})",
+                                backend.id,
+                                status,
+                                wait.as_secs(),
+                                attempt,
+                                OPENAI_COMPAT_TRANSIENT_RETRIES
+                            );
+                            tokio::time::sleep(wait).await;
+                            continue;
+                        }
+                        // 408/5xx sind bei OpenRouter/DeepSeek/lokalen Servern
                         // meist transient (Ueberlast, Slot busy, Gateway-Hiccup) —
                         // kurzer Backoff-Retry statt sofort den ganzen Task-Retry/
                         // Backup-Fallback anzuwerfen. 4xx-Clientfehler failen sofort.
@@ -840,10 +1002,16 @@ impl LlmRouter {
                     let data: serde_json::Value =
                         serde_json::from_str(&body_text).map_err(|e| format!("API parse: {e}"))?;
                     let data = restore_provider_tool_names(data, &alias_to_canonical);
-                    let content = data["choices"][0]["message"]["content"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                    let content = openai_compat_response_text(&data);
+                    if content.trim().is_empty()
+                        && data.pointer("/choices/0/message/tool_calls").is_none()
+                    {
+                        tracing::warn!(
+                            "LLM backend '{}' returned empty assistant content: {}",
+                            backend.id,
+                            body_text.chars().take(600).collect::<String>()
+                        );
+                    }
                     return Ok((content, data));
                 }
                 Err("API: unreachable empty-body retry state".into())
@@ -866,7 +1034,12 @@ impl LlmRouter {
                     .collect();
                 let aliased = provider_safe_messages(&non_sys_raw, &canonical_to_alias);
                 let non_sys = openai_messages_to_anthropic(&aliased);
-                let max_tokens = backend.max_tokens.unwrap_or(4096);
+                let max_tokens = bounded_max_tokens(
+                    backend,
+                    &non_sys,
+                    &safe_tools,
+                    backend.max_tokens.unwrap_or(4096),
+                )?;
                 let mut body = serde_json::json!({"model": backend.model, "max_tokens": max_tokens, "messages": non_sys});
 
                 // Prompt-Caching: Anthropic cached den System-Prompt wenn wir
@@ -974,7 +1147,10 @@ impl LlmRouter {
                     .post(openai_compat_endpoint(&backend.url, "embeddings"))
                     .json(&serde_json::json!({"model": backend.model, "input": text}));
                 if let Some(key) = &backend.api_key {
-                    req = req.header("Authorization", format!("Bearer {key}"));
+                    let token = crate::util::bearer_token_value(key);
+                    if !token.is_empty() {
+                        req = req.bearer_auth(token);
+                    }
                 }
                 let resp = req.send().await.map_err(|e| format!("Embed: {e}"))?;
                 let status = resp.status();
@@ -1222,6 +1398,80 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("rag.suchen")
         );
+    }
+
+    #[test]
+    fn openai_compat_response_text_accepts_string_array_and_text_fallbacks() {
+        let plain = serde_json::json!({
+            "choices": [{"message": {"content": "Hallo"}}]
+        });
+        assert_eq!(openai_compat_response_text(&plain), "Hallo");
+
+        let parts = serde_json::json!({
+            "choices": [{"message": {"content": [
+                {"type": "text", "text": "Hal"},
+                {"type": "text", "text": "lo"}
+            ]}}]
+        });
+        assert_eq!(openai_compat_response_text(&parts), "Hallo");
+
+        let text_choice = serde_json::json!({
+            "choices": [{"text": "Fallback"}]
+        });
+        assert_eq!(openai_compat_response_text(&text_choice), "Fallback");
+    }
+
+    #[test]
+    fn bounded_max_tokens_clamps_context_sized_output_requests() {
+        let backend = LlmBackend {
+            id: "openrouter".into(),
+            name: "OpenRouter".into(),
+            typ: LlmTyp::OpenAICompat,
+            url: "https://openrouter.ai/api".into(),
+            api_key: Some("x".into()),
+            model: "m".into(),
+            timeout_s: 1,
+            identity: Default::default(),
+            max_tokens: Some(240_144),
+            reasoning: None,
+            cost_cap: None,
+            max_tool_rounds: None,
+            call_rate_limit: None,
+            internal: false,
+            tool_choice_supported: None,
+            context_window: Some(240_144),
+        };
+        let messages = vec![serde_json::json!({"role": "user", "content": "kurz"})];
+
+        assert_eq!(
+            bounded_max_tokens(&backend, &messages, &[], 240_144).unwrap(),
+            DEFAULT_SAFE_MAX_OUTPUT_TOKENS
+        );
+    }
+
+    #[test]
+    fn bounded_max_tokens_rejects_input_that_exhausts_context() {
+        let backend = LlmBackend {
+            id: "small".into(),
+            name: "small".into(),
+            typ: LlmTyp::OpenAICompat,
+            url: "https://example.test/v1".into(),
+            api_key: Some("x".into()),
+            model: "m".into(),
+            timeout_s: 1,
+            identity: Default::default(),
+            max_tokens: Some(100),
+            reasoning: None,
+            cost_cap: None,
+            max_tool_rounds: None,
+            call_rate_limit: None,
+            internal: false,
+            tool_choice_supported: None,
+            context_window: Some(2000),
+        };
+        let messages = vec![serde_json::json!({"role": "user", "content": "x".repeat(2500)})];
+
+        assert!(bounded_max_tokens(&backend, &messages, &[], 100).is_err());
     }
 
     #[test]

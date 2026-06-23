@@ -529,7 +529,14 @@ impl Orchestrator {
 
     async fn tick_cron(&self) {
         let cfg = self.config.read().await;
-        for modul in cfg.module.iter().filter(|m| m.typ == "cron") {
+        // Gefeuert werden cron-Module UND Autopilot-Module (settings.autopilot==true):
+        // letztere tragen schedule + cron_anweisung (cron_typ "llm") direkt am Tool-Modul
+        // (z.B. content_planner, typ "content_planner"). Vorher feuerte tick_cron NUR
+        // typ=="cron" — der Autopilot-Scan lief deshalb NIE (der eigentliche Bug).
+        for modul in cfg.module.iter().filter(|m| {
+            m.typ == "cron"
+                || m.settings.extra.get("autopilot").and_then(|v| v.as_bool()) == Some(true)
+        }) {
             let Some(ref schedule) = modul.settings.schedule else {
                 continue;
             };
@@ -2591,12 +2598,24 @@ mod tests {
         assert_eq!(std::fs::read_to_string(home.join("p1.txt")).unwrap(), "AAA");
         assert_eq!(std::fs::read_to_string(home.join("p2.txt")).unwrap(), "BBB");
         let reqs = received.lock().await;
-        assert_eq!(reqs.len(), 2, "drei Tool-Aktionen, aber nur EINE Tool-Runde");
+        assert_eq!(
+            reqs.len(),
+            2,
+            "drei Tool-Aktionen, aber nur EINE Tool-Runde"
+        );
         let msgs = reqs[1]["messages"].as_array().unwrap();
         let tool_msg = msgs.iter().find(|m| m["role"] == "tool").unwrap();
         let content = tool_msg["content"].as_str().unwrap();
-        assert!(content.contains("GESCHRIEBEN: True"), "stdout fehlt: {}", content);
-        assert!(content.contains("3 tool-calls"), "tool-call-zaehler fehlt: {}", content);
+        assert!(
+            content.contains("GESCHRIEBEN: True"),
+            "stdout fehlt: {}",
+            content
+        );
+        assert!(
+            content.contains("3 tool-calls"),
+            "tool-call-zaehler fehlt: {}",
+            content
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

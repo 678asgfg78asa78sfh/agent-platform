@@ -92,6 +92,10 @@ struct LlmModelInfo {
     id: String,
     display_name: String,
     free: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_window: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<u32>,
 }
 
 fn zeroish_json_value(v: &serde_json::Value) -> bool {
@@ -125,6 +129,48 @@ fn model_pricing_is_free(raw: &serde_json::Value) -> bool {
     seen_price_field
 }
 
+fn json_u32_value(v: &serde_json::Value) -> Option<u32> {
+    match v {
+        serde_json::Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+        serde_json::Value::String(s) => {
+            let s: String = s
+                .trim()
+                .chars()
+                .filter(|ch| *ch != ',' && *ch != '_')
+                .collect();
+            if s.is_empty() {
+                return None;
+            }
+            let (num, mul) = match s.chars().last().map(|c| c.to_ascii_lowercase()) {
+                Some('k') => (&s[..s.len() - 1], 1_000.0),
+                Some('m') => (&s[..s.len() - 1], 1_000_000.0),
+                _ => (s.as_str(), 1.0),
+            };
+            num.parse::<f64>().ok().and_then(|n| {
+                let n = (n * mul).round();
+                if n.is_finite() && n > 0.0 && n <= u32::MAX as f64 {
+                    Some(n as u32)
+                } else {
+                    None
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+fn json_u32_path(raw: &serde_json::Value, path: &[&str]) -> Option<u32> {
+    let mut cur = raw;
+    for key in path {
+        cur = cur.get(*key)?;
+    }
+    json_u32_value(cur)
+}
+
+fn first_json_u32_path(raw: &serde_json::Value, paths: &[&[&str]]) -> Option<u32> {
+    paths.iter().find_map(|path| json_u32_path(raw, path))
+}
+
 fn model_info_from_openai_value(raw: &serde_json::Value) -> Option<LlmModelInfo> {
     let id = raw.get("id")?.as_str()?.to_string();
     let display_name = raw
@@ -134,10 +180,33 @@ fn model_info_from_openai_value(raw: &serde_json::Value) -> Option<LlmModelInfo>
         .unwrap_or(&id)
         .to_string();
     let free = id.to_ascii_lowercase().ends_with(":free") || model_pricing_is_free(raw);
+    let context_window = first_json_u32_path(
+        raw,
+        &[
+            &["context_length"],
+            &["context_window"],
+            &["max_context_length"],
+            &["max_model_len"],
+            &["input_token_limit"],
+            &["top_provider", "context_length"],
+        ],
+    );
+    let max_output_tokens = first_json_u32_path(
+        raw,
+        &[
+            &["max_completion_tokens"],
+            &["max_output_tokens"],
+            &["output_token_limit"],
+            &["max_tokens"],
+            &["top_provider", "max_completion_tokens"],
+        ],
+    );
     Some(LlmModelInfo {
         id,
         display_name,
         free,
+        context_window,
+        max_output_tokens,
     })
 }
 
@@ -147,6 +216,8 @@ fn model_info_from_id(id: impl Into<String>, free: bool) -> LlmModelInfo {
         display_name: id.clone(),
         id,
         free,
+        context_window: None,
+        max_output_tokens: None,
     }
 }
 
@@ -1085,6 +1156,17 @@ fn human_duration_until(reset_ts: i64) -> String {
     }
 }
 
+fn cost_cap_output_estimate(backend: &crate::types::LlmBackend) -> u64 {
+    let requested = backend.max_tokens.unwrap_or(1024).max(1) as u64;
+    if let Some(window) = backend.context_window.filter(|w| *w > 0) {
+        let threshold = (window as u64 * 80) / 100;
+        if requested >= threshold {
+            return 8192;
+        }
+    }
+    requested
+}
+
 pub async fn check_llm_cap(
     store_pool: &crate::store::SqlitePool,
     cfg: &AgentConfig,
@@ -1136,7 +1218,7 @@ pub async fn check_llm_cap(
     if let Some(budget) = cap.budget_usd.filter(|v| *v > 0.0) {
         let (input_price, output_price) = backend_prices_per_1m(cfg, backend_id);
         let input_est = estimate_message_tokens(messages);
-        let output_est = backend.max_tokens.unwrap_or(1024).max(1) as u64;
+        let output_est = cost_cap_output_estimate(backend);
         let projected =
             stats.cost_usd + cost_for_tokens(input_est, output_est, input_price, output_price);
         if projected > budget {
@@ -1820,9 +1902,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/media/{modul_id}", axum::routing::get(list_media))
         .route("/api/video/start", axum::routing::post(video_start))
         .route("/api/image/start", axum::routing::post(image_start))
-        .route("/api/planner/proposals", axum::routing::get(planner_proposals))
+        .route(
+            "/api/planner/proposals",
+            axum::routing::get(planner_proposals),
+        )
         .route("/api/planner/status", axum::routing::get(planner_status))
-        .route("/api/community/status", axum::routing::get(community_status))
+        .route(
+            "/api/community/status",
+            axum::routing::get(community_status),
+        )
         .route("/api/planner/decide", axum::routing::post(planner_decide))
         .route("/api/planner/scan", axum::routing::post(planner_scan))
         .route(
@@ -1927,8 +2015,10 @@ async fn wizard_page() -> Html<&'static str> {
 
 async fn favicon() -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "image/png"),
-         (axum::http::header::CACHE_CONTROL, "public, max-age=86400")],
+        [
+            (axum::http::header::CONTENT_TYPE, "image/png"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
         include_bytes!("assets/favicon.png").as_slice(),
     )
 }
@@ -4310,8 +4400,10 @@ async fn get_py_modules(State(s): State<Arc<AppState>>) -> Json<serde_json::Valu
 
 async fn icon_192() -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "image/png"),
-         (axum::http::header::CACHE_CONTROL, "public, max-age=86400")],
+        [
+            (axum::http::header::CONTENT_TYPE, "image/png"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
         include_bytes!("assets/icon_192.png").as_slice(),
     )
 }
@@ -4332,12 +4424,19 @@ async fn video_start(
         .as_str()
         .and_then(safe_id)
         .unwrap_or_else(|| "chat.deepseekdeepseekv4flash".into());
-    let minutes = body["target_minutes"].as_f64().unwrap_or(0.0).clamp(0.0, 60.0);
+    let minutes = body["target_minutes"]
+        .as_f64()
+        .unwrap_or(0.0)
+        .clamp(0.0, 60.0);
     let language = body["language"].as_str().unwrap_or("de").to_lowercase();
     let preview = body["preview"].as_bool().unwrap_or(false);
     let shorts = body["shorts"].as_bool().unwrap_or(false);
     // Resume-Pfad: vorhandenen DeepDive-Report wiederverwenden (kein neuer Crawl).
-    let report_path = body["report_path"].as_str().unwrap_or("").trim().to_string();
+    let report_path = body["report_path"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     let resume = !report_path.is_empty();
 
     let mut params = serde_json::json!({
@@ -4391,7 +4490,10 @@ async fn video_start(
         &workflow_modul,
         Some(&aufgabe.id),
         LogTyp::Info,
-        &format!("Video-Pipeline per UI gestartet: {}", crate::util::safe_truncate(&query, 120)),
+        &format!(
+            "Video-Pipeline per UI gestartet: {}",
+            crate::util::safe_truncate(&query, 120)
+        ),
     );
     Json(serde_json::json!({
         "started": true,
@@ -4502,7 +4604,11 @@ async fn tasks_graph(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
                 .ok()
                 .and_then(|mut st| {
                     st.query_map([], |r| {
-                        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, i64>(2)?,
+                        ))
                     })
                     .ok()
                     .map(|it| it.filter_map(|x| x.ok()).collect::<Vec<_>>())
@@ -4511,9 +4617,19 @@ async fn tasks_graph(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
         .unwrap_or_default();
     // Pass 1: parsen
     struct N {
-        id: String, label: String, modul: String, status: String, workflow: String,
-        stage: String, typ: String, parent: String, ts: i64,
-        started: Option<i64>, ended: Option<i64>, preview: String, params: String,
+        id: String,
+        label: String,
+        modul: String,
+        status: String,
+        workflow: String,
+        stage: String,
+        typ: String,
+        parent: String,
+        ts: i64,
+        started: Option<i64>,
+        ended: Option<i64>,
+        preview: String,
+        params: String,
     }
     let mut ns: Vec<N> = Vec::with_capacity(rows.len());
     for r in &rows {
@@ -4521,10 +4637,21 @@ async fn tasks_graph(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
             serde_json::from_str(&r.payload_json).unwrap_or_else(|_| serde_json::json!({}));
         let tool = p["tool"].as_str().unwrap_or("");
         let anweisung = p["anweisung"].as_str().unwrap_or("");
-        let label = if !tool.is_empty() { tool } else if !anweisung.is_empty() { anweisung } else { "task" };
+        let label = if !tool.is_empty() {
+            tool
+        } else if !anweisung.is_empty() {
+            anweisung
+        } else {
+            "task"
+        };
         let params = p["params"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" | "))
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            })
             .unwrap_or_default();
         ns.push(N {
             id: r.id.clone(),
@@ -4543,7 +4670,8 @@ async fn tasks_graph(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> 
         });
     }
     let ids: std::collections::HashSet<String> = ns.iter().map(|n| n.id.clone()).collect();
-    let mut children: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+    let mut children: std::collections::HashMap<String, Vec<i64>> =
+        std::collections::HashMap::new();
     for n in &ns {
         if !n.parent.is_empty() && ids.contains(&n.parent) {
             children.entry(n.parent.clone()).or_default().push(n.ts);
@@ -4635,8 +4763,13 @@ async fn security_compartments(State(s): State<Arc<AppState>>) -> Json<serde_jso
 /// einen Blick sichtbar ist.
 async fn planner_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let cfg = s.config.read().await;
-    let planner = cfg.module.iter().find(|m| m.id == "content_planner.default");
-    let schedule = planner.and_then(|m| m.settings.schedule.clone()).unwrap_or_default();
+    let planner = cfg
+        .module
+        .iter()
+        .find(|m| m.id == "content_planner.default");
+    let schedule = planner
+        .and_then(|m| m.settings.schedule.clone())
+        .unwrap_or_default();
     let autopilot = planner
         .and_then(|m| m.settings.extra.get("autopilot"))
         .and_then(|v| v.as_bool())
@@ -4666,8 +4799,13 @@ async fn planner_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Valu
 /// Community-Manager-Status (Kommentar-Pflege) fuer den Flow-Graph.
 async fn community_status(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let cfg = s.config.read().await;
-    let cm = cfg.module.iter().find(|m| m.id == "community_manager.default");
-    let schedule = cm.and_then(|m| m.settings.schedule.clone()).unwrap_or_default();
+    let cm = cfg
+        .module
+        .iter()
+        .find(|m| m.id == "community_manager.default");
+    let schedule = cm
+        .and_then(|m| m.settings.schedule.clone())
+        .unwrap_or_default();
     let auto_post = cm
         .and_then(|m| m.settings.extra.get("auto_post"))
         .and_then(|v| v.as_bool())
@@ -4756,7 +4894,10 @@ async fn planner_decide(
                     &workflow_modul,
                     Some(&auf.id),
                     LogTyp::Info,
-                    &format!("Video aus Redaktionsplan: {}", util::safe_truncate(query, 80)),
+                    &format!(
+                        "Video aus Redaktionsplan: {}",
+                        util::safe_truncate(query, 80)
+                    ),
                 );
             }
         }
@@ -4768,7 +4909,10 @@ async fn planner_decide(
 /// Redaktionsplan: Scan JETZT — gleicher LLM-Task wie der taegliche Cron, async.
 async fn planner_scan(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let cfg = s.config.read().await;
-    let planner = cfg.module.iter().find(|m| m.id == "content_planner.default");
+    let planner = cfg
+        .module
+        .iter()
+        .find(|m| m.id == "content_planner.default");
     let anweisung = planner
         .and_then(|m| m.settings.cron_anweisung.clone())
         .unwrap_or_else(|| {
@@ -4790,7 +4934,9 @@ async fn planner_scan(State(s): State<Arc<AppState>>) -> Json<serde_json::Value>
         LogTyp::Info,
         "Redaktions-Scan manuell gestartet",
     );
-    Json(serde_json::json!({"started": true, "task_id": id, "message": "Scan laeuft — Vorschlaege erscheinen gleich im Plan."}))
+    Json(
+        serde_json::json!({"started": true, "task_id": id, "message": "Scan laeuft — Vorschlaege erscheinen gleich im Plan."}),
+    )
 }
 
 /// Aktive + juengste Pipeline-Workflows (Video-Erstellung) — first-class
@@ -5212,17 +5358,17 @@ async fn list_llm_models(
         | crate::types::LlmTyp::DeepSeek => {
             // OpenAI-compatible providers return data[].id.
             let key = backend.api_key.as_deref().unwrap_or("");
+            let token = crate::util::bearer_token_value(key);
             let endpoint = if backend.typ == crate::types::LlmTyp::DeepSeek {
                 crate::llm::deepseek_endpoint(&backend.url, "models")
             } else {
                 crate::llm::openai_compat_endpoint(&backend.url, "models")
             };
-            match client
-                .get(endpoint)
-                .header("Authorization", format!("Bearer {}", key))
-                .send()
-                .await
-            {
+            let mut req = client.get(endpoint).header("Accept", "application/json");
+            if !token.is_empty() {
+                req = req.bearer_auth(token);
+            }
+            match req.send().await {
                 Ok(resp) => {
                     let data: serde_json::Value = resp.json().await.unwrap_or_default();
                     let models: Vec<LlmModelInfo> = data["data"]
@@ -6360,26 +6506,34 @@ pub async fn wizard_models(
                     id: "claude-opus-4-7".into(),
                     display_name: "Claude Opus 4.7".into(),
                     free: false,
+                    context_window: None,
+                    max_output_tokens: None,
                 },
                 LlmModelInfo {
                     id: "claude-sonnet-4-6".into(),
                     display_name: "Claude Sonnet 4.6".into(),
                     free: false,
+                    context_window: None,
+                    max_output_tokens: None,
                 },
                 LlmModelInfo {
                     id: "claude-haiku-4-5".into(),
                     display_name: "Claude Haiku 4.5".into(),
                     free: false,
+                    context_window: None,
+                    max_output_tokens: None,
                 },
                 LlmModelInfo {
                     id: "claude-opus-4-6".into(),
                     display_name: "Claude Opus 4.6".into(),
                     free: false,
+                    context_window: None,
+                    max_output_tokens: None,
                 },
             ]);
             Ok(axum::Json(serde_json::json!({"models": models})))
         }
-        "OpenAI" | "Grok" | "DeepSeek" | "OpenRouter" | "Local/LAN" => {
+        "OpenAI" | "NVIDIA" | "Grok" | "DeepSeek" | "OpenRouter" | "Local/LAN" => {
             let typ = match req.provider.as_str() {
                 "Grok" => crate::types::LlmTyp::Grok,
                 "DeepSeek" => crate::types::LlmTyp::DeepSeek,
@@ -6403,8 +6557,9 @@ pub async fn wizard_models(
                 .build()
                 .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             let mut request = client.get(&full_url);
-            if !key.is_empty() {
-                request = request.bearer_auth(&key);
+            let token = crate::util::bearer_token_value(&key);
+            if !token.is_empty() {
+                request = request.bearer_auth(token);
             }
             let resp = request
                 .send()
@@ -6454,7 +6609,7 @@ pub async fn wizard_test_connection(
 ) -> Result<axum::Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let typ = match req.provider.as_str() {
         "Claude" | "Anthropic" => crate::types::LlmTyp::Anthropic,
-        "OpenAI" | "OpenRouter" | "Local/LAN" => crate::types::LlmTyp::OpenAICompat,
+        "OpenAI" | "NVIDIA" | "OpenRouter" | "Local/LAN" => crate::types::LlmTyp::OpenAICompat,
         "Grok" => crate::types::LlmTyp::Grok,
         "DeepSeek" => crate::types::LlmTyp::DeepSeek,
         _ => {
@@ -6890,9 +7045,12 @@ async fn setup_models(
             } else {
                 crate::llm::openai_compat_endpoint(&body.url, "models")
             };
-            let mut req = client.get(endpoint);
-            if let Some(key) = body.api_key.as_deref().filter(|k| !k.is_empty()) {
-                req = req.bearer_auth(key);
+            let mut req = client.get(endpoint).header("Accept", "application/json");
+            if let Some(key) = body.api_key.as_deref() {
+                let token = crate::util::bearer_token_value(key);
+                if !token.is_empty() {
+                    req = req.bearer_auth(token);
+                }
             }
             let resp = match req.send().await {
                 Ok(r) => r,
@@ -6923,21 +7081,29 @@ async fn setup_models(
                 id: "claude-opus-4-7".into(),
                 display_name: "Claude Opus 4.7".into(),
                 free: false,
+                context_window: None,
+                max_output_tokens: None,
             },
             LlmModelInfo {
                 id: "claude-sonnet-4-6".into(),
                 display_name: "Claude Sonnet 4.6".into(),
                 free: false,
+                context_window: None,
+                max_output_tokens: None,
             },
             LlmModelInfo {
                 id: "claude-haiku-4-5".into(),
                 display_name: "Claude Haiku 4.5".into(),
                 free: false,
+                context_window: None,
+                max_output_tokens: None,
             },
             LlmModelInfo {
                 id: "claude-opus-4-6".into(),
                 display_name: "Claude Opus 4.6".into(),
                 free: false,
+                context_window: None,
+                max_output_tokens: None,
             },
         ],
     };
@@ -6961,9 +7127,7 @@ async fn setup_test_backend(
         Ok(c) => c,
         Err(e) => return Json(serde_json::json!({"ok": false, "error": format!("client: {}", e)})),
     };
-    if body.max_tokens.is_none() {
-        body.max_tokens = Some(24);
-    }
+    body.max_tokens = Some(body.max_tokens.unwrap_or(24).clamp(1, 64));
     let messages = vec![serde_json::json!({"role": "user", "content": "Reply with exactly: hi"})];
     let cfg_snapshot = s.config.read().await.clone();
     crate::util::resolve_llm_backend_api_alias(&mut body, &cfg_snapshot);
@@ -7342,22 +7506,50 @@ mod tests {
     }
 
     #[test]
+    fn model_info_preserves_context_and_output_limits() {
+        let raw = serde_json::json!({
+            "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "name": "Nemotron 3 Ultra",
+            "context_length": 1_000_000,
+            "top_provider": {"max_completion_tokens": 32768}
+        });
+        let info = model_info_from_openai_value(&raw).unwrap();
+        assert_eq!(info.context_window, Some(1_000_000));
+        assert_eq!(info.max_output_tokens, Some(32768));
+
+        let shorthand = serde_json::json!({
+            "id": "poolside/laguna-m.1:free",
+            "context_length": "262K",
+            "max_output_tokens": "32K"
+        });
+        let info = model_info_from_openai_value(&shorthand).unwrap();
+        assert_eq!(info.context_window, Some(262_000));
+        assert_eq!(info.max_output_tokens, Some(32_000));
+    }
+
+    #[test]
     fn model_infos_sort_alphabetically_by_display_name() {
         let models = sort_model_infos(vec![
             LlmModelInfo {
                 id: "b/model".into(),
                 display_name: "Beta".into(),
                 free: false,
+                context_window: None,
+                max_output_tokens: None,
             },
             LlmModelInfo {
                 id: "a/model".into(),
                 display_name: "alpha".into(),
                 free: true,
+                context_window: None,
+                max_output_tokens: None,
             },
             LlmModelInfo {
                 id: "z/model".into(),
                 display_name: "Zeta".into(),
                 free: false,
+                context_window: None,
+                max_output_tokens: None,
             },
         ]);
         assert_eq!(model_ids(&models), vec!["a/model", "b/model", "z/model"]);
@@ -7713,42 +7905,53 @@ mod tests {
     fn enhancer_rag_pool_fails_closed_for_secure() {
         use crate::types::{RagPool, RagTyp};
 
-        let make_modul = |secure: Option<&str>, rag_pool: Option<&str>, enhancer_rag_pool: Option<&str>| {
-            ModulConfig {
-                id: "enhancer.test".into(),
-                typ: "enhancer".into(),
-                name: "enhancer.test".into(),
-                display_name: "Test Enhancer".into(),
-                llm_backend: "llm".into(),
-                backup_llm: None,
-                berechtigungen: vec![],
-                timeout_s: 30,
-                retry: 0,
-                settings: ModulSettings {
-                    enhancer_rag_pool: enhancer_rag_pool.map(String::from),
-                    ..ModulSettings::default()
-                },
-                identity: ModulIdentity::default(),
-                rag_pool: rag_pool.map(String::from),
-                secure: secure.map(String::from),
-                linked_modules: vec![],
-                input_enhancers: vec![],
-                output_enhancers: vec![],
-                combined_enhancers: vec![],
-                persistent: false,
-                spawned_by: None,
-                spawn_ttl_s: None,
-                created_at: None,
-                scheduler_interval_ms: None,
-                max_concurrent_tasks: None,
-                token_budget: None,
-                token_budget_warning: None,
-            }
-        };
+        let make_modul =
+            |secure: Option<&str>, rag_pool: Option<&str>, enhancer_rag_pool: Option<&str>| {
+                ModulConfig {
+                    id: "enhancer.test".into(),
+                    typ: "enhancer".into(),
+                    name: "enhancer.test".into(),
+                    display_name: "Test Enhancer".into(),
+                    llm_backend: "llm".into(),
+                    backup_llm: None,
+                    berechtigungen: vec![],
+                    timeout_s: 30,
+                    retry: 0,
+                    settings: ModulSettings {
+                        enhancer_rag_pool: enhancer_rag_pool.map(String::from),
+                        ..ModulSettings::default()
+                    },
+                    identity: ModulIdentity::default(),
+                    rag_pool: rag_pool.map(String::from),
+                    secure: secure.map(String::from),
+                    linked_modules: vec![],
+                    input_enhancers: vec![],
+                    output_enhancers: vec![],
+                    combined_enhancers: vec![],
+                    persistent: false,
+                    spawned_by: None,
+                    spawn_ttl_s: None,
+                    created_at: None,
+                    scheduler_interval_ms: None,
+                    max_concurrent_tasks: None,
+                    token_budget: None,
+                    token_budget_warning: None,
+                }
+            };
 
         let pools = vec![
-            RagPool { id: "acme-pool".into(), name: "acme-pool".into(), typ: RagTyp::Private, secure: Some("acme".into()) },
-            RagPool { id: "public-pool".into(), name: "public-pool".into(), typ: RagTyp::Shared, secure: None },
+            RagPool {
+                id: "acme-pool".into(),
+                name: "acme-pool".into(),
+                typ: RagTyp::Private,
+                secure: Some("acme".into()),
+            },
+            RagPool {
+                id: "public-pool".into(),
+                name: "public-pool".into(),
+                typ: RagTyp::Shared,
+                secure: None,
+            },
         ];
 
         // public module → Some(candidate), no pool check
@@ -7757,7 +7960,10 @@ mod tests {
 
         // public with explicit enhancer_rag_pool → Some(that pool)
         let public_explicit = make_modul(None, None, Some("public-pool"));
-        assert_eq!(enhancer_rag_pool(&public_explicit, &pools), Some("public-pool".into()));
+        assert_eq!(
+            enhancer_rag_pool(&public_explicit, &pools),
+            Some("public-pool".into())
+        );
 
         // secure with matching same-label pool → Some
         let sec_ok = make_modul(Some("acme"), None, Some("acme-pool"));
