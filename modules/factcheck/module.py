@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import random
 import re
 import sys
 import time
@@ -485,18 +486,74 @@ def build_fallback_query(claim: str, context: str) -> str:
     return " ".join(selected)[:240]
 
 
+# --- DuckDuckGo Rate-Limit & Bot-Challenge-Behandlung --------------------
+# DDG Lite serviert nach wenigen SCHNELLEN Requests eine Bot-Challenge
+# (HTTP 200, aber "Please complete the following challenge ... select all
+# squares containing a duck"). Diese Seite enthaelt KEINE result-link ->
+# parse_ddg_lite lieferte frueher still [] zurueck. Der Faktencheck
+# degradierte dadurch unbemerkt: keine Evidence -> Claims unverifiziert ->
+# Score-Absturz -> Video wurde geblockt (kein Fehler sichtbar).
+# Fix: Requests prozessweit entzerren (PRIMAERSCHUTZ: Drossel gar nicht erst
+# ausloesen) + Jitter, Challenge erkennen, EINMAL nach laengerer Pause neu
+# versuchen (nicht haemmern — Retries waehrend einer Strafe verlaengern sie nur)
+# und bei Dauer-Drossel eine Exception werfen, damit der Ausfall als
+# search_error SICHTBAR wird statt die Ergebnisse still zu verfaelschen.
+_DDG_MIN_INTERVAL_S = 1.6
+_DDG_JITTER_S = 0.7
+_DDG_LAST_REQUEST_TS = 0.0
+_DDG_MAX_ATTEMPTS = 2
+_DDG_CHALLENGE_BACKOFF_S = 6.0
+_DDG_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+
+
+def _ddg_is_challenge(raw: str) -> bool:
+    low = raw.lower()
+    return (
+        "bots use duckduckgo" in low
+        or "complete the following challenge" in low
+        or "select all squares" in low
+        or "error-lite@duckduckgo.com" in low
+    )
+
+
+def _ddg_throttle_wait() -> None:
+    """Erzwingt einen Mindestabstand (+ Jitter) zwischen DDG-Requests (prozessweit)."""
+    global _DDG_LAST_REQUEST_TS
+    target = _DDG_MIN_INTERVAL_S + random.uniform(0.0, _DDG_JITTER_S)
+    wait = target - (time.monotonic() - _DDG_LAST_REQUEST_TS)
+    if wait > 0:
+        time.sleep(wait)
+    _DDG_LAST_REQUEST_TS = time.monotonic()
+
+
 def duckduckgo_search(query: str, max_results: int, timeout_s: int) -> list[dict[str, str]]:
     encoded = urllib.parse.quote_plus(query)
     url = f"https://lite.duckduckgo.com/lite/?q={encoded}"
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": _DDG_UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "de,en-US;q=0.7,en;q=0.3",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
-    return parse_ddg_lite(raw, max_results)
+    last_error = "unbekannt"
+    for attempt in range(_DDG_MAX_ATTEMPTS):
+        _ddg_throttle_wait()
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except Exception as exc:  # Netzwerk/HTTP
+            last_error = f"{type(exc).__name__}: {exc}"
+            raw = ""
+        else:
+            if not _ddg_is_challenge(raw):
+                return parse_ddg_lite(raw, max_results)
+            last_error = "Bot-Challenge (rate-limited)"
+        # Nur EINMAL nachfassen (laengere Pause); danach aufgeben statt zu haemmern.
+        if attempt + 1 < _DDG_MAX_ATTEMPTS:
+            time.sleep(_DDG_CHALLENGE_BACKOFF_S)
+    raise RuntimeError(f"DuckDuckGo gedrosselt/nicht erreichbar nach {_DDG_MAX_ATTEMPTS} Versuchen: {last_error}")
 
 
 def parse_ddg_lite(raw: str, max_results: int) -> list[dict[str, str]]:
