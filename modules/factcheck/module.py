@@ -222,6 +222,7 @@ def run_factcheck(
     fail_on_unsupported = bool_param(payload.get("fail_on_unsupported"), bool_param(config.get("fail_on_unsupported"), True))
     fail_on_conflict = bool_param(payload.get("fail_on_conflict"), bool_param(config.get("fail_on_conflict"), True))
     fail_if_search_broken = bool_param(payload.get("fail_if_search_broken"), bool_param(config.get("fail_if_search_broken"), True))
+    tavily_key = _load_tavily_key(config)
 
     primary_source = normalize_word(str(payload.get("_primary_source") or ""))
     claims = extract_claims(script, max_claims)
@@ -247,7 +248,7 @@ def run_factcheck(
             continue
         search_query = build_query(claim["claim"], title or query)
         try:
-            evidence = duckduckgo_search(search_query, max_results, timeout_s)
+            evidence = web_search(search_query, max_results, timeout_s, tavily_key)
             verdict = evaluate_claim(claim, search_query, evidence)
             # Teil-Deckung in der Primaerquelle mildert ein Web-Negativ ab:
             # was die eigene Recherche teilweise stuetzt, darf hoechstens warnen.
@@ -261,7 +262,7 @@ def run_factcheck(
             if verdict.get("decision") in {"unsupported", "unknown"}:
                 fallback_query = build_fallback_query(claim["claim"], title or query)
                 if fallback_query and fallback_query != search_query:
-                    more = duckduckgo_search(fallback_query, max_results, timeout_s)
+                    more = web_search(fallback_query, max_results, timeout_s, tavily_key)
                     if more:
                         merged = evidence + [e for e in more if e not in evidence]
                         combined_label = f"{search_query} | fallback: {fallback_query}"
@@ -595,6 +596,98 @@ def parse_ddg_lite(raw: str, max_results: int) -> list[dict[str, str]]:
         )
         result_idx += 1
     return results
+
+
+# --- Tavily-Fallback: API-Suche, wenn DDG drosselt -------------------------
+# DDG Lite bot-challenged (Server-)IPs zunehmend hartnaeckig (teils >90 min).
+# Tavily ist eine LLM-Such-API (Key im api_key_vault, Eintrag-id "tavily") und
+# wird NICHT ge-bot-challenged. duckduckgo_search bleibt primaer; faellt es per
+# Exception (Drossel/Netz) aus, uebernimmt Tavily — so scheitert der taegliche
+# Faktencheck nie an DDGs Laune. Kein result -> dann erst gilt ein Claim als
+# nicht web-gestuetzt.
+_TAVILY_KEY_CACHE: str | None = None
+_TAVILY_KEY_LOADED = False
+
+
+def _load_tavily_key(config: dict[str, Any]) -> str:
+    """Tavily-API-Key: erst aus der Modul-Config, sonst direkt aus dem Vault."""
+    global _TAVILY_KEY_CACHE, _TAVILY_KEY_LOADED
+    direct = text_value(config.get("tavily_api_key") or config.get("tavily_key"))
+    if direct and not direct.startswith("api."):
+        return direct
+    if _TAVILY_KEY_LOADED:
+        return _TAVILY_KEY_CACHE or ""
+    _TAVILY_KEY_LOADED = True
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent / "agent-data" / "config.json",
+        Path("agent-data/config.json"),
+    ]
+    for path in candidates:
+        try:
+            if not path.exists():
+                continue
+            vault = json.loads(path.read_text(encoding="utf-8")).get("api_key_vault", [])
+            for entry in vault:
+                name = (str(entry.get("name", "")) + str(entry.get("provider", ""))).lower()
+                if entry.get("id") == "tavily" or "tavily" in name:
+                    secret = str(entry.get("secret") or "").strip()
+                    if secret:
+                        _TAVILY_KEY_CACHE = secret
+                        return secret
+        except Exception:
+            continue
+    return ""
+
+
+def tavily_search(query: str, max_results: int, timeout_s: int, api_key: str) -> list[dict[str, str]]:
+    body = json.dumps({
+        "query": query,
+        "max_results": max(1, min(max_results, 10)),
+        "search_depth": "basic",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    results = []
+    for item in data.get("results", [])[:max_results]:
+        url = str(item.get("url") or "")
+        title = str(item.get("title") or "")
+        if not url or not title:
+            continue
+        results.append({"title": title[:220], "url": url, "snippet": str(item.get("content") or "")[:500]})
+    return results
+
+
+_DDG_CONSECUTIVE_FAILS = 0
+_DDG_CIRCUIT_THRESHOLD = 2
+
+
+def web_search(query: str, max_results: int, timeout_s: int, tavily_key: str = "") -> list[dict[str, str]]:
+    """DDG primaer; bei Drossel/Ausfall Tavily-Fallback (falls Key vorhanden).
+
+    Circuit-Breaker: hat DDG mehrfach in Folge gedrosselt, wird es fuer den Rest
+    des Laufs uebersprungen (spart ~12s/Claim und verlaengert die Strafe nicht).
+    """
+    global _DDG_CONSECUTIVE_FAILS
+    last_ddg: Any = "circuit-open (DDG zuvor mehrfach gedrosselt)"
+    if not (tavily_key and _DDG_CONSECUTIVE_FAILS >= _DDG_CIRCUIT_THRESHOLD):
+        try:
+            res = duckduckgo_search(query, max_results, timeout_s)
+            _DDG_CONSECUTIVE_FAILS = 0
+            return res
+        except Exception as ddg_exc:
+            _DDG_CONSECUTIVE_FAILS += 1
+            if not tavily_key:
+                raise
+            last_ddg = ddg_exc
+    try:
+        return tavily_search(query, max_results, timeout_s, tavily_key)
+    except Exception as tav_exc:
+        raise RuntimeError(f"DDG+Tavily fehlgeschlagen (ddg: {last_ddg}; tavily: {tav_exc})")
 
 
 ATTRIBUTION_RE = re.compile(
