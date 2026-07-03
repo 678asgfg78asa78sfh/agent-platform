@@ -80,6 +80,14 @@ def test_push_disabled_by_setting():
         assert not res["success"] and "deaktiviert" in res["data"]
 
 
+def test_plain_dir_reports_kein_git_repo():
+    """Nicht-Repo muss die 'Kein Git-Repo'-Meldung bekommen, nicht die Nested-Meldung."""
+    with tempfile.TemporaryDirectory() as home:
+        res = git_tools.handle_tool("git_tools.status", ["{}"], make_config(home))
+        assert not res["success"]
+        assert "Kein Git-Repo" in res["data"], res["data"]
+
+
 def test_nested_dir_in_outer_repo_not_captured():
     """Home liegt IN einem fremden Repo: git add -A darf nie ins aeussere Repo stagen."""
     with tempfile.TemporaryDirectory() as outer:

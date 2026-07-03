@@ -186,7 +186,10 @@ def require_git_repo(repo, config):
     dann wuerde `git add -A` im Home ins AEUSSERE Repo stagen. Der Toplevel-
     Vergleich deckt zugleich Worktrees und Submodule ab (.git als Datei).
     """
-    top, err = run_git(repo, ["rev-parse", "--show-toplevel"], config, check=False)
+    # check=True: bei check=False landet gits stderr ("fatal: not a git
+    # repository") im Rueckgabetext statt in err und wuerde unten als
+    # "Toplevel" verglichen — Nicht-Repos bekaemen die falsche Meldung.
+    top, err = run_git(repo, ["rev-parse", "--show-toplevel"], config, check=True)
     if err or not (top or "").strip():
         return f"Kein Git-Repo: {repo} (git_tools.init zum Anlegen nutzen)"
     if os.path.realpath(top.strip()) != os.path.realpath(repo):
