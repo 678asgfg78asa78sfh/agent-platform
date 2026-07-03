@@ -34,7 +34,19 @@ MODULE = {
         "default_task_timeout_s": {"type": "number", "label": "LLM Task Timeout", "default": 3600},
         "default_render_timeout_s": {"type": "number", "label": "Render Task Timeout", "default": 3600},
         "tick_limit": {"type": "number", "label": "Workflows pro Tick", "default": 12},
+        "recover_failed_workflows": {"type": "bool", "label": "Reparierbare fehlgeschlagene Workflows automatisch fortsetzen", "default": True},
+        "recover_failed_max_attempts": {"type": "number", "label": "Max Self-Recovery Versuche pro Workflow", "default": 2},
+        "recover_failed_max_age_hours": {"type": "number", "label": "Max Alter fuer automatische Failed-Recovery", "default": 12},
+        "fallback_target_modul_ids": {"type": "string", "label": "Fallback-Chatmodule bei API-/Quota-Ausfall", "default": ""},
+        "fallback_normalizer_modul_ids": {"type": "string", "label": "Fallback-Normalizer bei API-/Quota-Ausfall", "default": ""},
+        "fallback_reviewer_modul_ids": {"type": "string", "label": "Fallback-Reviewer/Reparatur bei API-/Quota-Ausfall", "default": ""},
+        "production_health_enabled": {"type": "bool", "label": "Produktions-Health-Snapshot im Tick schreiben", "default": True},
+        "production_health_window_hours": {"type": "number", "label": "Health-Zeitfenster fuer aktuelle Produktion", "default": 36},
+        "production_health_require_upload": {"type": "bool", "label": "Health erwartet YouTube-URL statt nur Render", "default": True},
+        "production_health_strict_latest": {"type": "bool", "label": "Neuester Workflow darf nicht von altem Upload verdeckt werden", "default": True},
         "auto_render": {"type": "bool", "label": "Nach Normalisierung rendern", "default": True},
+        "auto_upload": {"type": "bool", "label": "Nach Render automatisch auf YouTube hochladen", "default": False},
+        "default_upload_privacy": {"type": "select", "label": "YouTube Privacy", "default": "unlisted", "options": ["private", "unlisted", "public"]},
         "video_style": {"type": "select", "label": "Video-Renderer", "default": "infographic", "options": ["infographic", "mapled"]},
         "scene_images": {"type": "bool", "label": "KI-Szenenbilder generieren", "default": True},
         "default_image_modul_id": {"type": "string", "label": "Image-Gen Modul", "default": "image_gen.default"},
@@ -42,10 +54,15 @@ MODULE = {
         "fact_check": {"type": "bool", "label": "Vor TTS Faktencheck ausfuehren", "default": True},
         "fact_check_min_score": {"type": "number", "label": "Faktencheck Mindestscore", "default": 72},
         "fact_check_max_claims": {"type": "number", "label": "Faktencheck Max Claims", "default": 14},
+        "factcheck_max_repairs": {"type": "number", "label": "Max Faktencheck-Reparaturen", "default": 3},
         "quality_gate": {"type": "bool", "label": "Vor TTS/Render Quality Gate erzwingen", "default": True},
         "quality_auto_repair": {"type": "bool", "label": "Bei Review-Fehlern einmal reparieren", "default": True},
         "quality_min_score": {"type": "number", "label": "Mindestscore fuer Video-Freigabe", "default": 78},
-        "quality_max_repairs": {"type": "number", "label": "Max automatische Script-Reparaturen", "default": 1},
+        "quality_max_repairs": {"type": "number", "label": "Legacy: Max Reparaturen pro Gate", "default": 2},
+        "quality_review_max_repairs": {"type": "number", "label": "Max Quality-Review-Reparaturen", "default": 2},
+        "quality_proceed_after_repairs": {"type": "bool", "label": "Nach erschoepften Reparaturen best effort rendern", "default": True},
+        "quality_proceed_min_score": {"type": "number", "label": "Best-effort Mindestscore", "default": 70},
+        "quality_best_effort_upload": {"type": "bool", "label": "Best-effort Videos trotzdem hochladen", "default": False},
         "require_tts": {"type": "bool", "label": "Vor Produktion TTS erzwingen", "default": True},
         "allow_silent_audio": {"type": "bool", "label": "Stummes Audio nur explizit erlauben", "default": False},
         "default_tts_provider": {"type": "string", "label": "TTS Provider", "default": "xai"},
@@ -59,17 +76,17 @@ MODULE = {
     "tools": [
         {
             "name": "workflow_trigger.deepdive_video",
-            "description": "Startet einen abhängigen Workflow: DeepDive-Report -> Video-Normalisierung -> TTS -> map-led Render -> optional Shorts. JSON {query,title,target_modul_id,normalizer_modul_id,tts_modul_id,chat_route,audio_path,preview,auto_shorts,shorts_count}.",
+            "description": "Startet einen abhängigen Workflow: DeepDive-Report -> Video-Normalisierung -> TTS -> Render -> optional Upload/Shorts. JSON {query,title,target_modul_id,normalizer_modul_id,tts_modul_id,chat_route,audio_path,preview,auto_render,auto_upload,upload_privacy,auto_shorts,shorts_count,target_minutes}.",
             "params": ["query_json"],
         },
         {
             "name": "workflow_trigger.video_from_report",
-            "description": "Startet die Video-Pipeline ab vorhandenem DeepDive. JSON {report_task_id|crawl_id|report_path|report_text,query,title,normalizer_modul_id,tts_modul_id,audio_path,preview,auto_render,auto_shorts,shorts_count}.",
+            "description": "Startet die Video-Pipeline ab vorhandenem DeepDive. JSON {report_task_id|crawl_id|report_path|report_text,query,title,normalizer_modul_id,tts_modul_id,audio_path,preview,auto_render,auto_upload,upload_privacy,auto_shorts,shorts_count,target_minutes}.",
             "params": ["query_json"],
         },
         {
             "name": "workflow_trigger.repair_video",
-            "description": "Repariert einen vorhandenen Video-Workflow ab fertigem script.txt/scenes.json: TTS neu erzeugen -> Video neu rendern -> optional Shorts. JSON {workflow_id|workflow_dir,auto_shorts?,shorts_count?,render_out_dir?}.",
+            "description": "Repariert einen vorhandenen Video-Workflow ab fertigem script.txt/scenes.json: TTS neu erzeugen -> Video neu rendern -> optional Upload/Shorts. JSON {workflow_id|workflow_dir,auto_upload?,upload_privacy?,auto_shorts?,shorts_count?,render_out_dir?}.",
             "params": ["query_json"],
         },
         {
@@ -95,6 +112,11 @@ MODULE = {
         {
             "name": "workflow_trigger.cancel",
             "description": "Markiert einen Workflow als cancelled. JSON {workflow_id, reason?}.",
+            "params": ["query_json"],
+        },
+        {
+            "name": "workflow_trigger.production_health",
+            "description": "Prueft den Autopilot-Produktionszustand: Cron/Workflows/Upload im aktuellen Zeitfenster. JSON {window_hours?, require_upload?, write?}.",
             "params": ["query_json"],
         },
         {
@@ -126,6 +148,8 @@ def handle_tool(tool_name: str, params: Any, config: dict[str, Any]) -> dict[str
             return synthesis_list(params, config)
         if tool_name == "workflow_trigger.cancel":
             return cancel(params, config)
+        if tool_name == "workflow_trigger.production_health":
+            return production_health(params, config)
         if tool_name == "workflow_trigger.help":
             return ok(help_text())
         return fail(f"Unbekanntes Tool: {tool_name}")
@@ -180,10 +204,12 @@ def deepdive_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "fact_check": bool_param(payload.get("fact_check"), cfg_bool(config, "fact_check", True)),
             "fact_check_min_score": int_param(payload.get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100),
             "fact_check_max_claims": int_param(payload.get("fact_check_max_claims"), cfg_int(config, "fact_check_max_claims", 14), 1, 60),
+            "factcheck_max_repairs": int_param(payload.get("factcheck_max_repairs"), cfg_int(config, "factcheck_max_repairs", cfg_int(config, "quality_max_repairs", 2)), 0, 5),
             "quality_gate": bool_param(payload.get("quality_gate"), cfg_bool(config, "quality_gate", True)),
             "quality_auto_repair": bool_param(payload.get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True)),
             "quality_min_score": int_param(payload.get("quality_min_score"), cfg_int(config, "quality_min_score", 78), 0, 100),
             "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5),
+            "quality_review_max_repairs": int_param(payload.get("quality_review_max_repairs") or payload.get("review_max_repairs"), cfg_int(config, "quality_review_max_repairs", cfg_int(config, "quality_max_repairs", 2)), 0, 5),
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
@@ -194,6 +220,9 @@ def deepdive_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "shorts_duration_s": float_param(payload.get("shorts_duration_s") or payload.get("short_duration_s"), cfg_float(config, "default_shorts_duration_s", 45.0), 3.0, 180.0),
             "render_out_dir": first_text(payload, "render_out_dir", "video_out_dir") or str(default_render_output_dir(config) / workflow_id),
             "allow_extra_research": bool_param(payload.get("allow_extra_research"), cfg_bool(config, "allow_extra_research", False)),
+            "target_fallback_modul_ids": list_param(payload.get("target_fallback_modul_ids") or payload.get("target_fallbacks")),
+            "normalizer_fallback_modul_ids": list_param(payload.get("normalizer_fallback_modul_ids") or payload.get("normalizer_fallbacks")),
+            "reviewer_fallback_modul_ids": list_param(payload.get("reviewer_fallback_modul_ids") or payload.get("reviewer_fallbacks")),
             "video_style": first_text(payload, "video_style", "renderer", "style") or str(config.get("video_style") or ""),
             "target_duration_s": float_param(payload.get("target_duration_s") or payload.get("min_duration_s") or (float_param(payload.get("target_minutes"), 0.0, 0.0, 60.0) * 60.0), 0.0, 0.0, 3600.0),
             "language": (first_text(payload, "language", "lang", "sprache") or "de").lower()[:5],
@@ -281,10 +310,12 @@ def video_from_report(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "fact_check": bool_param(payload.get("fact_check"), cfg_bool(config, "fact_check", True)),
             "fact_check_min_score": int_param(payload.get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100),
             "fact_check_max_claims": int_param(payload.get("fact_check_max_claims"), cfg_int(config, "fact_check_max_claims", 14), 1, 60),
+            "factcheck_max_repairs": int_param(payload.get("factcheck_max_repairs"), cfg_int(config, "factcheck_max_repairs", cfg_int(config, "quality_max_repairs", 2)), 0, 5),
             "quality_gate": bool_param(payload.get("quality_gate"), cfg_bool(config, "quality_gate", True)),
             "quality_auto_repair": bool_param(payload.get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True)),
             "quality_min_score": int_param(payload.get("quality_min_score"), cfg_int(config, "quality_min_score", 78), 0, 100),
             "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5),
+            "quality_review_max_repairs": int_param(payload.get("quality_review_max_repairs") or payload.get("review_max_repairs"), cfg_int(config, "quality_review_max_repairs", cfg_int(config, "quality_max_repairs", 2)), 0, 5),
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
@@ -295,6 +326,8 @@ def video_from_report(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "shorts_duration_s": float_param(payload.get("shorts_duration_s") or payload.get("short_duration_s"), cfg_float(config, "default_shorts_duration_s", 45.0), 3.0, 180.0),
             "render_out_dir": first_text(payload, "render_out_dir", "video_out_dir") or str(default_render_output_dir(config) / workflow_id),
             "allow_extra_research": bool_param(payload.get("allow_extra_research"), cfg_bool(config, "allow_extra_research", False)),
+            "normalizer_fallback_modul_ids": list_param(payload.get("normalizer_fallback_modul_ids") or payload.get("normalizer_fallbacks")),
+            "reviewer_fallback_modul_ids": list_param(payload.get("reviewer_fallback_modul_ids") or payload.get("reviewer_fallbacks")),
             "video_style": first_text(payload, "video_style", "renderer", "style") or str(config.get("video_style") or ""),
             "target_duration_s": float_param(payload.get("target_duration_s") or payload.get("min_duration_s") or (float_param(payload.get("target_minutes"), 0.0, 0.0, 60.0) * 60.0), 0.0, 0.0, 3600.0),
             "language": (first_text(payload, "language", "lang", "sprache") or "de").lower()[:5],
@@ -450,10 +483,12 @@ def repair_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "fact_check": bool_param(payload.get("fact_check"), cfg_bool(config, "fact_check", True)),
             "fact_check_min_score": int_param(payload.get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100),
             "fact_check_max_claims": int_param(payload.get("fact_check_max_claims"), cfg_int(config, "fact_check_max_claims", 14), 1, 60),
+            "factcheck_max_repairs": int_param(payload.get("factcheck_max_repairs"), cfg_int(config, "factcheck_max_repairs", cfg_int(config, "quality_max_repairs", 2)), 0, 5),
             "quality_gate": bool_param(payload.get("quality_gate"), cfg_bool(config, "quality_gate", True)),
             "quality_auto_repair": bool_param(payload.get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True)),
             "quality_min_score": int_param(payload.get("quality_min_score"), cfg_int(config, "quality_min_score", 78), 0, 100),
             "quality_max_repairs": int_param(payload.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5),
+            "quality_review_max_repairs": int_param(payload.get("quality_review_max_repairs") or payload.get("review_max_repairs"), cfg_int(config, "quality_review_max_repairs", cfg_int(config, "quality_max_repairs", 2)), 0, 5),
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
@@ -464,6 +499,8 @@ def repair_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "shorts_duration_s": float_param(payload.get("shorts_duration_s") or payload.get("short_duration_s"), cfg_float(config, "default_shorts_duration_s", 45.0), 3.0, 180.0),
             "render_out_dir": render_out_dir,
             "allow_extra_research": False,
+            "normalizer_fallback_modul_ids": list_param(payload.get("normalizer_fallback_modul_ids") or payload.get("normalizer_fallbacks")),
+            "reviewer_fallback_modul_ids": list_param(payload.get("reviewer_fallback_modul_ids") or payload.get("reviewer_fallbacks")),
         },
         "tasks": {},
         "artifacts": {
@@ -504,7 +541,15 @@ def tick(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     payload = parse_payload(params)
     wanted = first_text(payload, "workflow_id", "id")
     limit = int_param(payload.get("limit"), cfg_int(config, "tick_limit", 12), 1, 100)
-    workflows = load_workflows(config, wanted, limit)
+    include_failed = bool_param(payload.get("recover_failed"), cfg_bool(config, "recover_failed_workflows", True))
+    failed_max_age_hours = None if wanted else cfg_float(config, "recover_failed_max_age_hours", 12.0)
+    workflows = load_workflows(
+        config,
+        wanted,
+        limit,
+        include_failed=include_failed or bool(wanted),
+        failed_max_age_hours=failed_max_age_hours,
+    )
     changed = 0
     processed = []
     for wf in workflows:
@@ -514,10 +559,22 @@ def tick(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             changed += 1
             save_workflow(wf, config)
         processed.append(workflow_summary(wf, config))
-    return ok({"processed": len(processed), "changed": changed, "workflows": processed})
+    health = None
+    if cfg_bool(config, "production_health_enabled", True):
+        health = compute_production_health(
+            config,
+            window_hours=cfg_float(config, "production_health_window_hours", 36.0),
+            require_upload=cfg_bool(config, "production_health_require_upload", True),
+            write=True,
+        )
+    return ok({"processed": len(processed), "changed": changed, "health": health, "workflows": processed})
 
 
 def process_workflow(wf: dict[str, Any], config: dict[str, Any]) -> None:
+    if wf.get("status") == "failed":
+        if cfg_bool(config, "recover_failed_workflows", True):
+            recover_failed_workflow(wf, config)
+        return
     if wf.get("status") not in {"running", "waiting"}:
         return
     stage = wf.get("stage")
@@ -543,6 +600,307 @@ def process_workflow(wf: dict[str, Any], config: dict[str, Any]) -> None:
         advance_make_shorts(wf, config)
 
 
+def recovery_state(wf: dict[str, Any]) -> dict[str, Any]:
+    recovery = wf.get("recovery")
+    if not isinstance(recovery, dict):
+        recovery = {}
+        wf["recovery"] = recovery
+    return recovery
+
+
+def begin_self_recovery(wf: dict[str, Any], config: dict[str, Any], detail: str) -> bool:
+    recovery = recovery_state(wf)
+    attempts = int_param(recovery.get("failed_recovery_count"), 0, 0, 100)
+    max_attempts = cfg_int(config, "recover_failed_max_attempts", 2, 0, 10)
+    if attempts >= max_attempts:
+        return False
+    recovery["failed_recovery_count"] = attempts + 1
+    recovery["last_recovery_at"] = now_iso()
+    recovery["last_recovery_stage"] = wf.get("stage")
+    wf["status"] = "running"
+    wf["updated_at"] = now_iso()
+    wf.setdefault("events", []).append(event("self_recovery_started", f"{detail} (Versuch {attempts + 1}/{max_attempts})"))
+    return True
+
+
+def is_capacity_error(text: str) -> bool:
+    haystack = str(text or "").casefold()
+    return any(
+        marker in haystack
+        for marker in (
+            "402 payment required",
+            "insufficient balance",
+            "quota exceeded",
+            "billing",
+            "out of credits",
+            "credit balance",
+        )
+    )
+
+
+def fallback_modules(wf: dict[str, Any], option_key: str, config: dict[str, Any], config_key: str) -> list[str]:
+    options = wf.get("options") if isinstance(wf.get("options"), dict) else {}
+    values = list_param(options.get(option_key))
+    values.extend(list_param(config.get(config_key)))
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def persist_configured_fallbacks(wf: dict[str, Any], config: dict[str, Any]) -> None:
+    options = wf.get("options")
+    if not isinstance(options, dict):
+        options = {}
+        wf["options"] = options
+    for option_key, config_key in (
+        ("target_fallback_modul_ids", "fallback_target_modul_ids"),
+        ("normalizer_fallback_modul_ids", "fallback_normalizer_modul_ids"),
+        ("reviewer_fallback_modul_ids", "fallback_reviewer_modul_ids"),
+    ):
+        if not list_param(options.get(option_key)):
+            values = list_param(config.get(config_key))
+            if values:
+                options[option_key] = values
+
+
+def restart_llm_stage_with_fallback(
+    wf: dict[str, Any],
+    config: dict[str, Any],
+    stage: str,
+    task_key: str,
+    module_field: str,
+    option_key: str,
+    config_key: str,
+    prompt: str,
+    reason: str,
+) -> bool:
+    if not is_capacity_error(reason):
+        return False
+
+    persist_configured_fallbacks(wf, config)
+    current = str(wf.get(module_field) or "").strip()
+    recovery = recovery_state(wf)
+    used_by_stage = recovery.get("llm_fallbacks")
+    if not isinstance(used_by_stage, dict):
+        used_by_stage = {}
+        recovery["llm_fallbacks"] = used_by_stage
+    used = list_param(used_by_stage.get(stage))
+    fallback = ""
+    for candidate in fallback_modules(wf, option_key, config, config_key):
+        if candidate and candidate != current and candidate not in used:
+            fallback = candidate
+            break
+    if not fallback:
+        recovery["last_capacity_error"] = truncate(reason, 600)
+        wf.setdefault("events", []).append(event("llm_fallback_unavailable", f"{stage}: API-/Quota-Fehler, aber kein ungenutzter Fallback konfiguriert."))
+        return False
+
+    old_task = str((wf.get("tasks") or {}).get(task_key) or "")
+    if old_task:
+        wf.setdefault("tasks", {})[f"{task_key}_failed_{len(used) + 1}"] = old_task
+    used.append(fallback)
+    used_by_stage[stage] = used
+    wf[module_field] = fallback
+    new_task = enqueue_llm_task(
+        config,
+        fallback,
+        prompt,
+        created_by="workflow_trigger:fallback",
+        timeout_s=cfg_int(config, "default_task_timeout_s", 3600, 60, 14400),
+        back_route=wf.get("options", {}).get("chat_route") or None,
+        parent_id=wf.get("parent_task_id") or None,
+        workflow_id=wf.get("id"),
+        workflow_stage=stage,
+    )
+    wf.setdefault("tasks", {})[task_key] = new_task
+    wf["stage"] = stage
+    wf["status"] = "running"
+    wf["updated_at"] = now_iso()
+    recovery["last_capacity_error"] = truncate(reason, 600)
+    wf.setdefault("events", []).append(event(
+        "llm_fallback_started",
+        f"{stage}: {current or '(leer)'} fiel wegen API-/Quota-Fehler aus; Fallback {fallback} gestartet: {new_task}",
+    ))
+    return True
+
+
+def restart_deepdive_with_fallback(wf: dict[str, Any], config: dict[str, Any], reason: str) -> bool:
+    return restart_llm_stage_with_fallback(
+        wf,
+        config,
+        "deepdive_report",
+        "deepdive_report",
+        "target_modul_id",
+        "target_fallback_modul_ids",
+        "fallback_target_modul_ids",
+        deepdive_report_prompt(str(wf.get("query") or ""), str(wf.get("title") or wf.get("query") or "")),
+        reason,
+    )
+
+
+def restart_normalize_with_fallback(wf: dict[str, Any], config: dict[str, Any], reason: str) -> bool:
+    artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
+    report = read_text_file(artifacts.get("deepdive_report"))
+    if not report:
+        return False
+    crawl_id = str(artifacts.get("crawl_id") or extract_crawl_id(report) or "")
+    return restart_llm_stage_with_fallback(
+        wf,
+        config,
+        "normalize_report",
+        "normalize_report",
+        "normalizer_modul_id",
+        "normalizer_fallback_modul_ids",
+        "fallback_normalizer_modul_ids",
+        normalize_prompt(wf, report, prepare_deepdive_context(config, wf, crawl_id)),
+        reason,
+    )
+
+
+def restart_review_with_fallback(wf: dict[str, Any], config: dict[str, Any], reason: str) -> bool:
+    artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
+    assets = read_json_file(artifacts.get("video_assets"), {})
+    if not isinstance(assets, dict) or not assets:
+        return False
+    return restart_llm_stage_with_fallback(
+        wf,
+        config,
+        "review_assets",
+        "review_assets",
+        "reviewer_modul_id",
+        "reviewer_fallback_modul_ids",
+        "fallback_reviewer_modul_ids",
+        review_prompt(wf, assets, local_asset_review(wf, assets, config)),
+        reason,
+    )
+
+
+def restart_repair_with_fallback(wf: dict[str, Any], config: dict[str, Any], reason: str) -> bool:
+    artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
+    assets = read_json_file(artifacts.get("video_assets"), {})
+    review = read_json_file(artifacts.get("quality_review"), {})
+    if not isinstance(assets, dict) or not assets or not isinstance(review, dict):
+        return False
+    return restart_llm_stage_with_fallback(
+        wf,
+        config,
+        "repair_assets",
+        "repair_assets",
+        "normalizer_modul_id",
+        "normalizer_fallback_modul_ids",
+        "fallback_normalizer_modul_ids",
+        repair_prompt(wf, assets, review),
+        reason,
+    )
+
+
+def recover_failed_workflow(wf: dict[str, Any], config: dict[str, Any]) -> None:
+    stage = str(wf.get("stage") or "")
+    tasks = wf.get("tasks") if isinstance(wf.get("tasks"), dict) else {}
+
+    task_recovery: dict[str, tuple[str, str, Any]] = {
+        "deepdive_report": ("deepdive_report", "deepdive_report", advance_deepdive_report),
+        "normalize_report": ("normalize_report", "normalize_report", advance_normalize_report),
+        "fact_check_assets": ("fact_check_assets", "fact_check_assets", advance_fact_check_assets),
+        "fact_check_failed": ("fact_check_assets", "fact_check_assets", advance_fact_check_assets),
+        "review_assets": ("review_assets", "review_assets", advance_review_assets),
+        "review_failed": ("review_assets", "review_assets", advance_review_assets),
+        "repair_assets": ("repair_assets", "repair_assets", advance_repair_assets),
+        "generate_visuals": ("generate_visuals", "generate_visuals", advance_generate_visuals),
+        "synthesize_audio": ("synthesize_audio", "synthesize_audio", advance_synthesize_audio),
+        "render_video": ("render_video", "render_video", advance_render_video),
+        "upload_video": ("upload_video", "upload_video", advance_upload_video),
+        "make_shorts": ("make_shorts", "make_shorts", advance_make_shorts),
+    }
+
+    if stage in task_recovery:
+        task_key, live_stage, advancer = task_recovery[stage]
+        task = load_task(config, tasks.get(task_key))
+        task_status = str(task.get("status") or "") if task else ""
+        can_replay = task_status == "success" or (live_stage == "upload_video" and task_status and task_status not in {"erstellt", "gestartet"})
+        if can_replay and begin_self_recovery(wf, config, f"Fehlgeschlagenen Workflow ab Stage '{stage}' erneut ausgewertet; Task ist {task_status}"):
+            wf["stage"] = live_stage
+            advancer(wf, config)
+            return
+        task_result = str(task.get("result") or "") if task else ""
+        if task_status == "failed" and is_capacity_error(task_result):
+            if stage == "deepdive_report" and restart_deepdive_with_fallback(wf, config, task_result):
+                return
+            if stage == "normalize_report" and restart_normalize_with_fallback(wf, config, task_result):
+                return
+            if stage == "review_assets" and restart_review_with_fallback(wf, config, task_result):
+                return
+            if stage == "repair_assets" and restart_repair_with_fallback(wf, config, task_result):
+                return
+        if stage not in {"review_failed", "fact_check_failed"}:
+            return
+
+    if stage == "review_failed":
+        recover_review_failed_from_artifacts(wf, config)
+        return
+    if stage == "fact_check_failed":
+        recover_factcheck_failed_from_artifacts(wf, config)
+
+
+def recover_review_failed_from_artifacts(wf: dict[str, Any], config: dict[str, Any]) -> None:
+    artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
+    assets = read_json_file(artifacts.get("video_assets"), {})
+    review = read_json_file(artifacts.get("quality_review"), {})
+    if not isinstance(assets, dict) or not assets.get("voice_script") or not isinstance(review, dict) or not review:
+        return
+
+    if review_passes(wf, config, review):
+        if begin_self_recovery(wf, config, "Quality Review war doch freigabefaehig; Workflow wird fortgesetzt"):
+            proceed_after_assets_approved(wf, config, assets=assets)
+        return
+
+    quality = quality_state(wf)
+    repairs_used = int_param(quality.get("review_repair_count"), 0, 0, 100)
+    max_repairs = review_repair_budget(wf, config)
+    auto_repair = bool_param(wf.get("options", {}).get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True))
+    if auto_repair and repairs_used < max_repairs:
+        if begin_self_recovery(wf, config, "Quality Review ist reparierbar; fehlende Review-Reparatur wird nachgeholt"):
+            start_repair_task(wf, config, assets, review, scope="review")
+        return
+
+    decision = str(review.get("decision") or "").strip().lower()
+    score = int_param(review.get("score"), 0, 0, 100)
+    proceed_after = bool_param(wf.get("options", {}).get("quality_proceed_after_repairs"), cfg_bool(config, "quality_proceed_after_repairs", True))
+    proceed_min = int_param(wf.get("options", {}).get("quality_proceed_min_score"), cfg_int(config, "quality_proceed_min_score", 70), 0, 100)
+    if proceed_after and decision != "reject" and score >= proceed_min:
+        if begin_self_recovery(wf, config, f"Review-Budget erschoepft, aber score={score}; best-effort Render ohne ungeprueften Upload"):
+            if not cfg_bool(config, "quality_best_effort_upload", False):
+                wf.setdefault("options", {})["auto_upload"] = False
+            proceed_after_assets_approved(wf, config, assets=assets)
+
+
+def recover_factcheck_failed_from_artifacts(wf: dict[str, Any], config: dict[str, Any]) -> None:
+    artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
+    assets = read_json_file(artifacts.get("video_assets"), {})
+    report = read_json_file(artifacts.get("factcheck_report"), {})
+    if not isinstance(assets, dict) or not assets.get("voice_script") or not isinstance(report, dict) or not report:
+        return
+
+    min_score = int_param(wf.get("options", {}).get("fact_check_min_score"), cfg_int(config, "fact_check_min_score", 72), 0, 100)
+    score = int_param(report.get("score"), 0, 0, 100)
+    if bool(report.get("pass")) and score >= min_score:
+        if begin_self_recovery(wf, config, "Faktencheck-Report ist freigabefaehig; Workflow wird fortgesetzt"):
+            continue_after_factcheck_passed(wf, config, assets=assets, reason="self_recovery")
+        return
+
+    quality = quality_state(wf)
+    repairs_used = int_param(quality.get("factcheck_repair_count"), 0, 0, 100)
+    max_repairs = factcheck_repair_budget(wf, config)
+    auto_repair = bool_param(wf.get("options", {}).get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True))
+    if auto_repair and repairs_used < max_repairs and (report.get("blocking_issues") or report.get("warnings")):
+        if begin_self_recovery(wf, config, "Faktencheck ist reparierbar; fehlende Faktencheck-Reparatur wird nachgeholt"):
+            start_repair_task(wf, config, assets, report, scope="factcheck")
+
+
 def advance_deepdive_report(wf: dict[str, Any], config: dict[str, Any]) -> None:
     task_id = wf.get("tasks", {}).get("deepdive_report")
     task = load_task(config, task_id)
@@ -554,6 +912,8 @@ def advance_deepdive_report(wf: dict[str, Any], config: dict[str, Any]) -> None:
         wf["updated_at"] = now_iso()
         return
     if task["status"] != "success":
+        if restart_deepdive_with_fallback(wf, config, task.get("result") or ""):
+            return
         mark_failed(wf, f"DeepDive-Report Task endete mit {task['status']}: {truncate(task.get('result') or '', 600)}")
         return
 
@@ -595,6 +955,8 @@ def advance_normalize_report(wf: dict[str, Any], config: dict[str, Any]) -> None
         wf["updated_at"] = now_iso()
         return
     if task["status"] != "success":
+        if restart_normalize_with_fallback(wf, config, task.get("result") or ""):
+            return
         mark_failed(wf, f"Normalisierung endete mit {task['status']}: {truncate(task.get('result') or '', 600)}")
         return
 
@@ -642,6 +1004,18 @@ def quality_state(wf: dict[str, Any]) -> dict[str, Any]:
         quality = {}
         wf["quality"] = quality
     return quality
+
+
+def factcheck_repair_budget(wf: dict[str, Any], config: dict[str, Any]) -> int:
+    options = wf.get("options") if isinstance(wf.get("options"), dict) else {}
+    legacy = int_param(options.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5)
+    return int_param(options.get("factcheck_max_repairs"), cfg_int(config, "factcheck_max_repairs", legacy), 0, 5)
+
+
+def review_repair_budget(wf: dict[str, Any], config: dict[str, Any]) -> int:
+    options = wf.get("options") if isinstance(wf.get("options"), dict) else {}
+    legacy = int_param(options.get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5)
+    return int_param(options.get("quality_review_max_repairs"), cfg_int(config, "quality_review_max_repairs", legacy), 0, 5)
 
 
 def continue_after_assets_ready(wf: dict[str, Any], config: dict[str, Any], assets: dict[str, Any], reason: str = "") -> None:
@@ -745,8 +1119,8 @@ def advance_fact_check_assets(wf: dict[str, Any], config: dict[str, Any]) -> Non
         # Jetzt: blockierte Claims gehen (begrenzt durch quality_max_repairs)
         # in dieselbe Reparatur — danach laeuft der Faktencheck erneut.
         quality = quality_state(wf)
-        repairs_used = int_param(quality.get("repair_count"), 0, 0, 100)
-        max_repairs = int_param(wf.get("options", {}).get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5)
+        repairs_used = int_param(quality.get("factcheck_repair_count"), 0, 0, 100)
+        max_repairs = factcheck_repair_budget(wf, config)
         auto_repair = bool_param(wf.get("options", {}).get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True))
         if auto_repair and repairs_used < max_repairs and (report.get("blocking_issues") or report.get("warnings")):
             report_for_repair = dict(report)
@@ -769,7 +1143,7 @@ def advance_fact_check_assets(wf: dict[str, Any], config: dict[str, Any]) -> Non
                 "factcheck_repair",
                 "Faktencheck blockiert (" + factcheck_summary(report) + ") — Auto-Reparatur " + str(repairs_used + 1) + " gestartet",
             ))
-            start_repair_task(wf, config, assets, report_for_repair)
+            start_repair_task(wf, config, assets, report_for_repair, scope="factcheck")
             return
         wf["stage"] = "fact_check_failed"
         save_synthesis(wf, config, status="fact_check_failed", assets=assets)
@@ -965,6 +1339,8 @@ def advance_review_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
         wf["updated_at"] = now_iso()
         return
     if task["status"] != "success":
+        if restart_review_with_fallback(wf, config, task.get("result") or ""):
+            return
         mark_failed(wf, f"Quality Review endete mit {task['status']}: {truncate(task.get('result') or '', 600)}")
         return
 
@@ -1001,11 +1377,11 @@ def advance_review_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
         proceed_after_assets_approved(wf, config, assets=assets)
         return
 
-    repairs_used = int_param(quality.get("repair_count"), 0, 0, 100)
-    max_repairs = int_param(wf.get("options", {}).get("quality_max_repairs"), cfg_int(config, "quality_max_repairs", 2), 0, 5)
+    repairs_used = int_param(quality.get("review_repair_count"), 0, 0, 100)
+    max_repairs = review_repair_budget(wf, config)
     auto_repair = bool_param(wf.get("options", {}).get("quality_auto_repair"), cfg_bool(config, "quality_auto_repair", True))
     if auto_repair and repairs_used < max_repairs:
-        start_repair_task(wf, config, assets, review)
+        start_repair_task(wf, config, assets, review, scope="review")
         return
 
     # Reparatur-Budget erschoepft. Statt GAR KEIN Video zu produzieren (Pipeline lief
@@ -1037,10 +1413,14 @@ def advance_review_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
     save_synthesis(wf, config, status="review_failed", assets=assets)
 
 
-def start_repair_task(wf: dict[str, Any], config: dict[str, Any], assets: dict[str, Any], review: dict[str, Any]) -> None:
+def start_repair_task(wf: dict[str, Any], config: dict[str, Any], assets: dict[str, Any], review: dict[str, Any], scope: str = "review") -> None:
     quality = quality_state(wf)
+    scope_key = "factcheck" if scope == "factcheck" else "review"
     repair_count = int_param(quality.get("repair_count"), 0, 0, 100) + 1
+    scope_count = int_param(quality.get(f"{scope_key}_repair_count"), 0, 0, 100) + 1
     quality["repair_count"] = repair_count
+    quality[f"{scope_key}_repair_count"] = scope_count
+    quality["last_repair_scope"] = scope_key
     normalizer = str(wf.get("normalizer_modul_id") or wf.get("target_modul_id") or config.get("default_normalizer_modul_id") or "").strip()
     repair_task = enqueue_llm_task(
         config,
@@ -1057,7 +1437,11 @@ def start_repair_task(wf: dict[str, Any], config: dict[str, Any], assets: dict[s
     wf["stage"] = "repair_assets"
     wf["status"] = "running"
     wf["updated_at"] = now_iso()
-    wf.setdefault("events", []).append(event("quality_repair_started", f"Automatische Script-Reparatur {repair_count} gestartet: {repair_task}"))
+    label = "Faktencheck" if scope_key == "factcheck" else "Quality"
+    wf.setdefault("events", []).append(event(
+        f"{scope_key}_repair_started",
+        f"Automatische {label}-Reparatur {scope_count} gestartet: {repair_task} (gesamt {repair_count})",
+    ))
 
 
 def advance_repair_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
@@ -1071,6 +1455,8 @@ def advance_repair_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
         wf["updated_at"] = now_iso()
         return
     if task["status"] != "success":
+        if restart_repair_with_fallback(wf, config, task.get("result") or ""):
+            return
         mark_failed(wf, f"Script-Reparatur endete mit {task['status']}: {truncate(task.get('result') or '', 600)}")
         return
 
@@ -1400,6 +1786,138 @@ def status(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     return ok({"count": len(workflows), "workflows": [workflow_summary(wf, config) for wf in workflows]})
 
 
+def production_health(params: Any, config: dict[str, Any]) -> dict[str, Any]:
+    payload = parse_payload(params)
+    window_hours = float_param(payload.get("window_hours"), cfg_float(config, "production_health_window_hours", 36.0), 1.0, 240.0)
+    require_upload = bool_param(payload.get("require_upload"), cfg_bool(config, "production_health_require_upload", True))
+    write = bool_param(payload.get("write"), True)
+    return ok(compute_production_health(config, window_hours=window_hours, require_upload=require_upload, write=write))
+
+
+def compute_production_health(config: dict[str, Any], window_hours: float, require_upload: bool, write: bool = False) -> dict[str, Any]:
+    workflows = load_workflows(
+        config,
+        limit=200,
+        include_done=True,
+        include_failed=True,
+        failed_max_age_hours=window_hours,
+    )
+    recent = [wf for wf in workflows if workflow_age_hours(wf, workflow_json_path(wf, config)) <= window_hours]
+    recent = sorted(recent, key=lambda wf: workflow_age_hours(wf, workflow_json_path(wf, config)))
+    active = sorted([wf for wf in recent if wf.get("status") in {"running", "waiting"}], key=lambda wf: workflow_age_hours(wf, workflow_json_path(wf, config)))
+    failed = sorted([wf for wf in recent if wf.get("status") == "failed"], key=lambda wf: workflow_age_hours(wf, workflow_json_path(wf, config)))
+    uploaded = sorted([wf for wf in recent if str((wf.get("artifacts") or {}).get("youtube_url") or "").strip()], key=lambda wf: workflow_age_hours(wf, workflow_json_path(wf, config)))
+    rendered = sorted([wf for wf in recent if str((wf.get("artifacts") or {}).get("video") or "").strip()], key=lambda wf: workflow_age_hours(wf, workflow_json_path(wf, config)))
+    latest = recent[0] if recent else None
+    latest_artifacts = latest.get("artifacts") if isinstance(latest, dict) and isinstance(latest.get("artifacts"), dict) else {}
+    latest_has_upload = bool(str((latest_artifacts or {}).get("youtube_url") or "").strip())
+    latest_has_render = bool(str((latest_artifacts or {}).get("video") or "").strip())
+    strict_latest = cfg_bool(config, "production_health_strict_latest", True)
+    capacity_error = any(is_capacity_error(str(((wf.get("events") or [{}])[-1] if wf.get("events") else {}).get("detail") or "")) for wf in failed)
+
+    if strict_latest and latest:
+        if latest.get("status") in {"running", "waiting"}:
+            state = "pending"
+            message = "Neueste Produktion laeuft noch."
+        elif latest.get("status") == "failed":
+            state = "failed_recent"
+            message = "Neueste Produktion ist fehlgeschlagen und braucht Recovery oder manuelle Pruefung."
+        elif latest_has_upload:
+            state = "ok"
+            message = "Neueste Produktion hat eine YouTube-URL."
+        elif latest_has_render and not require_upload:
+            state = "ok"
+            message = "Neueste Produktion wurde gerendert."
+        elif latest_has_render:
+            state = "rendered_no_upload"
+            message = "Neueste Produktion wurde gerendert, aber nicht hochgeladen."
+        else:
+            state = "missing_upload" if require_upload else "missing_render"
+            message = "Neueste Produktion hat keinen fertigen Upload."
+    elif active:
+        state = "pending"
+        message = "Aktuelle Produktion laeuft noch."
+    elif failed:
+        state = "failed_recent"
+        message = "Aktuelle Produktion ist fehlgeschlagen und braucht Recovery oder manuelle Pruefung."
+    elif uploaded:
+        state = "ok"
+        message = "Aktuelle Produktion hat eine YouTube-URL."
+    elif rendered and not require_upload:
+        state = "ok"
+        message = "Aktuelle Produktion wurde gerendert."
+    elif rendered:
+        state = "rendered_no_upload"
+        message = "Aktuelle Produktion wurde gerendert, aber nicht hochgeladen."
+    else:
+        state = "missing_upload" if require_upload else "missing_render"
+        message = "Im Produktionsfenster wurde kein fertiges Video gefunden."
+
+    health = {
+        "state": state,
+        "ok": state == "ok",
+        "message": message,
+        "checked_at": now_iso(),
+        "window_hours": window_hours,
+        "require_upload": require_upload,
+        "strict_latest": strict_latest,
+        "capacity_error": capacity_error,
+        "counts": {
+            "recent": len(recent),
+            "active": len(active),
+            "failed": len(failed),
+            "rendered": len(rendered),
+            "uploaded": len(uploaded),
+        },
+        "latest_workflow": workflow_health_summary(latest, config) if latest else None,
+        "latest_uploaded": workflow_health_summary(uploaded[0], config) if uploaded else None,
+        "recent_failed": [workflow_health_summary(wf, config) for wf in failed[:5]],
+        "cron_state": load_cron_state(config, ["content_planner.default", "workflow_trigger.cron"]),
+    }
+    if write:
+        write_json(production_health_path(config), health)
+    return health
+
+
+def workflow_json_path(wf: dict[str, Any], config: dict[str, Any]) -> Path:
+    wf_dir = str(wf.get("workflow_dir") or "").strip()
+    if wf_dir:
+        return Path(wf_dir) / "workflow.json"
+    return workflows_dir(config) / str(wf.get("id") or "") / "workflow.json"
+
+
+def workflow_health_summary(wf: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    artifacts = wf.get("artifacts") if isinstance(wf.get("artifacts"), dict) else {}
+    events = wf.get("events") if isinstance(wf.get("events"), list) else []
+    return {
+        "workflow_id": str(wf.get("id") or Path(str(wf.get("workflow_dir") or "")).name or ""),
+        "status": wf.get("status"),
+        "stage": wf.get("stage"),
+        "title": wf.get("title"),
+        "updated_at": wf.get("updated_at"),
+        "age_hours": workflow_age_hours(wf, workflow_json_path(wf, config)),
+        "youtube_url": artifacts.get("youtube_url"),
+        "video": artifacts.get("video"),
+        "last_event": events[-1] if events else None,
+    }
+
+
+def production_health_path(config: dict[str, Any]) -> Path:
+    return workflows_dir(config).parent / "production_health.json"
+
+
+def load_cron_state(config: dict[str, Any], moduls: list[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    try:
+        with sqlite3.connect(f"file:{tasks_db(config)}?mode=ro", uri=True, timeout=5) as conn:
+            for modul in moduls:
+                row = conn.execute("SELECT last_fire_minute FROM cron_state WHERE modul=?1", (modul,)).fetchone()
+                out[modul] = row[0] if row else None
+    except Exception as exc:
+        out["error"] = str(exc)[:200]
+    return out
+
+
 def cancel(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     payload = parse_payload(params)
     workflow_id = first_text(payload, "workflow_id", "id")
@@ -1491,11 +2009,12 @@ def help_text() -> dict[str, Any]:
             "3. LLM-Task normalisiert den Report zu VIDEO_ASSETS_JSON: gesprochenes Skript, typisierte Infografik-Szenen (stat/bars/people/figures/timeline/quote/compare/map), Shorts-Hooks.",
             "4. Faktencheck extrahiert harte Zahlen-/Absolut-Claims und sucht schnelle Web-Belege. Blocker stoppen vor TTS.",
             "5. Quality Gate prueft danach Quellenhygiene, Ton und Query-Abdeckung vor jeder teuren Produktion.",
-            "6. Bei blockierenden Review-Problemen wird einmal automatisch repariert und erneut geprueft; sonst stoppt der Workflow vor TTS.",
+            "6. Faktencheck- und Quality-Review-Probleme haben getrennte Repair-Budgets; echte Review-Blocker koennen auch nach Faktencheck-Reparaturen noch repariert werden.",
             "7. Erst nach Faktencheck/Review-Pass startet tts.speak fuer echte Voice.",
             "8. Erst wenn audio_path existiert, startet der Render (video_style: infographic -> video_pipeline.infographic_video, mapled -> video_pipeline.briefing_video).",
-            "9. Optional startet der Trigger danach video_pipeline.shorts_from_video; stumme Shorts werden standardmaessig blockiert.",
-            "10. Die Synthese wird als eigenes Objekt unter syntheses/<synthesis_id>/synthesis.json gespeichert.",
+            "9. Optional startet der Trigger danach youtube_upload.video, wenn auto_upload=true gesetzt ist.",
+            "10. Optional startet der Trigger danach video_pipeline.shorts_from_video; stumme Shorts werden standardmaessig blockiert.",
+            "11. Die Synthese wird als eigenes Objekt unter syntheses/<synthesis_id>/synthesis.json gespeichert.",
         ],
         "video_from_report": [
             "Wenn bereits ein DeepDive/crawl_id/report existiert, direkt video_from_report nutzen.",
@@ -1515,8 +2034,11 @@ def help_text() -> dict[str, Any]:
             "factcheck_modul_id": "factcheck.default",
             "tts_modul_id": "tts.default",
             "preview": True,
+            "auto_upload": False,
+            "upload_privacy": "unlisted",
             "auto_shorts": True,
             "shorts_count": 30,
+            "target_minutes": 8,
         },
         "synthesis_tools": {
             "list": 'workflow_trigger.synthesis_list({"limit":10})',
@@ -1532,6 +2054,7 @@ def help_text() -> dict[str, Any]:
             "title": "Taiwan Briefing",
             "preview": True,
             "auto_render": True,
+            "auto_upload": False,
         },
     }
 
@@ -2646,7 +3169,30 @@ def mark_failed(wf: dict[str, Any], reason: str) -> None:
     wf.setdefault("events", []).append(event("failed", reason))
 
 
-def load_workflows(config: dict[str, Any], wanted: str = "", limit: int = 20, include_done: bool = False) -> list[dict[str, Any]]:
+def workflow_age_hours(wf: dict[str, Any], path: Path) -> float:
+    raw = str(wf.get("updated_at") or wf.get("created_at") or "").strip()
+    if raw:
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return max(0.0, (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 3600.0)
+        except Exception:
+            pass
+    try:
+        return max(0.0, (datetime.now(timezone.utc).timestamp() - path.stat().st_mtime) / 3600.0)
+    except Exception:
+        return 999999.0
+
+
+def load_workflows(
+    config: dict[str, Any],
+    wanted: str = "",
+    limit: int = 20,
+    include_done: bool = False,
+    include_failed: bool = False,
+    failed_max_age_hours: float | None = None,
+) -> list[dict[str, Any]]:
     if wanted:
         wf = load_workflow(config, wanted)
         return [wf] if wf else []
@@ -2658,7 +3204,9 @@ def load_workflows(config: dict[str, Any], wanted: str = "", limit: int = 20, in
     for root in roots:
         if root.exists():
             paths.extend(root.glob("wf-*/workflow.json"))
-    items = []
+    active_items = []
+    failed_items = []
+    done_items = []
     seen_ids: set[str] = set()
     for path in sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True):
         try:
@@ -2669,11 +3217,18 @@ def load_workflows(config: dict[str, Any], wanted: str = "", limit: int = 20, in
         if wf_id in seen_ids:
             continue
         seen_ids.add(wf_id)
-        if include_done or wf.get("status") in {"running", "waiting"}:
-            items.append(wf)
-        if len(items) >= limit:
-            break
-    return items
+        status = wf.get("status")
+        if status in {"running", "waiting"}:
+            active_items.append(wf)
+        elif include_failed and status == "failed" and (
+            failed_max_age_hours is None or workflow_age_hours(wf, path) <= failed_max_age_hours
+        ):
+            failed_items.append(wf)
+        elif include_done:
+            done_items.append(wf)
+    if include_done:
+        return (active_items + failed_items + done_items)[:limit]
+    return (active_items + failed_items)[:limit]
 
 
 def load_workflow(config: dict[str, Any], workflow_id: str) -> dict[str, Any] | None:
@@ -2797,6 +3352,25 @@ def first_text(payload: dict[str, Any], *keys: str) -> str:
         if text:
             return text
     return ""
+
+
+def list_param(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, tuple):
+        raw_items = list(value)
+    else:
+        raw_items = re.split(r"[,;\s]+", str(value))
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
 
 
 def inherited_parent_task_id(payload: dict[str, Any], config: dict[str, Any]) -> str:

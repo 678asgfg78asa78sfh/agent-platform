@@ -280,8 +280,15 @@ impl TurnEngine<'_> {
                         // schickte (<tool>name({"a":"b"})</tool>), dessen Schluessel
                         // als BENANNTE Args uebernehmen (robust, komma-sicher) statt
                         // positional — analog zum nativen Function-Call.
+                        // Lenient parsen (trailing commas, Doppel-Encoding) — dieselbe
+                        // Recovery wie im nativen Pfad; nur ein nicht-leeres Objekt zaehlt
+                        // als benannte Args, sonst Fallback auf positionale Zuordnung.
                         let single_json = if t_params.len() == 1 {
-                            serde_json::from_str::<serde_json::Value>(t_params[0].trim()).ok()
+                            let v = tools::parse_loose_json(t_params[0].trim());
+                            match v {
+                                serde_json::Value::Object(ref m) if !m.is_empty() => Some(v),
+                                _ => None,
+                            }
                         } else {
                             None
                         };
