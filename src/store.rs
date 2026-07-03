@@ -714,34 +714,39 @@ pub fn audit_cleanup(
     if keep_days == 0 {
         return Ok(0);
     }
-    let conn = pool.get().map_err(e("pool"))?;
+    let mut conn = pool.get().map_err(e("pool"))?;
     let now = chrono::Utc::now().timestamp();
     let cutoff = now - keep_days as i64 * 86_400;
     let cutoff_noisy = now - keep_days_noisy.min(keep_days) as i64 * 86_400;
-    conn.execute_batch("DROP TRIGGER IF EXISTS audit_no_delete;")
+    // Drop-Guard + Deletes + Recreate in EINER Transaktion: der Delete-Guard
+    // kann so nie "zwischen zwei Statements" fehlen (Rollback stellt ihn
+    // wieder her) und ein Recreate-Fehler propagiert statt zu verschwinden.
+    // (SQLite-DDL ist transaktional; Schema-Anlage beim Boot ist der
+    // zusaetzliche Fallback.)
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(e("audit tx begin"))?;
+    tx.execute_batch("DROP TRIGGER IF EXISTS audit_no_delete;")
         .map_err(e("audit trigger drop"))?;
-    let result = (|| {
-        let n_old = conn
-            .execute("DELETE FROM audit_log WHERE ts < ?1", params![cutoff])
-            .map_err(e("audit prune"))?;
-        let n_noisy = conn
-            .execute(
-                "DELETE FROM audit_log WHERE ts < ?1
-                 AND action IN ('api_vault.use','credential_vault.use','tool_exec')",
-                params![cutoff_noisy],
-            )
-            .map_err(e("audit prune noisy"))?;
-        Ok(n_old + n_noisy)
-    })();
-    // Guard-Trigger auch im Fehlerfall wiederherstellen — sonst waere das
-    // Log dauerhaft beschreib- UND loeschbar.
-    let _ = conn.execute_batch(
+    let n_old = tx
+        .execute("DELETE FROM audit_log WHERE ts < ?1", params![cutoff])
+        .map_err(e("audit prune"))?;
+    let n_noisy = tx
+        .execute(
+            "DELETE FROM audit_log WHERE ts < ?1
+             AND action IN ('api_vault.use','credential_vault.use','tool_exec')",
+            params![cutoff_noisy],
+        )
+        .map_err(e("audit prune noisy"))?;
+    tx.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS audit_no_delete
              BEFORE DELETE ON audit_log BEGIN
              SELECT RAISE(FAIL, 'audit_log is append-only');
          END;",
-    );
-    result
+    )
+    .map_err(e("audit trigger recreate"))?;
+    tx.commit().map_err(e("audit commit"))?;
+    Ok(n_old + n_noisy)
 }
 
 pub fn audit_recent(pool: &SqlitePool, limit: usize) -> StoreResult<Vec<AuditEntry>> {

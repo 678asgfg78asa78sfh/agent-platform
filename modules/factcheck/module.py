@@ -664,23 +664,35 @@ def tavily_search(query: str, max_results: int, timeout_s: int, api_key: str) ->
 
 _DDG_CONSECUTIVE_FAILS = 0
 _DDG_CIRCUIT_THRESHOLD = 2
+_DDG_CIRCUIT_OPENED_AT = 0.0
+_DDG_CIRCUIT_COOLDOWN_S = 600.0
 
 
 def web_search(query: str, max_results: int, timeout_s: int, tavily_key: str = "") -> list[dict[str, str]]:
     """DDG primaer; bei Drossel/Ausfall Tavily-Fallback (falls Key vorhanden).
 
-    Circuit-Breaker: hat DDG mehrfach in Folge gedrosselt, wird es fuer den Rest
-    des Laufs uebersprungen (spart ~12s/Claim und verlaengert die Strafe nicht).
+    Circuit-Breaker mit Half-Open: hat DDG mehrfach in Folge gedrosselt, wird
+    es uebersprungen (spart ~12s/Claim) — aber nur fuer die Cooldown-Dauer.
+    Der Modul-Prozess lebt im Pool potentiell tagelang; ohne zeitbasierte
+    Wiederoeffnung bliebe der Circuit fuer immer offen, weil der Fail-Zaehler
+    nur bei einem DDG-Erfolg zurueckgesetzt wird, den es nie mehr gaebe.
     """
-    global _DDG_CONSECUTIVE_FAILS
+    global _DDG_CONSECUTIVE_FAILS, _DDG_CIRCUIT_OPENED_AT
     last_ddg: Any = "circuit-open (DDG zuvor mehrfach gedrosselt)"
-    if not (tavily_key and _DDG_CONSECUTIVE_FAILS >= _DDG_CIRCUIT_THRESHOLD):
+    circuit_open = (
+        bool(tavily_key)
+        and _DDG_CONSECUTIVE_FAILS >= _DDG_CIRCUIT_THRESHOLD
+        and (time.time() - _DDG_CIRCUIT_OPENED_AT) < _DDG_CIRCUIT_COOLDOWN_S
+    )
+    if not circuit_open:
         try:
             res = duckduckgo_search(query, max_results, timeout_s)
             _DDG_CONSECUTIVE_FAILS = 0
             return res
         except Exception as ddg_exc:
             _DDG_CONSECUTIVE_FAILS += 1
+            if _DDG_CONSECUTIVE_FAILS >= _DDG_CIRCUIT_THRESHOLD:
+                _DDG_CIRCUIT_OPENED_AT = time.time()
             if not tavily_key:
                 raise
             last_ddg = ddg_exc
