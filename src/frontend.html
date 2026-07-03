@@ -1572,6 +1572,8 @@ body::after {
 	    <input type="hidden" id="mod-perms" />
     <div id="mod-link-section" style="margin-top:10px;">
       <label style="color:var(--cyan);font-size:11px;text-transform:uppercase;letter-spacing:1px;display:block;margin-bottom:8px;">Linked Modules</label>
+      <div id="mod-link-presets" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>
+      <input type="text" id="mod-link-filter" placeholder="Module filtern (z.B. coding)&hellip;" oninput="filterLinkGrid(this.value)" style="width:100%;margin-bottom:8px;padding:6px 10px;font-size:11px;font-family:var(--font);background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);" />
       <div id="mod-link-grid" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
     </div>
     <div id="mod-enhancer-slots" class="enhancer-slot-panel">
@@ -1883,12 +1885,102 @@ function getModuleDef(typName) {
 
 /* ═══ Module Link Grid — visual linking replaces manual berechtigungen ═══ */
 
+/* Presets: benannte Bundles statt 100+ flacher Chips. Ein Klick waehlt pro
+   Typ genau EINE Instanz (bevorzugt "<typ>.default", sonst die erste). */
+var LINK_PRESETS = [
+  { name: 'Coding', typs: ['coding', 'editor', 'filesystem'],
+    hint: 'Nur Coding: Code lesen/patchen/testen (coding) + Zeilen-Editor fuer neue Dateien (editor) + Dateizugriff (filesystem)' },
+  { name: 'Research', typs: ['deepdive', 'websearch', 'tavily', 'browser', 'youtube_transcript', 'chat_history'],
+    hint: 'Recherche: DeepDive-Fanout + Websuche + Browser + YouTube-Transkripte + Verlauf' },
+  { name: 'Video', typs: ['workflow_trigger', 'deepdive', 'video_pipeline', 'tts', 'factcheck', 'image_gen', 'youtube_upload'],
+    hint: 'Video-Produktion: Report \u2192 Script \u2192 Faktencheck \u2192 TTS \u2192 Render \u2192 Upload' },
+  { name: 'Social', typs: ['x_search', 'x_comments', 'reddit_scraper', 'telegram_bot', 'community_manager'],
+    hint: 'Social: X/Reddit lesen, Kommentare, Telegram' },
+];
+
+function pickPresetInstance(typ) {
+  if (!appConfig || !appConfig.module) return null;
+  var candidates = appConfig.module.filter(function(m) {
+    return m.typ === typ && m.persistent !== false;
+  });
+  if (!candidates.length) return null;
+  var dflt = candidates.find(function(m) { return m.id === typ + '.default'; });
+  return (dflt || candidates[0]).id;
+}
+
+function setLinkChip(chip, linked) {
+  chip.dataset.linked = linked ? '1' : '0';
+  chip.style.borderColor = linked ? 'var(--cyan)' : 'var(--border)';
+  chip.style.background = linked ? 'rgba(0,170,255,0.15)' : 'var(--bg-input)';
+  chip.style.color = linked ? 'var(--cyan)' : 'var(--text-dim)';
+  chip.textContent = (linked ? '\u2713 ' : '') + chip.dataset.label;
+}
+
+function applyLinkPreset(preset) {
+  var grid = ge('mod-link-grid');
+  preset.typs.forEach(function(typ) {
+    var id = pickPresetInstance(typ);
+    if (!id) return;
+    var chip = grid.querySelector('[data-module-id="' + id + '"]');
+    if (chip) setLinkChip(chip, true);
+  });
+  updateDerivedPerms();
+}
+
+function clearLinkGrid() {
+  ge('mod-link-grid').querySelectorAll('[data-module-id]').forEach(function(chip) {
+    setLinkChip(chip, false);
+  });
+  updateDerivedPerms();
+}
+
+function filterLinkGrid(value) {
+  var q = String(value || '').toLowerCase();
+  ge('mod-link-grid').querySelectorAll('[data-module-id]').forEach(function(chip) {
+    var hay = (chip.dataset.moduleId + ' ' + chip.dataset.moduleTyp + ' ' + chip.dataset.label).toLowerCase();
+    chip.style.display = (!q || hay.indexOf(q) >= 0) ? '' : 'none';
+  });
+}
+
+function populateLinkPresets() {
+  var row = ge('mod-link-presets');
+  if (!row) return;
+  row.innerHTML = '';
+  LINK_PRESETS.forEach(function(preset) {
+    var missing = preset.typs.filter(function(t) { return !pickPresetInstance(t); });
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-sm';
+    btn.style.cssText = 'font-size:10px;border-color:var(--purple);color:var(--purple);';
+    btn.textContent = '+ ' + preset.name;
+    btn.title = preset.hint + (missing.length ? ' \u2014 fehlende Modultypen: ' + missing.join(', ') : '');
+    btn.onclick = function() { applyLinkPreset(preset); };
+    row.appendChild(btn);
+  });
+  var clear = document.createElement('button');
+  clear.type = 'button';
+  clear.className = 'btn btn-sm';
+  clear.style.cssText = 'font-size:10px;color:var(--text-dim);';
+  clear.textContent = '\u00d7 Alle abw\u00e4hlen';
+  clear.onclick = clearLinkGrid;
+  row.appendChild(clear);
+}
+
 function populateLinkGrid(currentModuleId, linkedModules) {
   var grid = ge('mod-link-grid');
   grid.innerHTML = '';
   if (!appConfig || !appConfig.module) return;
+  populateLinkPresets();
+  var filter = ge('mod-link-filter');
+  if (filter) filter.value = '';
 
-  appConfig.module.forEach(function(m) {
+  // Nach Typ + Id sortiert: die 5 coding.*-Instanzen stehen nebeneinander
+  // statt ueber 100+ Chips in Config-Reihenfolge verstreut.
+  var sorted = appConfig.module.slice().sort(function(a, b) {
+    return a.typ === b.typ ? (a.id < b.id ? -1 : 1) : (a.typ < b.typ ? -1 : 1);
+  });
+
+  sorted.forEach(function(m) {
     if (m.id === currentModuleId) return;
     if (m.typ === 'enhancer') return;
     if (m.persistent === false) return;
@@ -1897,17 +1989,11 @@ function populateLinkGrid(currentModuleId, linkedModules) {
     var chip = document.createElement('div');
     chip.dataset.moduleId = m.id;
     chip.dataset.moduleTyp = m.typ;
-    chip.dataset.linked = isLinked ? '1' : '0';
-    chip.style.cssText = 'padding:6px 12px;border-radius:var(--radius);cursor:pointer;font-size:11px;font-family:var(--font);transition:all 0.2s;user-select:none;border:1px solid ' + (isLinked ? 'var(--cyan)' : 'var(--border)') + ';background:' + (isLinked ? 'rgba(0,170,255,0.15)' : 'var(--bg-input)') + ';color:' + (isLinked ? 'var(--cyan)' : 'var(--text-dim)');
-    chip.textContent = (isLinked ? '\u2713 ' : '') + m.display_name + ' (' + m.typ + ')';
+    chip.dataset.label = m.display_name + ' (' + m.typ + ')';
+    chip.style.cssText = 'padding:6px 12px;border-radius:var(--radius);cursor:pointer;font-size:11px;font-family:var(--font);transition:all 0.2s;user-select:none;border:1px solid var(--border);';
+    setLinkChip(chip, isLinked);
     chip.onclick = function() {
-      var nowLinked = this.dataset.linked === '1';
-      nowLinked = !nowLinked;
-      this.dataset.linked = nowLinked ? '1' : '0';
-      this.style.borderColor = nowLinked ? 'var(--cyan)' : 'var(--border)';
-      this.style.background = nowLinked ? 'rgba(0,170,255,0.15)' : 'var(--bg-input)';
-      this.style.color = nowLinked ? 'var(--cyan)' : 'var(--text-dim)';
-      this.textContent = (nowLinked ? '\u2713 ' : '') + m.display_name + ' (' + m.typ + ')';
+      setLinkChip(this, this.dataset.linked !== '1');
       updateDerivedPerms();
     };
     grid.appendChild(chip);
