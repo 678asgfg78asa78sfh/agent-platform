@@ -3221,24 +3221,30 @@ function buildAufgabenRelations(data) {
 
   all.forEach(function(t) {
     if (!t.parent_id) return;
+    /* Parent nicht (mehr) im Datensatz (z.B. aus dem 500er-Erledigt-Fenster
+       gefallen): NICHT als Kind registrieren, sonst wird der Task in beiden
+       Ansichten unsichtbar. Er faellt unten in die Rekonstruktions-Gruppen. */
+    if (!byId[t.parent_id]) return;
     if (!childMap[t.parent_id]) childMap[t.parent_id] = [];
     childMap[t.parent_id].push(t);
     childIds[t.id] = true;
   });
 
   all.forEach(function(t) {
-    if (t.parent_id || childIds[t.id] || !isToolSubtask(t)) return;
-    var tMs = taskTimeMs(t);
+    if (childIds[t.id] || !isToolSubtask(t)) return;
     var parent = null;
-    for (var i = origins.length - 1; i >= 0; i--) {
-      var candidate = origins[i];
-      if (candidate.modul !== t.modul) continue;
-      var cMs = taskTimeMs(candidate);
-      if (!cMs || cMs > tMs) continue;
-      var delta = tMs - cMs;
-      if (delta > 30 * 60 * 1000) break;
-      parent = candidate;
-      break;
+    if (!t.parent_id) {
+      var tMs = taskTimeMs(t);
+      for (var i = origins.length - 1; i >= 0; i--) {
+        var candidate = origins[i];
+        if (candidate.modul !== t.modul) continue;
+        var cMs = taskTimeMs(candidate);
+        if (!cMs || cMs > tMs) continue;
+        var delta = tMs - cMs;
+        if (delta > 30 * 60 * 1000) break;
+        parent = candidate;
+        break;
+      }
     }
     if (parent) {
       addChild(parent.id, t);
@@ -3278,6 +3284,8 @@ function buildAufgabenRelations(data) {
     group.status = group.subs.some(function(s) { return s.status === 'Failed'; }) ? 'Failed' : (group.subs.some(function(s) { return s.status === 'Gestartet'; }) ? 'Gestartet' : 'Success');
     return group;
   });
+  /* Synthetische Gruppen nutzen denselben Child-Render-Pfad wie echte Parents */
+  syntheticGroups.forEach(function(g) { childMap[g.id] = g.subs; });
   return { childMap: childMap, childIds: childIds, syntheticGroups: syntheticGroups };
 }
 
@@ -3289,9 +3297,18 @@ function renderAufgaben(data) {
   if (flowMode) {
     renderFlow(data);
   } else {
-    renderKanbanCol('cards-erstellt', 'count-erstellt', data.erstellt || [], 'Erstellt');
-    renderKanbanCol('cards-gestartet', 'count-gestartet', data.gestartet || [], 'Gestartet');
-    renderKanbanCol('cards-erledigt', 'count-erledigt', data.erledigt || [], 'Erledigt');
+    /* Leere Workflow-Ticks (processed 0) muellen die Erledigt-Spalte zu */
+    var erstellt = (data.erstellt || []).filter(function(t) { return !isNoopWorkflowTickTask(t); });
+    var gestartet = (data.gestartet || []).filter(function(t) { return !isNoopWorkflowTickTask(t); });
+    var erledigt = (data.erledigt || []).filter(function(t) { return !isNoopWorkflowTickTask(t); });
+    /* Rekonstruierte Toolketten (Legacy/verwaiste Subtasks) als Gruppen-Karten */
+    (relations.syntheticGroups || []).forEach(function(g) {
+      if (g.status === 'Gestartet') gestartet.push(g);
+      else erledigt.unshift(g);
+    });
+    renderKanbanCol('cards-erstellt', 'count-erstellt', erstellt, 'Erstellt');
+    renderKanbanCol('cards-gestartet', 'count-gestartet', gestartet, 'Gestartet');
+    renderKanbanCol('cards-erledigt', 'count-erledigt', erledigt, 'Erledigt');
   }
 }
 
@@ -3323,11 +3340,18 @@ function canRestartTask(task) {
 
 function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
   var container = ge(containerId);
-  var visibleTasks = tasks.slice();
-  var childCount = tasks.filter(function(task) { return task.parent_id || aufgabenChildIds[task.id]; }).length;
+  /* Subtasks NICHT als eigene Top-Level-Karten doppeln — sie haengen als
+     Kette unter ihrer Parent-Karte (renderKanbanChildren). Vorher erschien
+     jeder Tool-Subtask zweimal und die Zusammenhaenge zerfielen. */
+  var childCount = 0;
+  var visibleTasks = tasks.filter(function(task) {
+    var isChild = !task.synthetic && aufgabenChildIds[task.id];
+    if (isChild) childCount++;
+    return !isChild;
+  });
   var countEl = ge(countId);
   countEl.textContent = String(visibleTasks.length);
-  countEl.title = childCount > 0 ? (visibleTasks.length + ' Aufgaben inkl. ' + childCount + ' Subtasks') : (visibleTasks.length + ' Aufgaben');
+  countEl.title = childCount > 0 ? (visibleTasks.length + ' Aufgaben + ' + childCount + ' Subtasks (unter ihren Parents)') : (visibleTasks.length + ' Aufgaben');
   if (visibleTasks.length === 0) {
     container.innerHTML = '<div class="kanban-empty">No tasks</div>';
     return;
@@ -3366,8 +3390,10 @@ function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
       var paramShort = task.params.map(function(p) { return p.length > 40 ? p.substring(0, 40) + '...' : p; }).join(', ');
       paramsHtml = '<div style="font-size:9px;color:var(--cyan);background:rgba(0,238,255,0.05);padding:2px 5px;border-radius:3px;margin:2px 0;word-break:break-all;">(' + escHtml(paramShort) + ')</div>';
     }
-    /* Action-Buttons */
+    /* Action-Buttons — synthetische Gruppen sind reine Anzeige-Konstrukte,
+       ihre IDs existieren nicht in der Task-DB */
     var actions = '';
+	    if (!task.synthetic) {
 	    if (canRestartTask(task)) {
 	      actions += '<button class="btn btn-sm" onclick="restartAufgabe(\'' + task.id + '\')">Erneut starten</button> ';
 	    }
@@ -3379,6 +3405,7 @@ function renderKanbanCol(containerId, countId, tasks, defaultStatus) {
 	    }
 	    if (status === 'Erstellt') {
 	      actions += '<button class="btn btn-sm" onclick="editAufgabe(\'' + task.id + '\',this)">Edit</button>';
+	    }
 	    }
     card.innerHTML =
       '<div style="display:flex;justify-content:space-between;align-items:start;">' +
@@ -3465,7 +3492,23 @@ function renderTaskResultDetails(result, label) {
 function renderKanbanChildren(task) {
   var children = (aufgabenChildMap[task.id] || []);
   if (!children.length) return '';
+  /* Lange Ketten (Video-Pipeline etc.): erste 8 sichtbar, Rest einklappbar */
+  var MAX_VISIBLE = 8;
+  var extra = children.length > MAX_VISIBLE ? children.slice(MAX_VISIBLE) : [];
+  var shown = extra.length ? children.slice(0, MAX_VISIBLE) : children;
   var html = '<div class="kanban-child-flow" title="Tool-Subtasks dieser Aufgabe">';
+  html += renderChildRows(task, shown);
+  if (extra.length) {
+    html += '<details class="kanban-child-details"><summary>+' + extra.length + ' weitere Subtasks</summary>';
+    html += renderChildRows(task, extra);
+    html += '</details>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function renderChildRows(task, children) {
+  var html = '';
   children.forEach(function(child, idx) {
     var status = child.status || 'Erstellt';
     var color = taskStatusColor(status);
@@ -3487,6 +3530,17 @@ function renderKanbanChildren(task) {
     html += '<span class="badge badge-' + statusBadgeColor(status) + '">' + escHtml(status) + '</span>';
     if (params) html += '<span style="color:var(--text-dim);word-break:break-word;">(' + escHtml(params) + ')</span>';
     html += '</div>';
+    /* Kontextzeile: welches Modul, wann, wie lange */
+    var meta = [];
+    if (child.modul && child.modul !== task.modul) meta.push(escHtml(child.modul));
+    if (child.erstellt) meta.push(fmtDateTime(child.erstellt));
+    var durStart = Date.parse(child.gestartet || child.erstellt || '');
+    var durEnd = Date.parse(child.erledigt || '');
+    if (Number.isFinite(durStart) && Number.isFinite(durEnd) && durEnd >= durStart) {
+      var secs = Math.round((durEnd - durStart) / 1000);
+      meta.push(secs >= 90 ? Math.round(secs / 60) + ' min' : secs + 's');
+    }
+    if (meta.length) html += '<div style="font-size:8px;color:var(--text-dim);margin:1px 0;">' + meta.join(' · ') + '</div>';
     if (resultShort) html += '<div class="kanban-child-result">' + escHtml(resultShort) + '</div>';
     html += renderDeepDiveToolTrace(result);
     if (result.length > 110) {
@@ -3497,7 +3551,6 @@ function renderKanbanChildren(task) {
     }
     html += '</div></div>';
   });
-  html += '</div>';
   return html;
 }
 
