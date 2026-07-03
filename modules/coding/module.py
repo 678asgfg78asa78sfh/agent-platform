@@ -51,7 +51,7 @@ MODULE = {
                 "npm test",
                 "npm run build",
                 "node --check",
-                "npx tsc --noEmit",
+                "npx --no-install tsc --noEmit",
                 "go test",
                 "go build",
                 "go vet",

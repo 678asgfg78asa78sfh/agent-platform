@@ -80,6 +80,38 @@ def test_push_disabled_by_setting():
         assert not res["success"] and "deaktiviert" in res["data"]
 
 
+def test_nested_dir_in_outer_repo_not_captured():
+    """Home liegt IN einem fremden Repo: git add -A darf nie ins aeussere Repo stagen."""
+    with tempfile.TemporaryDirectory() as outer:
+        cfg_outer = make_config(outer)
+        git_tools.handle_tool("git_tools.init", ["{}"], cfg_outer)
+        sub = os.path.join(outer, "workspace")
+        os.makedirs(sub)
+        cfg_sub = make_config(sub)
+        res = git_tools.handle_tool("git_tools.status", ["{}"], cfg_sub)
+        assert not res["success"], res["data"]
+        assert "innerhalb von" in res["data"]
+        res = git_tools.handle_tool("git_tools.commit", ['{"message": "boese"}'], cfg_sub)
+        assert not res["success"]
+
+
+def test_hooks_do_not_execute():
+    """Repo-eigene Hooks (z.B. aus geklontem Fremd-Repo) duerfen nie laufen."""
+    with tempfile.TemporaryDirectory() as home:
+        cfg = make_config(home)
+        git_tools.handle_tool("git_tools.init", ["{}"], cfg)
+        marker = os.path.join(home, "hook-ran")
+        hook = os.path.join(home, ".git", "hooks", "pre-commit")
+        with open(hook, "w") as f:
+            f.write(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+        os.chmod(hook, 0o755)
+        with open(os.path.join(home, "a.txt"), "w") as f:
+            f.write("x\n")
+        res = git_tools.handle_tool("git_tools.commit", ['{"message": "test"}'], cfg)
+        assert res["success"], res["data"]
+        assert not os.path.exists(marker), "pre-commit-Hook wurde ausgefuehrt!"
+
+
 def test_redact_credentials():
     assert git_tools.redact("https://user:ghp_secret123@github.com/x/y") == "https://***@github.com/x/y"
     assert git_tools.redact("https://ghp_tok@github.com/x") == "https://***@github.com/x"

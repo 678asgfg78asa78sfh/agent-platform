@@ -117,8 +117,10 @@ def redact(text):
 
 def parse_payload(params):
     """Ein Param, JSON-Objekt mit benannten Keys. Nackter String = repo-Pfad."""
-    raw = (params[0] if params else "") or ""
-    raw = str(raw).strip()
+    raw = params[0] if params else ""
+    if isinstance(raw, dict):
+        return raw
+    raw = str(raw or "").strip()
     if not raw:
         return {}
     if raw.startswith("{"):
@@ -152,7 +154,7 @@ def effective_allow_project_root(config):
     return cfg_bool(config.get("allow_project_root"), False)
 
 
-def resolve_repo(payload, config):
+def resolve_repo(payload, config, create=False):
     raw = str(payload.get("repo") or config.get("workspace_root") or "").strip()
     home = home_dir(config)
     project = str(config.get("project_root") or "").strip()
@@ -167,13 +169,31 @@ def resolve_repo(payload, config):
     if not any(is_within(repo, a) for a in allowed):
         return None, f"Repo-Pfad nicht erlaubt: {repo}. Erlaubt unterhalb: {allowed}"
     if not os.path.isdir(repo):
-        return None, f"Verzeichnis existiert nicht: {repo}"
+        if create:
+            # Nur fuer git_tools.init: neues Projektverzeichnis im Workspace
+            # anlegen — der Pfad ist zu diesem Zeitpunkt bereits confined.
+            os.makedirs(repo, exist_ok=True)
+        else:
+            return None, f"Verzeichnis existiert nicht: {repo}"
     return repo, None
 
 
-def require_git_repo(repo):
-    if not os.path.isdir(os.path.join(repo, ".git")):
+def require_git_repo(repo, config):
+    """Repo-Wurzel muss EXAKT `repo` sein.
+
+    Wichtig: kein blosses `rev-parse --is-inside-work-tree` — das Coding-Home
+    kann selbst innerhalb eines uebergeordneten Repos liegen (hier: agent/);
+    dann wuerde `git add -A` im Home ins AEUSSERE Repo stagen. Der Toplevel-
+    Vergleich deckt zugleich Worktrees und Submodule ab (.git als Datei).
+    """
+    top, err = run_git(repo, ["rev-parse", "--show-toplevel"], config, check=False)
+    if err or not (top or "").strip():
         return f"Kein Git-Repo: {repo} (git_tools.init zum Anlegen nutzen)"
+    if os.path.realpath(top.strip()) != os.path.realpath(repo):
+        return (
+            f"Kein eigenes Git-Repo: {repo} liegt innerhalb von {top.strip()} — "
+            "git_tools.init nutzen oder den Repo-Pfad direkt angeben"
+        )
     return None
 
 
@@ -198,7 +218,9 @@ def run_git(repo, args, config, check=True):
     env.setdefault("GIT_COMMITTER_EMAIL", "agent@local")
     try:
         proc = subprocess.run(
-            ["git", "-C", repo] + args,
+            # hooksPath=/dev/null: Repo-eigene Hooks (potenziell aus einem
+            # geklonten Fremd-Repo) duerfen hier nie Code ausfuehren.
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat", "-C", repo] + args,
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -231,7 +253,7 @@ def git_status(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     head, _ = run_git(repo, ["branch", "--show-current"], config, check=False)
     track, _ = run_git(
@@ -255,7 +277,7 @@ def git_diff(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     args = ["diff"]
     if cfg_bool(payload.get("staged"), False):
@@ -281,7 +303,7 @@ def git_log(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     limit = max(1, min(cfg_int(payload.get("limit"), 20), 200))
     args = ["log", f"-{limit}", "--date=short", "--pretty=format:%h %ad %an: %s"]
@@ -297,7 +319,7 @@ def git_branch(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     action = str(payload.get("action") or "list").strip().lower()
     if action == "list":
@@ -319,7 +341,7 @@ def git_commit(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     message = str(payload.get("message") or "").strip()
     if not message:
@@ -352,7 +374,7 @@ def git_push(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     remote, err = safe_name(payload.get("remote") or "origin", "Remote")
     if err:
@@ -375,7 +397,7 @@ def git_pull(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     remote, err = safe_name(payload.get("remote") or "origin", "Remote")
     if err:
@@ -386,7 +408,7 @@ def git_pull(payload, config):
 
 
 def git_init(payload, config):
-    repo, err = resolve_repo(payload, config)
+    repo, err = resolve_repo(payload, config, create=True)
     if err:
         return fail(err)
     if os.path.isdir(os.path.join(repo, ".git")):
@@ -400,19 +422,15 @@ def git_init(payload, config):
 
 # ─── GitHub-API (PRs) ────────────────────────────────────────────────────────
 
-_GH_TOKEN_CACHE = None
-_GH_TOKEN_LOADED = False
-
-
 def load_github_token(config):
-    """Token: erst Modul-Setting, sonst api_key_vault-Eintrag 'github'."""
-    global _GH_TOKEN_CACHE, _GH_TOKEN_LOADED
+    """Token: erst Modul-Setting, sonst Vault, sonst ~/.git-credentials.
+
+    Bewusst OHNE Prozess-Cache: der Modul-Prozess lebt im Pool tagelang,
+    ein gecachter Token wuerde Rotation/Config-Aenderungen verstecken.
+    """
     direct = str(config.get("github_token") or "").strip()
     if direct:
         return direct
-    if _GH_TOKEN_LOADED:
-        return _GH_TOKEN_CACHE or ""
-    _GH_TOKEN_LOADED = True
     candidates = [
         Path(__file__).resolve().parent.parent.parent / "agent-data" / "config.json",
         Path("agent-data/config.json"),
@@ -427,7 +445,6 @@ def load_github_token(config):
                 if entry.get("id") == "github" or "github" in name:
                     secret = str(entry.get("secret") or "").strip()
                     if secret:
-                        _GH_TOKEN_CACHE = secret
                         return secret
         except Exception:
             continue
@@ -436,8 +453,7 @@ def load_github_token(config):
         for line in Path.home().joinpath(".git-credentials").read_text().splitlines():
             m = re.match(r"https://[^:]+:([^@]+)@github\.com", line.strip())
             if m:
-                _GH_TOKEN_CACHE = m.group(1)
-                return _GH_TOKEN_CACHE
+                return m.group(1)
     except Exception:
         pass
     return ""
@@ -473,7 +489,7 @@ def pr_create(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     token = load_github_token(config)
     if not token:
@@ -513,7 +529,7 @@ def pr_list(payload, config):
     repo, err = resolve_repo(payload, config)
     if err:
         return fail(err)
-    if (err := require_git_repo(repo)):
+    if (err := require_git_repo(repo, config)):
         return fail(err)
     token = load_github_token(config)
     if not token:
