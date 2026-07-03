@@ -47,6 +47,8 @@ On first start with an empty config, the server redirects `/` to `/setup` — a 
 
 Click **"New Agent"** → **"AI Assistant"** and describe the agent you want in plain language (German or English — the wizard adapts). The wizard proposes fields (ID, type, LLM backend, system prompt, permissions), you confirm or edit, and it commits to `config.json`. No JSON hand-editing required.
 
+When editing an agent's **Linked Modules**, one-click presets bundle the right modules per use case — **Coding** (`coding` + `editor` + `filesystem`), **Research** (DeepDive + search + browser), **Video** (report → TTS → render → upload pipeline), **Social** — plus a filter box for the instance list. A pure coding chat needs exactly the Coding preset, nothing more.
+
 If you prefer direct config editing, see [docs/templates/](docs/templates/) for seven starter agent configurations (simple chat, daily digest cron, python coding helper, email triage, web monitor, system healthcheck, rag knowledge base).
 
 ---
@@ -135,7 +137,9 @@ Tasks live in a SQLite table (`tasks.status` enum: `erstellt` → `gestartet` �
 
 Side-effect tools (`shell.exec`, `notify.send`, `files.write`, `smtp.send`, `aufgaben.erstellen`, `agent.spawn`) go through an idempotency gate: a `task_id + tool + params` hash gets a pre-execute `IN_PROGRESS` marker, overwritten with the actual result on success. A retry with the same inputs returns the cached result (exactly-once). Stuck markers from crashes auto-expire after 10 min.
 
-The audit log (`audit_log` table) records every side-effect tool call and config change with DB triggers that block UPDATE/DELETE — tamper-proof at the storage level.
+The audit log (`audit_log` table) records every side-effect tool call and config change with DB triggers that block UPDATE/DELETE — tamper-proof at the storage level. High-frequency machine events (`api_vault.use`, `credential_vault.use`) are rate-limited to one entry per (actor, alias, path) per 10 minutes, and a retention job (`cleanup.audit_max_alter_tage`, default 90 days; noisy machine events 14 days) prunes old entries in the 6h maintenance tick — without it the table grew unbounded.
+
+RAG pools under `agent-data/rag/<pool>/` have their own retention: machine-generated crawl/RSS/enhancer notes older than `cleanup.rag_max_alter_tage` (default 45, `0` = off) are moved to `agent-data/rag/.archive/<pool>/` — never deleted, and user memos (`rag.speichern`) are never touched. Stored entries carry an `origin` module id, saves deduplicate by content hash, and keyword retrieval applies a match-count floor so a single shared word no longer pulls unrelated notes into context.
 
 The `tasks.status` column uses five values: `erstellt` (created), `gestartet` (running), and the terminal states `success`, `failed`, `cancelled`. The first two are still German because that was the original source language and renaming them requires a breaking migration on existing installs; terminal states were added in English during the SQLite migration. These are SQLite enum values, **not** filesystem directories. The word `erledigt` survives only as part of column names like `erledigt_ts` (the timestamp at which a task reached a terminal state).
 
