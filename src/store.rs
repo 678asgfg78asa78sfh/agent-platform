@@ -285,6 +285,27 @@ pub fn task_upsert(
 pub fn claim_one_for_modul(pool: &SqlitePool, modul: &str) -> StoreResult<Option<TaskRow>> {
     let now = chrono::Utc::now().timestamp();
     let mut conn = pool.get().map_err(e("pool"))?;
+
+    // Read-only Pregate: ~115 Scheduler pollen alle 2s, fast immer auf leere
+    // Queues. Ein BEGIN IMMEDIATE pro Poll heisst ~58 Write-Lock-Acquisitions/s
+    // nur fuers Nichtstun — unter Last liefen die 5s busy_timeout ab und der
+    // Log flutete mit "begin: database is locked". Unter WAL blockiert dieser
+    // SELECT keinen Writer; nur wenn es einen Kandidaten gibt, ziehen wir die
+    // teure IMMEDIATE-Transaktion (die den Kandidaten selbst nochmal prueft,
+    // Race bleibt also ausgeschlossen).
+    let has_candidate: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM tasks
+         WHERE status='erstellt' AND modul=?1 AND faellig_ab_ts<=?2 LIMIT 1",
+            params![modul, now],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(e("claim pregate"))?;
+    if has_candidate.is_none() {
+        return Ok(None);
+    }
+
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(e("begin"))?;

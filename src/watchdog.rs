@@ -49,7 +49,11 @@ impl Watchdog {
                 if *last_beat == 0 {
                     continue;
                 }
-                let diff = now - last_beat;
+                // saturating_sub: der Heartbeat kann NACH dem now-Snapshot geschrieben
+                // worden sein (Scheduler-Tick zwischen Snapshot und Iteration). Ein
+                // nackter u64-Sub wrappt dann zu ~1.8e19 und der Watchdog abortet
+                // einen kerngesunden Scheduler ("antwortet seit 18446744073709551615s").
+                let diff = now.saturating_sub(*last_beat);
                 if diff <= self.timeout_secs {
                     continue;
                 }
