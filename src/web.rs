@@ -2822,11 +2822,22 @@ async fn restore_config_backup(
 
 // ─── Aufgaben ──────────────────────────────────────
 
-async fn get_aufgaben(State(s): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn get_aufgaben(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    // Default 100 statt 500: die UI pollt alle 3s, und die vollen
+    // Ergebnis-Texte (bis 141 KB pro Task) machten daraus ~6.4 MB pro Poll.
+    // ?limit=500 holt bei Bedarf weiter die volle Historie.
+    let limit = q
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(100)
+        .min(500);
     Json(serde_json::json!({
         "erstellt": s.pipeline.erstellt(),
         "gestartet": s.pipeline.gestartet(),
-        "erledigt": s.pipeline.erledigt(),
+        "erledigt": s.pipeline.erledigt_recent(limit),
     }))
 }
 

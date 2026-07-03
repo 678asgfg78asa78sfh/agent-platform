@@ -195,7 +195,13 @@ impl Pipeline {
         self.laden("gestartet")
     }
     pub fn erledigt(&self) -> Vec<Aufgabe> {
-        match crate::store::task_list_erledigt_recent(&self.store.pool, 500) {
+        self.erledigt_recent(500)
+    }
+
+    /// Erledigt-Liste mit Limit — die Kanban-API pollt alle 3s; 500 volle
+    /// Aufgaben inkl. Ergebnis-Texten waren ~6.4 MB JSON pro Poll.
+    pub fn erledigt_recent(&self, limit: usize) -> Vec<Aufgabe> {
+        match crate::store::task_list_erledigt_recent(&self.store.pool, limit) {
             Ok(r) => Self::decode_rows(r),
             Err(_) => vec![],
         }

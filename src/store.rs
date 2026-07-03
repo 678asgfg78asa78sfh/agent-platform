@@ -699,6 +699,51 @@ pub struct AuditEntry {
     pub detail: String,
 }
 
+/// Audit-Retention. `audit_log` war die einzige Tabelle ohne Cap und wuchs
+/// auf 2.58M Zeilen / 341 MB — 1.89M davon `api_vault.use` (eine Zeile pro
+/// Tool-Call). Die Append-only-Trigger blockieren DELETE absichtlich; fuer
+/// die Wartung wird der Delete-Guard kurz entfernt und danach IMMER wieder
+/// angelegt. Hochfrequente Maschinen-Events (vault.use/tool_exec) leben
+/// `keep_days_noisy`, alles andere (Config-Aenderungen, Security-Events)
+/// `keep_days`. keep_days == 0 schaltet die Retention ab.
+pub fn audit_cleanup(
+    pool: &SqlitePool,
+    keep_days: u32,
+    keep_days_noisy: u32,
+) -> StoreResult<usize> {
+    if keep_days == 0 {
+        return Ok(0);
+    }
+    let conn = pool.get().map_err(e("pool"))?;
+    let now = chrono::Utc::now().timestamp();
+    let cutoff = now - keep_days as i64 * 86_400;
+    let cutoff_noisy = now - keep_days_noisy.min(keep_days) as i64 * 86_400;
+    conn.execute_batch("DROP TRIGGER IF EXISTS audit_no_delete;")
+        .map_err(e("audit trigger drop"))?;
+    let result = (|| {
+        let n_old = conn
+            .execute("DELETE FROM audit_log WHERE ts < ?1", params![cutoff])
+            .map_err(e("audit prune"))?;
+        let n_noisy = conn
+            .execute(
+                "DELETE FROM audit_log WHERE ts < ?1
+                 AND action IN ('api_vault.use','credential_vault.use','tool_exec')",
+                params![cutoff_noisy],
+            )
+            .map_err(e("audit prune noisy"))?;
+        Ok(n_old + n_noisy)
+    })();
+    // Guard-Trigger auch im Fehlerfall wiederherstellen — sonst waere das
+    // Log dauerhaft beschreib- UND loeschbar.
+    let _ = conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS audit_no_delete
+             BEFORE DELETE ON audit_log BEGIN
+             SELECT RAISE(FAIL, 'audit_log is append-only');
+         END;",
+    );
+    result
+}
+
 pub fn audit_recent(pool: &SqlitePool, limit: usize) -> StoreResult<Vec<AuditEntry>> {
     let conn = pool.get().map_err(e("pool"))?;
     let mut stmt = conn

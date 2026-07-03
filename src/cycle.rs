@@ -534,6 +534,30 @@ impl Orchestrator {
                     .unwrap_or(true);
                 if rag_due {
                     last_rag_prune = Some(std::time::Instant::now());
+                    // Audit-Retention im selben 6h-Takt — mit Index auf ts
+                    // billig, wenn nichts zu loeschen ist.
+                    let audit_days = {
+                        let cfg = self.config.read().await;
+                        cfg.cleanup
+                            .as_ref()
+                            .map(|c| c.audit_max_alter_tage)
+                            .unwrap_or(90)
+                    };
+                    match crate::store::audit_cleanup(&self.pipeline.store.pool, audit_days, 14) {
+                        Ok(n) if n > 0 => self.pipeline.log(
+                            "cleanup",
+                            None,
+                            LogTyp::Info,
+                            &format!("Audit-Retention: {} Eintraege geloescht", n),
+                        ),
+                        Ok(_) => {}
+                        Err(e) => self.pipeline.log(
+                            "cleanup",
+                            None,
+                            LogTyp::Warning,
+                            &format!("Audit-Retention fehlgeschlagen: {}", e),
+                        ),
+                    }
                     let max_age = {
                         let cfg = self.config.read().await;
                         cfg.cleanup

@@ -832,6 +832,7 @@ impl Default for AgentConfig {
                 max_alter_tage: 30,
                 cleanup_interval_s: 60,
                 rag_max_alter_tage: default_rag_max_alter_tage(),
+                audit_max_alter_tage: default_audit_max_alter_tage(),
             }),
             daily_budget_usd: None,
             api_auth_token: None,
@@ -856,10 +857,18 @@ pub struct CleanupConfig {
     /// nie betroffen (siehe rag::PRUNE_PREFIXES).
     #[serde(default = "default_rag_max_alter_tage")]
     pub rag_max_alter_tage: u32,
+    /// Audit-Log-Retention in Tagen (0 = aus). Hochfrequente Events
+    /// (api_vault.use/tool_exec) werden nach 14 Tagen geloescht.
+    #[serde(default = "default_audit_max_alter_tage")]
+    pub audit_max_alter_tage: u32,
 }
 
 fn default_rag_max_alter_tage() -> u32 {
     45
+}
+
+fn default_audit_max_alter_tage() -> u32 {
+    90
 }
 
 // ─── Wizard ──────────────────────────────────────

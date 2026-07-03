@@ -4216,7 +4216,10 @@ function renderFlow(data) {
 var aufgabenPollTimer = null;
 function startAufgabenPolling() {
   if (aufgabenPollTimer) return;
-  aufgabenPollTimer = setInterval(loadAufgaben, 3000);
+  /* Nicht weiterpollen, wenn der Browser-Tab im Hintergrund liegt */
+  aufgabenPollTimer = setInterval(function() {
+    if (!document.hidden) loadAufgaben();
+  }, 3000);
 }
 function stopAufgabenPolling() {
   if (aufgabenPollTimer) { clearInterval(aufgabenPollTimer); aufgabenPollTimer = null; }

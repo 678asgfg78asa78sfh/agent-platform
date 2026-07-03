@@ -1177,6 +1177,9 @@ fn audit_api_vault_uses(
         if !seen.insert((used.alias.clone(), used.path.clone())) {
             continue;
         }
+        if vault_use_recently_audited("api", actor, &used.alias, &used.path) {
+            continue;
+        }
         pipeline.audit(
             "api_vault.use",
             actor,
@@ -1190,6 +1193,29 @@ fn audit_api_vault_uses(
     }
 }
 
+/// Rate-Limit fuer Vault-Use-Audits: ein Eintrag pro (actor, alias, path)
+/// und 10 Minuten. Vorher schrieb JEDER Tool-Call eine append-only-Zeile —
+/// 1.89M `api_vault.use`-Rows waren der Hauptgrund fuer eine 341-MB-DB.
+/// Die Audit-Aussage "Modul X nutzt Key Y" bleibt vollstaendig erhalten,
+/// nur die Wiederholrate sinkt.
+fn vault_use_recently_audited(kind: &str, actor: &str, alias: &str, path: &str) -> bool {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    type SeenMap = std::collections::HashMap<(String, String, String), Instant>;
+    static SEEN: OnceLock<Mutex<SeenMap>> = OnceLock::new();
+    let Ok(mut map) = SEEN.get_or_init(|| Mutex::new(SeenMap::new())).lock() else {
+        return false; // Poisoned Lock: lieber doppelt auditieren als gar nicht
+    };
+    let now = Instant::now();
+    map.retain(|_, t| now.duration_since(*t) < Duration::from_secs(600));
+    let key = (format!("{kind}:{actor}"), alias.to_string(), path.to_string());
+    if map.contains_key(&key) {
+        return true;
+    }
+    map.insert(key, now);
+    false
+}
+
 fn audit_credential_vault_uses(
     pipeline: &Pipeline,
     actor: &str,
@@ -1199,6 +1225,9 @@ fn audit_credential_vault_uses(
     let mut seen = std::collections::HashSet::new();
     for used in uses {
         if !seen.insert((used.alias.clone(), used.path.clone())) {
+            continue;
+        }
+        if vault_use_recently_audited("cred", actor, &used.alias, &used.path) {
             continue;
         }
         pipeline.audit(
