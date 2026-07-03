@@ -4,7 +4,12 @@ from datetime import datetime
 
 MODULE = {
     "name": "editor",
-    "description": "Token-effizienter Code-Editor mit Zeilenbereichen, Search-and-Replace, Backup und Undo",
+    "description": (
+        "Token-effizienter EINZELDATEI-Editor: view/replace/insert/create/overwrite/"
+        "undo mit Backups. Fuer schnelle chirurgische Edits und neue Dateien. "
+        "Abgrenzung: mehrschrittige Coding-Aufgaben mit Tests/Review -> coding.*; "
+        "committen/pushen/PR -> git_tools.*"
+    ),
     "version": "1.0",
     "settings": {
         "max_view_lines": {"type": "number", "label": "Max Zeilen pro View", "default": 80},

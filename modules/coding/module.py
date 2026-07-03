@@ -18,7 +18,12 @@ from datetime import datetime, timezone
 
 MODULE = {
     "name": "coding",
-    "description": "Zielgefuehrtes Coding: Zielvertrag, Code-Kontext, Coding-Memory, Snapshot, Patch, Verify und Review.",
+    "description": (
+        "Zielgefuehrtes Coding auf BESTEHENDEM Code: start -> context/read -> patch "
+        "(unified diff) -> run (Tests/Build) -> review -> finish. Mit Snapshots, "
+        "Coding-Memory und Zielvertrag. Abgrenzung: editor.* = schnelle Einzeldatei-"
+        "Edits ohne Workflow; git_tools.* = commit/branch/push/PR nach dem Coding."
+    ),
     "version": "1.0",
     "settings": {
         "workspace_root": {"type": "string", "label": "Workspace Root leer=Home", "default": ""},
@@ -36,12 +41,20 @@ MODULE = {
             "default": [
                 "python3 -m py_compile",
                 "python3 -m pytest",
+                "python3 -m unittest",
                 "pytest",
+                "ruff check",
                 "cargo test",
                 "cargo check",
+                "cargo build",
+                "cargo fmt --check",
                 "npm test",
                 "npm run build",
+                "node --check",
+                "npx tsc --noEmit",
                 "go test",
+                "go build",
+                "go vet",
             ],
         },
         "ignored_dirs": {

@@ -1888,8 +1888,8 @@ function getModuleDef(typName) {
 /* Presets: benannte Bundles statt 100+ flacher Chips. Ein Klick waehlt pro
    Typ genau EINE Instanz (bevorzugt "<typ>.default", sonst die erste). */
 var LINK_PRESETS = [
-  { name: 'Coding', typs: ['coding', 'editor', 'filesystem'],
-    hint: 'Nur Coding: Code lesen/patchen/testen (coding) + Zeilen-Editor fuer neue Dateien (editor) + Dateizugriff (filesystem)' },
+  { name: 'Coding', typs: ['coding', 'editor', 'filesystem', 'git_tools'],
+    hint: 'Nur Coding: Code lesen/patchen/testen (coding) + Zeilen-Editor fuer neue Dateien (editor) + Dateizugriff (filesystem) + commit/push/PR (git_tools)' },
   { name: 'Research', typs: ['deepdive', 'websearch', 'tavily', 'browser', 'youtube_transcript', 'chat_history'],
     hint: 'Recherche: DeepDive-Fanout + Websuche + Browser + YouTube-Transkripte + Verlauf' },
   { name: 'Video', typs: ['workflow_trigger', 'deepdive', 'video_pipeline', 'tts', 'factcheck', 'image_gen', 'youtube_upload'],
