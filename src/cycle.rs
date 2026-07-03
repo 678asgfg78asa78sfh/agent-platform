@@ -365,6 +365,11 @@ impl Orchestrator {
 
         let mut handles: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
         let mut last_cleanup = std::time::Instant::now();
+        // RAG-Retention laeuft deutlich seltener als der normale Cleanup:
+        // sie liest jeden Eintrag des Pools (Zehntausende Files moeglich).
+        // Start bei "lange her", damit der erste Lauf kurz nach dem Boot
+        // passiert und ein voller Pool nicht erst nach 6h schrumpft.
+        let mut last_rag_prune: Option<std::time::Instant> = None;
         // Cron läuft separat vom Cleanup (das war der Bug: cleanup_interval_s > 60
         // hat Minuten-cron-Slots übersprungen — der minute-Key wurde nie geprüft).
         // 30s heißt wir prüfen jede Minute mindestens 1x (meist 2x, Dedup verhindert
@@ -521,6 +526,47 @@ impl Orchestrator {
                     crate::store::idempotency_expire_in_progress(&self.pipeline.store.pool, 600);
                 // Alte completed Idempotency-Einträge wegrotieren (30 Tage)
                 let _ = crate::store::idempotency_cleanup(&self.pipeline.store.pool, 30);
+
+                // RAG-Retention: maschinelle Crawl-/Feed-Notizen archivieren.
+                // Hoechstens alle 6h — jeder Lauf liest den kompletten Pool.
+                let rag_due = last_rag_prune
+                    .map(|t| t.elapsed().as_secs() >= 6 * 3600)
+                    .unwrap_or(true);
+                if rag_due {
+                    last_rag_prune = Some(std::time::Instant::now());
+                    let max_age = {
+                        let cfg = self.config.read().await;
+                        cfg.cleanup
+                            .as_ref()
+                            .map(|c| c.rag_max_alter_tage)
+                            .unwrap_or(45)
+                    };
+                    if max_age > 0 {
+                        let pools: Vec<String> = {
+                            let cfg = self.config.read().await;
+                            cfg.rag_pools.iter().map(|p| p.name.clone()).collect()
+                        };
+                        for pool in pools {
+                            let (archived, scanned) = crate::modules::rag::aufraeumen(
+                                &self.pipeline.base,
+                                &pool,
+                                max_age,
+                            )
+                            .await;
+                            if archived > 0 {
+                                self.pipeline.log(
+                                    "cleanup",
+                                    None,
+                                    LogTyp::Info,
+                                    &format!(
+                                        "RAG-Retention '{}': {} von {} Notizen aelter {} Tage nach rag/.archive verschoben",
+                                        pool, archived, scanned, max_age
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
             }
 
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;

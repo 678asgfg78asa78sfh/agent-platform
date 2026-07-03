@@ -1301,7 +1301,11 @@ fn enhancer_rag_pool(m: &ModulConfig, pools: &[crate::types::RagPool]) -> Option
 }
 
 fn enhancer_store_rag(m: &ModulConfig) -> bool {
-    m.settings.enhancer_store_rag.unwrap_or(true)
+    // Default AUS: der Enhancer wuerde sonst rohe User-Eingaben + Modell-
+    // Antworten wortwoertlich in einen geteilten RAG-Pool schreiben, sobald
+    // irgendwo ein Enhancer verdrahtet wird. Wer das will, schaltet es
+    // explizit pro Enhancer-Instanz ein.
+    m.settings.enhancer_store_rag.unwrap_or(false)
 }
 
 fn enhancer_inject_context(m: &ModulConfig) -> bool {
@@ -1468,7 +1472,15 @@ async fn store_enhancer_note(
         util::safe_truncate(output_text.unwrap_or(""), 6000),
         util::safe_truncate(decision.notes.as_deref().unwrap_or(""), 6000),
     );
-    let _ = crate::modules::rag::speichern(&state.pipeline.base, &pool, &note, None, None).await;
+    let _ = crate::modules::rag::speichern(
+        &state.pipeline.base,
+        &pool,
+        &note,
+        None,
+        None,
+        Some(&enhancer.id),
+    )
+    .await;
 }
 
 async fn run_one_enhancer(
@@ -4365,7 +4377,7 @@ async fn get_py_modules(State(s): State<Arc<AppState>>) -> Json<serde_json::Valu
                 "enhancer_mode":{"type":"select","label":"Mode","default":"observe","options":["observe","filter","rewrite","translate","quality","gateway"]},
                 "enhancer_prompt":{"type":"text","label":"Enhancer Prompt","default":"Analysiere den Kontext. Gib JSON mit action, text, notes, flags, reason zurueck."},
                 "enhancer_fail_policy":{"type":"select","label":"Fail Policy","default":"fail_open","options":["fail_open","fail_closed"]},
-                "enhancer_store_rag":{"type":"bool","label":"In Enhancer-RAG speichern","default":true},
+                "enhancer_store_rag":{"type":"bool","label":"In Enhancer-RAG speichern","default":false},
                 "enhancer_rag_pool":{"type":"string","label":"Enhancer RAG Pool","default":"Enhancer"},
                 "enhancer_inject_context":{"type":"bool","label":"Input-Annotation in Kontext injizieren","default":true},
                 "enhancer_max_output_chars":{"type":"number","label":"Max Output-Zeichen","default":6000},

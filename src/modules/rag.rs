@@ -18,6 +18,11 @@ struct RagEntry {
     embedding: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     embedding_model: Option<String>,
+    /// Modul-Id des Schreibers (z.B. "chat.llamacpp"). Pools werden von
+    /// mehreren Chats geteilt — ohne Herkunft ist nicht nachvollziehbar,
+    /// welcher Chat/Worker einen Eintrag hinterlassen hat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
 }
 
 fn rag_dir(base: &Path, pool: &str) -> std::path::PathBuf {
@@ -82,7 +87,22 @@ fn compact_rag_text(entry: &RagEntry) -> String {
     if entry.text.starts_with("RSS_NEWS_NOTE") {
         return compact_rss_news_text(entry);
     }
-    crate::util::safe_truncate(&entry.text, 1800).to_string()
+    // Freie Memos ("merk dir X"): Herkunft + Alter mit ausgeben, damit ein
+    // Chat erkennen kann, dass ein Treffer aus einem anderen Chat/Worker
+    // stammt (geteilter Pool) und wie alt er ist.
+    let origin = entry
+        .origin
+        .as_deref()
+        .map(|o| format!(" origin: {}", o))
+        .unwrap_or_default();
+    format!(
+        "rag_id: {} stored_at_utc: {}{}{}\n{}",
+        entry.id,
+        entry.timestamp,
+        age_suffix(&entry.timestamp),
+        origin,
+        crate::util::safe_truncate(&entry.text, 1800)
+    )
 }
 
 fn compact_deepdive_manifest(entry: &RagEntry) -> String {
@@ -127,25 +147,10 @@ fn compact_deepdive_manifest(entry: &RagEntry) -> String {
             ));
         }
     }
-    if let Some(tool_trace) = section_after(&entry.text, "tool_trace:") {
-        let tool_trace = tool_trace
-            .split("\ntrace:")
-            .next()
-            .unwrap_or(tool_trace)
-            .trim();
-        if !tool_trace.is_empty() {
-            out.push(format!(
-                "tool_trace_excerpt:\n{}",
-                crate::util::safe_truncate(tool_trace, 1400)
-            ));
-        }
-    }
-    if let Some(trace) = section_after(&entry.text, "trace:") {
-        out.push(format!(
-            "trace_excerpt:\n{}",
-            crate::util::safe_truncate(trace, 1400)
-        ));
-    }
+    // tool_trace/trace bleiben bewusst draussen: das sind interne
+    // Ausfuehrungslogs (Fehlerstrings, rohe HTTP-Details) — im gespeicherten
+    // JSON weiter vorhanden, aber sie gehoeren nicht in den LLM-Kontext
+    // jedes Chats, der zufaellig ein Keyword teilt.
     out.join("\n")
 }
 
@@ -428,6 +433,15 @@ async fn load_all_entries(base: &Path, pool: &str) -> Vec<RagEntry> {
     entries
 }
 
+/// Content-Hash fuer Dedup: identischer (getrimmter) Text bekommt dieselbe
+/// Datei. Vorher schrieb jeder speichern-Call blind ein frisches UUID-File —
+/// wiederholte "merk dir X"-Calls und Enhancer-Retries muellten den Pool zu.
+fn content_id(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(text.trim().as_bytes());
+    format!("m-{:016x}", u64::from_be_bytes(hash[..8].try_into().unwrap()))
+}
+
 /// Store text in RAG pool. If embedding is provided, store it alongside.
 pub async fn speichern(
     base: &Path,
@@ -435,13 +449,22 @@ pub async fn speichern(
     text: &str,
     embedding: Option<Vec<f32>>,
     embed_model: Option<String>,
+    origin: Option<&str>,
 ) -> ToolResult {
     if text.trim().is_empty() {
         return ToolResult::fail("Kein Text zum Speichern angegeben".into());
     }
 
     let dir = rag_dir(base, pool);
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = content_id(text);
+    let path = dir.join(format!("{}.json", id));
+    if path.exists() {
+        return ToolResult::ok(format!(
+            "Bereits im RAG Pool '{}' vorhanden (id: {}) — kein Duplikat angelegt",
+            pool,
+            &id[..8]
+        ));
+    }
     let entry = RagEntry {
         id: id.clone(),
         text: text.to_string(),
@@ -449,9 +472,9 @@ pub async fn speichern(
         keywords: extract_keywords(text),
         embedding,
         embedding_model: embed_model,
+        origin: origin.map(String::from),
     };
 
-    let path = dir.join(format!("{}.json", id));
     let json = match serde_json::to_string_pretty(&entry) {
         Ok(j) => j,
         Err(e) => return ToolResult::fail(format!("RAG serialisieren fehlgeschlagen: {}", e)),
@@ -571,16 +594,29 @@ fn keyword_ranked_entries<'a>(
     entries: &'a [RagEntry],
     query_keywords: &[String],
 ) -> Vec<(f32, &'a RagEntry)> {
+    // Relevanz-Boden: bei laengeren Queries reicht EIN geteiltes Wort nicht
+    // mehr, um einen Eintrag in den Kontext zu ziehen. Ohne diesen Boden
+    // holte z.B. "energie" jeden 2 Monate alten Crawl-Schnipsel mit dem Wort
+    // "energie" in die Top-5 — der Haupt-Leak-Pfad des geteilten Pools.
+    let min_matches = match query_keywords.len() {
+        0..=2 => 1,
+        3..=5 => 2,
+        _ => 3,
+    };
     let mut results: Vec<(f32, &RagEntry)> = vec![];
     for entry in entries {
+        // to_lowercase() einmal pro Eintrag, nicht einmal pro Keyword —
+        // bei 7500+ Eintraegen mit bis zu 23KB Text ist das der Unterschied
+        // zwischen Millisekunden und sekundenlangem Blocking pro Suche.
+        let text_lower = entry.text.to_lowercase();
         let matches = query_keywords
             .iter()
             .filter(|qk| {
                 entry.keywords.iter().any(|rk| rk.contains(qk.as_str()))
-                    || entry.text.to_lowercase().contains(qk.as_str())
+                    || text_lower.contains(qk.as_str())
             })
             .count();
-        if matches > 0 {
+        if matches >= min_matches {
             let mut score = matches as f32 / query_keywords.len().max(1) as f32;
             if entry.text.starts_with("DEEPDIVE_CRAWL_MANIFEST") {
                 score += 0.25;
@@ -596,6 +632,77 @@ fn keyword_ranked_entries<'a>(
 
 fn display_score(score: f32) -> f32 {
     (score * 100.0).clamp(0.0, 100.0)
+}
+
+/// Nur maschinell erzeugte Crawl-/Feed-/Enhancer-Notizen sind prune-bar.
+/// Freie Memos ("merk dir X") werden NIE automatisch aufgeraeumt.
+pub const PRUNE_PREFIXES: &[&str] = &[
+    "DEEPDIVE_CRAWL_NOTE",
+    "DEEPDIVE_CRAWL_MANIFEST",
+    "DEEPDIVE_RAG_NOTE",
+    "RSS_NEWS_NOTE",
+    "ENHANCER_RAG_NOTE",
+];
+
+/// Archiviert maschinell erzeugte Notizen aelter als `max_age_days` nach
+/// `base/rag/.archive/<pool>/` (verschieben, nicht loeschen — reversibel).
+/// Ohne Retention wuchs der Pool unbegrenzt (91 MB / 7591 Dateien in 2
+/// Monaten) und jede Keyword-Suche musste den kompletten Bestand anfassen.
+/// Rueckgabe: (archiviert, gescannt).
+pub async fn aufraeumen(base: &Path, pool: &str, max_age_days: u32) -> (usize, usize) {
+    if max_age_days == 0 {
+        return (0, 0);
+    }
+    let dir = rag_dir(base, pool);
+    let archive = base.join("rag").join(".archive").join(
+        safe_id(pool).unwrap_or_else(|| "shared".to_string()),
+    );
+    let cutoff = Utc::now() - chrono::Duration::days(max_age_days as i64);
+
+    let counts = tokio::task::spawn_blocking(move || {
+        let mut archived = 0usize;
+        let mut scanned = 0usize;
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            return (0, 0);
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().is_none_or(|e| e != "json") {
+                continue;
+            }
+            scanned += 1;
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(entry) = serde_json::from_str::<RagEntry>(&content) else {
+                continue;
+            };
+            if !PRUNE_PREFIXES.iter().any(|p| entry.text.starts_with(p)) {
+                continue;
+            }
+            let old_enough = DateTime::parse_from_rfc3339(&entry.timestamp)
+                .map(|dt| dt.with_timezone(&Utc) < cutoff)
+                .unwrap_or(false);
+            if !old_enough {
+                continue;
+            }
+            if archived == 0 && std::fs::create_dir_all(&archive).is_err() {
+                return (0, scanned);
+            }
+            let target = archive.join(path.file_name().unwrap_or_default());
+            if std::fs::rename(&path, &target).is_ok() {
+                archived += 1;
+            }
+        }
+        (archived, scanned)
+    })
+    .await
+    .unwrap_or((0, 0));
+
+    if counts.0 > 0 {
+        invalidate_cache(pool);
+    }
+    counts
 }
 
 #[cfg(test)]
@@ -664,6 +771,7 @@ mod tests {
             keywords: vec![],
             embedding: None,
             embedding_model: None,
+            origin: None,
             text: [
                 "RSS_NEWS_NOTE",
                 "captured_at_utc: 2026-05-09T10:00:00Z",
@@ -687,6 +795,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_speichern_dedups_identical_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = speichern(tmp.path(), "dedup", "merk dir: kaffee um 9", None, None, Some("chat.a")).await;
+        assert!(first.success);
+        let second = speichern(tmp.path(), "dedup", "merk dir: kaffee um 9", None, None, Some("chat.b")).await;
+        assert!(second.success);
+        assert!(second.data.contains("Bereits"), "got: {}", second.data);
+        let count = std::fs::read_dir(rag_dir(tmp.path(), "dedup"))
+            .unwrap()
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_keyword_floor_blocks_single_word_overlap_on_long_query() {
+        let mk = |text: &str| RagEntry {
+            id: "x".into(),
+            text: text.into(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            keywords: extract_keywords(text),
+            embedding: None,
+            embedding_model: None,
+            origin: None,
+        };
+        let entries = vec![
+            mk("energie preise steigen wegen gasknappheit deutlich"),
+            mk("energie"), // teilt genau EIN Wort mit der Query
+        ];
+        let query = extract_keywords("energie preise gasknappheit steigen deutlich winter");
+        assert!(query.len() >= 6);
+        let hits = keyword_ranked_entries(&entries, &query);
+        assert_eq!(hits.len(), 1, "Ein-Wort-Overlap darf bei langer Query nicht matchen");
+        assert!(hits[0].1.text.contains("gasknappheit"));
+    }
+
+    #[tokio::test]
+    async fn test_aufraeumen_archives_old_crawl_notes_but_keeps_memos() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = "retention";
+        let dir = rag_dir(tmp.path(), pool);
+        let old_ts = (Utc::now() - chrono::Duration::days(100)).to_rfc3339();
+        for (id, text) in [
+            ("old-crawl", "DEEPDIVE_CRAWL_NOTE\ntopic: x\nsource_text:\nalt"),
+            ("old-memo", "merk dir: wichtiger dauerhafter fakt"),
+        ] {
+            let entry = RagEntry {
+                id: id.into(),
+                text: text.into(),
+                timestamp: old_ts.clone(),
+                keywords: extract_keywords(text),
+                embedding: None,
+                embedding_model: None,
+                origin: None,
+            };
+            std::fs::write(
+                dir.join(format!("{id}.json")),
+                serde_json::to_string_pretty(&entry).unwrap(),
+            )
+            .unwrap();
+        }
+
+        let (archived, scanned) = aufraeumen(tmp.path(), pool, 45).await;
+        assert_eq!(scanned, 2);
+        assert_eq!(archived, 1);
+        assert!(!dir.join("old-crawl.json").exists());
+        assert!(dir.join("old-memo.json").exists(), "Memos duerfen nie archiviert werden");
+        assert!(
+            tmp.path()
+                .join("rag/.archive")
+                .join(pool)
+                .join("old-crawl.json")
+                .exists()
+        );
+    }
+
+    #[tokio::test]
     async fn test_hybrid_search_returns_rss_notes_without_embedding() {
         let tmp = tempfile::tempdir().unwrap();
         let pool = "hybrid-rss";
@@ -696,6 +880,7 @@ mod tests {
             "unrelated embedded note",
             Some(vec![1.0, 0.0]),
             Some("test-embed".into()),
+            None,
         )
         .await;
         assert!(stored.success);
@@ -706,6 +891,7 @@ mod tests {
             keywords: extract_keywords("Energie Politik Example News"),
             embedding: None,
             embedding_model: None,
+            origin: None,
             text: [
                 "RSS_NEWS_NOTE",
                 "captured_at_utc: 2026-05-09T10:00:00Z",

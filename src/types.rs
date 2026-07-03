@@ -831,6 +831,7 @@ impl Default for AgentConfig {
                 max_erledigt: 500,
                 max_alter_tage: 30,
                 cleanup_interval_s: 60,
+                rag_max_alter_tage: default_rag_max_alter_tage(),
             }),
             daily_budget_usd: None,
             api_auth_token: None,
@@ -850,6 +851,15 @@ pub struct CleanupConfig {
     pub max_erledigt: usize,
     pub max_alter_tage: u32,
     pub cleanup_interval_s: u64,
+    /// Maschinelle RAG-Notizen (Crawl/RSS/Enhancer) aelter als N Tage werden
+    /// nach rag/.archive/ verschoben. 0 = Retention aus. Freie Memos sind
+    /// nie betroffen (siehe rag::PRUNE_PREFIXES).
+    #[serde(default = "default_rag_max_alter_tage")]
+    pub rag_max_alter_tage: u32,
+}
+
+fn default_rag_max_alter_tage() -> u32 {
+    45
 }
 
 // ─── Wizard ──────────────────────────────────────
