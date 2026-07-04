@@ -1557,34 +1557,39 @@ pub async fn execute_tool(
             }
         }
 
-        // File tools — jedes Modul hat automatisch Zugriff auf sein Home-Verzeichnis
+        // File tools — jedes Modul hat automatisch Zugriff auf sein Home-Verzeichnis.
+        // Relative Pfade ("demo/x.py", ".", "") zeigen aufs Modul-Home — vorher
+        // liefen sie gegen das Server-CWD und wurden praktisch immer abgelehnt.
         "files.read" => {
             let path = params.first().map(|s| s.as_str()).unwrap_or("");
             let home = pipeline.home_dir(&modul.id).to_string_lossy().to_string();
+            let path = modules::files::resolve_against_home(path, &home);
             let mut allowed: Vec<String> = modul.settings.allowed_paths.clone().unwrap_or_default();
             allowed.push(home);
             let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
             let max_size = modul.settings.max_file_size.unwrap_or(4000) as usize;
-            modules::files::read_file(path, &allowed_refs, max_size).await
+            modules::files::read_file(&path, &allowed_refs, max_size).await
         }
         "files.write" => {
             let path = params.first().map(|s| s.as_str()).unwrap_or("");
             // Content ist der zweite Parameter — wird vom Parser roh gelassen (HTML/Code safe)
             let content = params.get(1).map(|s| s.as_str()).unwrap_or("");
             let home = pipeline.home_dir(&modul.id).to_string_lossy().to_string();
+            let path = modules::files::resolve_against_home(path, &home);
             let mut allowed: Vec<String> = modul.settings.allowed_paths.clone().unwrap_or_default();
             allowed.push(home);
             let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
             let allow_write = modul.settings.allow_write.unwrap_or(true);
-            modules::files::write_file(path, content, &allowed_refs, allow_write).await
+            modules::files::write_file(&path, content, &allowed_refs, allow_write).await
         }
         "files.list" => {
             let path = params.first().map(|s| s.as_str()).unwrap_or("");
             let home = pipeline.home_dir(&modul.id).to_string_lossy().to_string();
+            let path = modules::files::resolve_against_home(path, &home);
             let mut allowed: Vec<String> = modul.settings.allowed_paths.clone().unwrap_or_default();
             allowed.push(home);
             let allowed_refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
-            modules::files::list_dir(path, &allowed_refs).await
+            modules::files::list_dir(&path, &allowed_refs).await
         }
 
         // Web tools
