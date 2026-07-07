@@ -306,7 +306,12 @@ def synthesize_minimax(text: str, out_path: Path, payload: dict[str, Any], confi
         "language_boost": "auto",
         "output_format": "hex",
         "voice_setting": {
-            "voice_id": first_text(payload, "voice", "voice_id") or str(config.get("minimax_voice_id") or "German_Trustworth_Man"),
+            # Provider-fremde Voice-Namen (z.B. xai-"ara" aus altem Workflow-
+            # Payload) NICHT an MiniMax reichen — "voice id not exist" wuerde
+            # sonst den kompletten Provider in den Fallback zwingen. MiniMax-
+            # IDs haben immer das Muster Sprache_Name (mit Unterstrich).
+            "voice_id": (lambda v: v if "_" in v else "")(first_text(payload, "voice", "voice_id") or "")
+                        or str(config.get("minimax_voice_id") or "German_FriendlyMan"),
             "speed": float_param(payload.get("speed"), 1.18 if is_fast(payload, config) else 1.0, 0.5, 2.0),
             "vol": 1,
             "pitch": 0,
