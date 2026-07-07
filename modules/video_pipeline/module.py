@@ -32,6 +32,9 @@ MODULE = {
         "python_bin": {"type": "string", "label": "Python Binary optional", "default": ""},
         "ffmpeg_bin": {"type": "string", "label": "ffmpeg Binary optional", "default": ""},
         "master_2160p": {"type": "bool", "label": "Upload-Master als 4K-Upscale (bessere YouTube-Ladder)", "default": True},
+        "animate_scenes": {"type": "bool", "label": "Top-Szenenbilder via MiniMax i2v animieren (kostet API-Geld)", "default": False},
+        "animate_max_clips": {"type": "number", "label": "Max animierte Szenen pro Video", "default": 2},
+        "minimax_api_key": {"type": "password", "label": "MiniMax API Key/Alias", "default": "api.minimax"},
         "ffprobe_bin": {"type": "string", "label": "ffprobe Binary optional", "default": ""},
         "default_output_dir": {"type": "string", "label": "Output-Verzeichnis", "default": "agent-data/video_pipeline"},
         "default_worldmap_fps": {"type": "number", "label": "Worldmap FPS", "default": 25},
@@ -265,8 +268,10 @@ def infographic_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
         assets_path = out_dir / "assets_input.json"
         write_json(assets_path, assets)
 
-    cmd = [python_bin(config), str(INFOGRAPHIC_RENDERER), "--assets", str(assets_path), "--out", str(out_dir), "--title", title]
     preview = bool_param(payload.get("preview"), False)
+    if not preview and bool_param(payload.get("animate_scenes"), cfg_bool(config, "animate_scenes", False)):
+        assets_path = animate_scene_images(Path(assets_path), out_dir, config)
+    cmd = [python_bin(config), str(INFOGRAPHIC_RENDERER), "--assets", str(assets_path), "--out", str(out_dir), "--title", title]
     if preview:
         cmd.append("--preview")
     # 4K-Upload-Master (default an): YouTube encodet 2160p-Uploads mit der
@@ -1015,6 +1020,114 @@ def ffprobe_bin(config: dict[str, Any]) -> str:
 
 def timeout_param(payload: dict[str, Any], config: dict[str, Any]) -> int:
     return int_param(payload.get("timeout_s") or payload.get("timeout"), cfg_int(config, "default_render_timeout_s", 1800, 1, 86400), 1, 86400)
+
+
+def _minimax_key(config: dict[str, Any]) -> str:
+    """Key aus Modul-Setting (Rust loest api.*-Aliase auf) oder direkt aus dem Vault
+    (Fallback fuer Direktaufrufe ohne Alias-Aufloesung)."""
+    key = str(config.get("minimax_api_key") or "").strip()
+    if key and not key.startswith("api."):
+        return key
+    for path in (ROOT / "agent-data" / "config.json", Path("agent-data/config.json")):
+        try:
+            if not path.exists():
+                continue
+            for entry in json.loads(path.read_text(encoding="utf-8")).get("api_key_vault", []):
+                if entry.get("id") == "minimax":
+                    return str(entry.get("secret") or "").strip()
+        except Exception:
+            continue
+    return ""
+
+
+def animate_scene_images(assets_path: Path, out_dir: Path, config: dict[str, Any]) -> Path:
+    """Animiert die wichtigsten Szenenbilder via MiniMax Hailuo image-to-video.
+
+    Best-effort: jeder Fehler (kein Key, API down, Timeout) laesst die Szene
+    beim Standbild — der Render laeuft IMMER weiter. Rueckgabe ist der Pfad
+    einer Assets-Kopie mit scene["video"]-Eintraegen (Original unangetastet,
+    der Workflow-Ordner bleibt sauber).
+    """
+    import base64
+    import urllib.request
+
+    try:
+        assets = json.loads(Path(assets_path).read_text(encoding="utf-8"))
+    except Exception:
+        return assets_path
+    scenes = assets.get("scenes") or []
+    candidates = [s for s in scenes if s.get("image") and Path(str(s["image"])).exists()
+                  and str(s.get("type") or "").lower() != "map"]
+    if not candidates:
+        return assets_path
+    max_clips = cfg_int(config, "animate_max_clips", 2, 1, 6)
+    candidates.sort(key=lambda s: float(s.get("weight") or 1.0), reverse=True)
+    picked = candidates[:max_clips]
+    key = _minimax_key(config)
+    if not key:
+        print("animate_scenes: kein MiniMax-Key — Standbilder bleiben", file=sys.stderr)
+        return assets_path
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+
+    def api(method: str, path: str, body: dict | None = None) -> dict:
+        req = urllib.request.Request("https://api.minimax.io" + path,
+            data=json.dumps(body).encode() if body is not None else None,
+            method=method, headers=headers)
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read())
+
+    jobs: list[tuple[dict, str]] = []
+    for sc in picked:
+        try:
+            img_b64 = base64.b64encode(Path(str(sc["image"])).read_bytes()).decode()
+            d = api("POST", "/v1/video_generation", {
+                "model": "MiniMax-Hailuo-2.3",
+                "prompt": "slow cinematic parallax and subtle natural motion, gentle camera push-in, "
+                          "keep the original composition and mood, no text, no people appearing",
+                "duration": 6, "resolution": "1080P",
+                "first_frame_image": f"data:image/png;base64,{img_b64}",
+            })
+            tid = d.get("task_id") or (d.get("data") or {}).get("task_id")
+            if tid:
+                jobs.append((sc, str(tid)))
+            else:
+                print(f"animate_scenes: submit ohne task_id: {d.get('base_resp')}", file=sys.stderr)
+        except Exception as exc:
+            print(f"animate_scenes: submit failed: {exc}", file=sys.stderr)
+    if not jobs:
+        return assets_path
+
+    deadline = time.time() + 420  # max 7 min fuer alle Clips
+    animated = 0
+    pending = {tid: sc for sc, tid in jobs}
+    while pending and time.time() < deadline:
+        time.sleep(10)
+        for tid in list(pending):
+            try:
+                st = api("GET", f"/v1/query/video_generation?task_id={tid}")
+                status = str(st.get("status") or (st.get("data") or {}).get("status") or "")
+                if status.lower() == "success":
+                    sc = pending.pop(tid)
+                    fid = st.get("file_id") or (st.get("data") or {}).get("file_id")
+                    f = api("GET", f"/v1/files/retrieve?file_id={fid}")
+                    url = ((f.get("file") or {}).get("download_url")) or ((f.get("data") or {}).get("download_url"))
+                    clip = out_dir / f"scene_anim_{scenes.index(sc):02d}.mp4"
+                    urllib.request.urlretrieve(url, clip)
+                    sc["video"] = str(clip)
+                    animated += 1
+                elif status.lower() in ("fail", "failed"):
+                    sc = pending.pop(tid)
+                    print(f"animate_scenes: Clip failed fuer '{sc.get('title')}'", file=sys.stderr)
+            except Exception as exc:
+                print(f"animate_scenes: poll error: {exc}", file=sys.stderr)
+    if pending:
+        print(f"animate_scenes: {len(pending)} Clip(s) nicht rechtzeitig fertig — Standbild", file=sys.stderr)
+    if not animated:
+        return assets_path
+    out = out_dir / "assets_animated.json"
+    out.write_text(json.dumps(assets, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"animate_scenes: {animated} Szene(n) animiert", file=sys.stderr)
+    return out
 
 
 def cfg_bool(config: dict[str, Any], key: str, default: bool = False) -> bool:

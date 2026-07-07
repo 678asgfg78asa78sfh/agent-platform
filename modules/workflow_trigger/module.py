@@ -2197,6 +2197,9 @@ Wichtig:
 	- Jede Szene AUSSER map bekommt zusaetzlich "image_prompt": eine konkrete englische Bildbeschreibung des Szenenmotivs fuer einen Illustrations-Generator (Motiv + Komposition, KEIN Stil, KEIN Text im Bild, keine echten Personennamen — Politiker als "two world leaders" o.ae. umschreiben). Beispiel: "two giant hands pulling a glowing semiconductor chip in opposite directions".
 	- route ist NUR bei type=map Pflicht (2+ Stationen). Pro Station genau EIN Name, z.B. "USA", "Russland", "Frankreich"; keine Slash-Kombinationen. Abstrakte Stationen wie "Global", "Europe", "Asia", "Middle East" sind erlaubt.
 	- Baue das Sprecher-Skript in klaren, in sich geschlossenen Sinnpassagen auf. Jede Szene soll als eigenstaendige Passage funktionieren, damit daraus sauber geschnitten werden kann.
+	- HOOK-REGEL (Retention): Die ersten 1-2 Saetze des voice_script muessen SOFORT die staerkste Zahl, den groessten Widerspruch oder die spannendste offene Frage des Themas bringen. VERBOTEN als Einstieg: "Willkommen bei...", "Heute schauen wir uns an...", "In diesem Video...", Begruessungen jeder Art.
+	- TITEL-REGEL (Klickrate): Der "title" nutzt eine Neugier-Luecke nach dem Muster "[Konkretes Bild/Geheimnis]: [Superlativ oder Spannung] - [offene Frage]" (Beispiel-Muster: "Die versiegelte Kammer: Aegyptens groesstes Geheimnis seit Tutanchamun"). 50-80 Zeichen, ein konkretes Detail statt Abstraktion, KEINE Uebertreibung die das Video nicht einloest.
+	- "thumbnail_text": ZUSAETZLICH 2-4 plakative Woerter fuer das Thumbnail (z.B. "Die versiegelte Kammer", "8,5 Grad zu heiss") — NICHT der Titel, sondern der kuerzeste Neugier-Trigger.
 	- Shorts sind NICHT einfach Ausschnitte. Markiere nur Passagen als Short, die allein verstaendlich sind: starker Hook, ein klarer Gedanke, keine Abhaengigkeit vom vorherigen Absatz, keine langen Quellenlisten.
 	- Fuer jeden Short gib eine source_scene und optional start_offset_s relativ zum Szenenanfang sowie duration_s an. Wenn eine Szene nicht short-faehig ist, erzeuge dafuer keinen Short.
 
@@ -2207,7 +2210,8 @@ Workflow:
 
 Erwartetes JSON:
 {{
-  "title": "kurzer Videotitel",
+  "title": "Videotitel mit Neugier-Luecke (50-80 Zeichen)",
+  "thumbnail_text": "2-4 plakative Woerter",
   "voice_script": "Hoerbares deutsches Sprecher-Skript als Fliesstext, ca. {words}.",
   "duration_s": {duration},
   "scenes": [
@@ -2346,7 +2350,8 @@ DEEPDIVE_CONTEXT
 Erwartetes Format:
 VIDEO_ASSETS_JSON
 {{
-  "title": "kurzer Videotitel",
+  "title": "Videotitel mit Neugier-Luecke (50-80 Zeichen)",
+  "thumbnail_text": "2-4 plakative Woerter",
   "voice_script": "korrigiertes hoerbares Skript",
   "duration_s": 360,
   "scenes": [{{"title":"Kapitel", "subtitle":"Einordnung", "route":["Germany","Europe"], "bullets":["Punkt"], "weight":1.0, "color":"gold"}}],

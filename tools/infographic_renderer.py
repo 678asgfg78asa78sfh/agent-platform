@@ -201,6 +201,8 @@ class Scene:
         self.type = self.resolve_type(str(raw.get("type") or "").strip().lower())
         self.narration = str(raw.get("narration") or "")
         self.image = str(raw.get("image") or raw.get("image_path") or "")
+        # Optionaler animierter Hintergrund-Clip (Hailuo i2v); Fallback = image
+        self.video = str(raw.get("video") or raw.get("video_path") or "")
         self.start_s = 0.0
         self.duration_s = 0.0
 
@@ -307,6 +309,9 @@ class Renderer:
         self.fps = int(args.fps)
         self.ss = 1 if self.preview else max(1, int(args.supersample))
         self.title = str(assets.get("title") or args.title or "Briefing")
+        # Packaging: kurzer plakativer Thumbnail-Text (2-4 Woerter) vom
+        # Normalizer — schlaegt den (langen) Titel auf dem Thumbnail.
+        self.thumbnail_text = str(assets.get("thumbnail_text") or "").strip()
         self.scenes = [Scene(s, i + 1) for i, s in enumerate(assets.get("scenes") or []) if isinstance(s, dict)]
         if not self.scenes:
             self.scenes = [Scene({"title": self.title, "type": "hook"}, 1)]
@@ -315,6 +320,7 @@ class Renderer:
         self.kicker = str(assets.get("kicker") or "BRIEFING")
         self.music = not bool(getattr(args, "no_music", False)) and bool(assets.get("music", True))
         self.master_2160p = bool(getattr(args, "master_2160p", False))
+        self._video_state: dict[int, dict] = {}
 
     # ── Layout-System: Content-Box zwischen Header und Untertitel-Band ──
     def margin(self) -> int:
@@ -514,11 +520,63 @@ class Renderer:
 
     _image_cache: dict[str, Image.Image] = {}
 
+    def scene_video_frame(self, scene: Scene, t: float) -> Image.Image | None:
+        """Frame eines animierten Szenen-Clips zur Szenenzeit t.
+
+        Sequenzieller Decode: der Render laeuft streng vorwaerts, also reicht
+        ein Generator pro Szene (kein Random-Seek, kein Full-Preload — ein
+        6s-1080p-Clip waere als RGB ~900 MB). Nach Clip-Ende haelt der letzte
+        Frame, damit Szenen laenger als der Clip sein duerfen.
+        """
+        state = self._video_state.get(scene.index)
+        if state is None:
+            import imageio_ffmpeg
+            try:
+                gen = imageio_ffmpeg.read_frames(scene.video)
+                meta = next(gen)
+                state = {"gen": gen, "meta": meta, "idx": -1, "raw": None, "img": None, "done": False}
+            except Exception as exc:
+                print(f"scene video failed ({scene.video}): {exc}", file=sys.stderr)
+                state = {"gen": None, "meta": {}, "idx": -1, "raw": None, "img": None, "done": True}
+            self._video_state[scene.index] = state
+        meta = state["meta"]
+        fps = float(meta.get("fps") or 24.0)
+        size = meta.get("size") or (0, 0)
+        target = int(t * fps)
+        while not state["done"] and state["idx"] < target:
+            try:
+                state["raw"] = next(state["gen"])
+                state["idx"] += 1
+                state["img"] = None
+            except StopIteration:
+                state["done"] = True
+            except Exception:
+                state["done"] = True
+        if state["raw"] is None or not size[0]:
+            return None
+        if state["img"] is None:
+            state["img"] = Image.frombytes("RGB", size, state["raw"])
+        return state["img"]
+
     def scene_background_image(self, img: Image.Image, scene: Scene, t: float) -> None:
         """Themen-Bild als Hintergrund: Cover-Fit, langsamer Ken-Burns-Zoom
         mit alternierender Drift, dunkles Overlay fuer Textkontrast. Die
         Karte ignoriert Bilder (sie IST das Visual)."""
-        if not scene.image or scene.type == "map":
+        if scene.type == "map":
+            return
+        if scene.video:
+            frame = self.scene_video_frame(scene, t)
+            if frame is not None:
+                W, H = img.width, img.height
+                scale = max(W / frame.width, H / frame.height)
+                sw, sh = int(frame.width * scale), int(frame.height * scale)
+                box = ((sw - W) / 2 / scale, (sh - H) / 2 / scale,
+                       ((sw - W) / 2 + W) / scale, ((sh - H) / 2 + H) / scale)
+                img.paste(frame.resize((W, H), Image.BILINEAR, box=box), (0, 0))
+                self._apply_bg_overlay(img)
+                return
+            # Clip kaputt/leer -> Standbild-Fallback unten
+        if not scene.image:
             return
         path = Path(scene.image)
         if not path.is_absolute():
@@ -550,9 +608,13 @@ class Renderer:
         box = (dx / scale, dy / scale, (dx + W) / scale, (dy + H) / scale)
         frame = src_img.resize((W, H), Image.BILINEAR, box=box)
         img.paste(frame, (0, 0))
-        # Kontrast-Overlay (oben moderat, unten kraeftig) — haengt NICHT von t/scene
-        # ab, also einmal pro WxH bauen und cachen statt pro Frame neu (der alte
-        # putpixel-Loop + Resize war die Haupt-Renderbremse).
+        self._apply_bg_overlay(img)
+
+    def _apply_bg_overlay(self, img: Image.Image) -> None:
+        """Kontrast-Overlay (oben moderat, unten kraeftig) — haengt NICHT von
+        t/scene ab, also einmal pro WxH bauen und cachen statt pro Frame neu
+        (der alte putpixel-Loop + Resize war die Haupt-Renderbremse)."""
+        W, H = img.width, img.height
         overlay = self._bg_overlay
         if overlay is None or overlay.size != (W, H):
             ramp = (120 + 95 * np.linspace(0.0, 1.0, H, dtype=np.float32)).astype(np.uint8)
@@ -1335,11 +1397,13 @@ class Renderer:
         kw = text_w(d, self.kicker, f_kick)
         d.rounded_rectangle([54, 48, 54 + kw + 44, 110], radius=12, fill=accent)
         d.text((76, 60), self.kicker, font=f_kick, fill=(15, 18, 26))
-        # Headline: Titel ggf. am Doppelpunkt/Gedankenstrich kuerzen fuer Punch
-        head = self.title
-        for sep in (" — ", " – ", ": "):
-            if sep in head and len(head) > 38:
-                head = head.split(sep)[0]
+        # Headline: expliziter thumbnail_text gewinnt; sonst Titel am
+        # Doppelpunkt/Gedankenstrich kuerzen fuer Punch
+        head = self.thumbnail_text or self.title
+        if not self.thumbnail_text:
+            for sep in (" — ", " – ", ": "):
+                if sep in head and len(head) > 38:
+                    head = head.split(sep)[0]
         f_head, lines = fit_text(d, head, 108, W * 0.62, 3, min_size=56)
         lh = int(f_head.size * 1.12)
         y = H - 140 - len(lines) * lh
