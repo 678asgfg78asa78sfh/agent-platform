@@ -11,3 +11,4 @@ modules/*/*.local*
 modules/*/*.backup
 /agent.out
 *.out
+/api/
