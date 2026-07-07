@@ -46,7 +46,7 @@ MODULE = {
         "qwen_tts_api_key": {"type": "password", "label": "Qwen TTS API Key optional", "default": ""},
         "qwen_tts_model": {"type": "string", "label": "Qwen TTS Modell", "default": "qwen-tts"},
         "qwen_timeout_s": {"type": "number", "label": "Qwen TTS Timeout Sek (dann Fallback)", "default": 180},
-        "fallback_provider": {"type": "select", "label": "Fallback-Provider bei Fehler", "default": "xai", "options": ["xai", "minimax", "off"]},
+        "fallback_provider": {"type": "select", "label": "Fallback-Provider bei Fehler", "default": "piper", "options": ["piper", "xai", "minimax", "off"]},
         "qwen_tts_command": {
             "type": "string",
             "label": "Qwen lokaler Command optional",
@@ -125,7 +125,7 @@ def speak(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     # Fallback-Kette: primaerer Provider, dann (bei Fehler/Timeout) der
     # konfigurierte Fallback. So killt eine langsame/ausgefallene lokale TTS
     # (z.B. Qwen auf schwacher GPU bei langen Skripten) nie den ganzen Workflow.
-    fallback = str(config.get("fallback_provider") or payload.get("fallback_provider") or "xai").strip().lower()
+    fallback = str(config.get("fallback_provider") or payload.get("fallback_provider") or "piper").strip().lower()
     chain = [provider]
     if fallback and fallback not in ("off", provider):
         chain.append(fallback)

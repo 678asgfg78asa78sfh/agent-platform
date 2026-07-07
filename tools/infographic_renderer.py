@@ -314,6 +314,7 @@ class Renderer:
         self.source_note = str(assets.get("source_line") or "DeepDive-Auswertung | Visualisierung schematisch")
         self.kicker = str(assets.get("kicker") or "BRIEFING")
         self.music = not bool(getattr(args, "no_music", False)) and bool(assets.get("music", True))
+        self.master_2160p = bool(getattr(args, "master_2160p", False))
 
     # ── Layout-System: Content-Box zwischen Header und Untertitel-Band ──
     def margin(self) -> int:
@@ -1150,6 +1151,42 @@ class Renderer:
                 d.text((x0 + 16 * s, y0 + 11 * s + i * 26 * s), line, font=f, fill=(20, 25, 38))
 
     # ── Encode ──
+    def normalize_voice(self, audio: Path) -> Path:
+        """Two-pass loudnorm auf YouTube-Referenz: -14 LUFS / -1.5 dBTP, 48 kHz stereo.
+
+        Ohne das lagen die Uploads bei ~-22 LUFS — YouTube senkt laute Videos
+        ab, hebt leise aber NIE an; die Videos liefen also ~8 dB leiser als
+        alles andere im Feed. Two-pass (erst messen, dann linear anwenden)
+        vermeidet das Pumpen des dynamischen Single-Pass-Modus.
+        """
+        import imageio_ffmpeg
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        target = "I=-14:TP=-1.5:LRA=11"
+        out = self.out_dir / "voice_normalized.wav"
+        try:
+            probe = subprocess.run(
+                [ffmpeg, "-hide_banner", "-i", str(audio),
+                 "-af", f"loudnorm={target}:print_format=json", "-f", "null", "-"],
+                capture_output=True, text=True, timeout=600, check=True,
+            )
+            tail = probe.stderr[probe.stderr.rfind("{"):]
+            m = json.loads(tail[: tail.rfind("}") + 1])
+            filt = (
+                f"loudnorm={target}:measured_I={m['input_i']}:measured_TP={m['input_tp']}"
+                f":measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}"
+                f":offset={m['target_offset']}:linear=true"
+            )
+            subprocess.run(
+                [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(audio),
+                 "-af", filt, "-ar", "48000", "-ac", "2", str(out)],
+                check=True, timeout=600,
+            )
+            return out
+        except Exception as exc:
+            print(f"loudnorm failed ({exc}) — nutze Original-Audio", file=sys.stderr)
+            return audio
+
     def render(self, total_s: float, audio: Path | None) -> Path:
         import imageio_ffmpeg
 
@@ -1167,6 +1204,9 @@ class Renderer:
             self.ss = 1
         silent = self.out_dir / ("infographic_silent_preview.mp4" if self.preview else "infographic_silent.mp4")
         frames = int(total_s * self.fps)
+        # medium/crf18 + stillimage: dieser Encode IST der finale 1080p-Stream
+        # (der Mux kopiert ihn mit -c:v copy). veryfast/crf19 lieferte nur
+        # ~330 kbit/s mit matschigen Text-Kanten nach YouTubes Re-Encode.
         writer = imageio_ffmpeg.write_frames(
             str(silent),
             (self.width, self.height),
@@ -1174,7 +1214,7 @@ class Renderer:
             codec="libx264",
             quality=None,
             macro_block_size=1,
-            output_params=["-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+            output_params=["-preset", "medium", "-crf", "18", "-tune", "stillimage", "-pix_fmt", "yuv420p", "-movflags", "+faststart"],
         )
         writer.send(None)
         t0 = time.time()
@@ -1196,6 +1236,11 @@ class Renderer:
                                            self.out_dir / "music_bed.wav")
             except Exception as exc:
                 print(f"music bed failed: {exc}", file=sys.stderr)
+        if audio and audio.exists():
+            # Stimme VOR dem Mix auf -14 LUFS normalisieren — das Bett haengt
+            # per Ducking eh unter der Stimme, die Summe landet damit auf
+            # YouTube-Referenzlautheit statt 8 dB darunter.
+            audio = self.normalize_voice(Path(audio))
         if audio and audio.exists() and bed_path:
             # Stimme + Bett: Bett wird per Sidechain unter der Stimme geduckt.
             subprocess.run(
@@ -1203,15 +1248,20 @@ class Renderer:
                  "-i", str(silent), "-i", str(audio), "-i", str(bed_path),
                  "-filter_complex",
                  "[2:a][1:a]sidechaincompress=threshold=0.02:ratio=10:attack=40:release=500[duck];"
-                 "[1:a][duck]amix=inputs=2:duration=first:dropout_transition=2,alimiter=limit=0.9[a]",
-                 "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+                 # normalize=0: amix wuerde sonst jeden Input auf 1/n daempfen — die auf
+                 # -14 LUFS normalisierte Stimme laege im Mix wieder 6 dB tiefer.
+                 # DAS war die eigentliche Ursache der zu leisen Uploads.
+                 "[1:a][duck]amix=inputs=2:duration=first:dropout_transition=2:normalize=0,alimiter=limit=0.891[a]",
+                 "-map", "0:v:0", "-map", "[a]", "-c:v", "copy",
+                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
                  "-shortest", str(final)],
                 check=True,
             )
         elif audio and audio.exists():
             subprocess.run(
                 [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(silent), "-i", str(audio),
-                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
+                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
                  "-shortest", str(final)],
                 check=True,
             )
@@ -1225,6 +1275,23 @@ class Renderer:
             )
         else:
             silent.replace(final)
+        # 2160p-Upload-Master: YouTube gibt 4K-Uploads die deutlich bessere
+        # VP9/AV1-Encoding-Ladder — sichtbar schaerfer auch bei 1080p-Wiedergabe.
+        # Lanczos-Upscale des fertigen 1080p-Streams, Audio unangetastet.
+        if self.master_2160p and not self.preview:
+            master = self.out_dir / "infographic_video_2160p.mp4"
+            try:
+                subprocess.run(
+                    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(final),
+                     "-vf", "scale=3840:2160:flags=lanczos",
+                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+                     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                     "-c:a", "copy", str(master)],
+                    check=True,
+                )
+                final = master
+            except Exception as exc:
+                print(f"2160p master failed ({exc}) — Upload nutzt 1080p", file=sys.stderr)
         self.write_sidecars(final, total_s)
         return final
 
@@ -1398,6 +1465,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--supersample", type=int, default=2)
     p.add_argument("--preview", action="store_true")
     p.add_argument("--no-music", action="store_true", help="Musikbett/Whooshes deaktivieren")
+    p.add_argument("--master-2160p", action="store_true", help="Upload-Master als 4K-Upscale erzeugen (bessere YouTube-Encoding-Ladder)")
     return p.parse_args()
 
 

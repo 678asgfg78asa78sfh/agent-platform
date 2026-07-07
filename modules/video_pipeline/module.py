@@ -31,6 +31,7 @@ MODULE = {
         "default_render_timeout_s": {"type": "number", "label": "Render Timeout Sekunden", "default": 1800},
         "python_bin": {"type": "string", "label": "Python Binary optional", "default": ""},
         "ffmpeg_bin": {"type": "string", "label": "ffmpeg Binary optional", "default": ""},
+        "master_2160p": {"type": "bool", "label": "Upload-Master als 4K-Upscale (bessere YouTube-Ladder)", "default": True},
         "ffprobe_bin": {"type": "string", "label": "ffprobe Binary optional", "default": ""},
         "default_output_dir": {"type": "string", "label": "Output-Verzeichnis", "default": "agent-data/video_pipeline"},
         "default_worldmap_fps": {"type": "number", "label": "Worldmap FPS", "default": 25},
@@ -268,6 +269,10 @@ def infographic_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     preview = bool_param(payload.get("preview"), False)
     if preview:
         cmd.append("--preview")
+    # 4K-Upload-Master (default an): YouTube encodet 2160p-Uploads mit der
+    # besseren VP9/AV1-Ladder — sichtbar schaerfer auch in 1080p-Wiedergabe.
+    if bool_param(payload.get("master_2160p"), cfg_bool(config, "master_2160p", True)) and not preview:
+        cmd.append("--master-2160p")
 
     audio_path = path_value(payload.get("audio_path") or payload.get("audio"))
     if audio_path:

@@ -100,6 +100,9 @@ def upload_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             auto = build_auto_meta(assets, query)
     title = (str(payload.get("title") or "").strip() or auto.get("title") or video_path.stem)[:100]
     desc = str(payload.get("description") or "").strip() or auto.get("description") or ""
+    chapters = build_chapters(video_path)
+    if chapters and "0:00" not in desc:
+        desc = (desc + "\n\n" + chapters).strip()
     suffix = str(config.get("description_suffix") or "")
     description = (desc + suffix)[:4900]
     tags = norm_tags(payload.get("tags"), None) or auto.get("tags") or norm_tags(config.get("default_tags"), None)
@@ -252,6 +255,41 @@ def find_workflow_assets(video_path: Path) -> tuple[dict | None, str]:
                     pass
             return assets, query
     return None, ""
+
+
+def build_chapters(video_path: Path) -> str:
+    """Kapitel-Timestamps aus dem Renderer-Storyboard (scene start_s + title).
+
+    YouTube blendet Kapitel nur ein, wenn: erstes Kapitel bei 0:00, mindestens
+    3 Kapitel, jedes >= 10s. Szenen unter 10s werden uebersprungen (ihr Inhalt
+    laeuft im vorherigen Kapitel mit).
+    """
+    for cand in (video_path.parent / "storyboard_infographic.json",
+                 video_path.parent / "storyboard.json"):
+        if not cand.exists():
+            continue
+        try:
+            scenes = (json.loads(cand.read_text(encoding="utf-8")) or {}).get("scenes") or []
+        except Exception:
+            continue
+        lines: list[str] = []
+        for sc in scenes:
+            title = str(sc.get("title") or "").strip()
+            try:
+                start = float(sc.get("start_s") or 0.0)
+                dur = float(sc.get("duration_s") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if not title or (dur and dur < 10.0):
+                continue
+            if not lines:
+                start = 0.0  # YouTube-Regel: erstes Kapitel exakt bei 0:00
+            m, sec = divmod(int(start), 60)
+            stamp = f"{m // 60}:{m % 60:02d}:{sec:02d}" if m >= 60 else f"{m}:{sec:02d}"
+            lines.append(f"{stamp} {title}")
+        if len(lines) >= 3:
+            return "\u23f1 Kapitel:\n" + "\n".join(lines)
+    return ""
 
 
 def build_auto_meta(assets: dict, query: str) -> dict[str, Any]:
