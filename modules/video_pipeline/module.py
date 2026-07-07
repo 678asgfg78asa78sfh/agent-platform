@@ -1049,6 +1049,7 @@ def animate_scene_images(assets_path: Path, out_dir: Path, config: dict[str, Any
     der Workflow-Ordner bleibt sauber).
     """
     import base64
+    import mimetypes
     import urllib.request
 
     try:
@@ -1079,13 +1080,15 @@ def animate_scene_images(assets_path: Path, out_dir: Path, config: dict[str, Any
     jobs: list[tuple[dict, str]] = []
     for sc in picked:
         try:
-            img_b64 = base64.b64encode(Path(str(sc["image"])).read_bytes()).decode()
+            img_p = Path(str(sc["image"]))
+            mime = mimetypes.guess_type(img_p.name)[0] or "image/png"
+            img_b64 = base64.b64encode(img_p.read_bytes()).decode()
             d = api("POST", "/v1/video_generation", {
                 "model": "MiniMax-Hailuo-2.3",
                 "prompt": "slow cinematic parallax and subtle natural motion, gentle camera push-in, "
                           "keep the original composition and mood, no text, no people appearing",
                 "duration": 6, "resolution": "1080P",
-                "first_frame_image": f"data:image/png;base64,{img_b64}",
+                "first_frame_image": f"data:{mime};base64,{img_b64}",
             })
             tid = d.get("task_id") or (d.get("data") or {}).get("task_id")
             if tid:
