@@ -24,6 +24,7 @@ MODULE = {
     "description": "Schneller Faktencheck fuer Video-/Voice-Skripte vor TTS/Render: extrahiert harte Claims, sucht Web-Belege und blockt riskante Aussagen.",
     "version": "1.0",
     "settings": {
+        "python_timeout_s": {"type": "number", "label": "Python Prozess Timeout Sekunden", "default": 600},
         "enabled": {"type": "bool", "label": "Aktiv", "default": True},
         "max_claims": {"type": "number", "label": "Max Claims", "default": 14},
         "max_results_per_claim": {"type": "number", "label": "Suchtreffer pro Claim", "default": 5},

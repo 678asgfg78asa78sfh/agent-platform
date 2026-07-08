@@ -34,13 +34,36 @@ def _load_own_config():
             sys.stderr.write("[tavily] uebersprungener Fehler: %r\n" % (_e,))
     return {}
 
+def _vault_key(vault_id):
+    from pathlib import Path
+    for path in (Path(__file__).resolve().parent.parent.parent / "agent-data" / "config.json",
+                 Path("agent-data/config.json")):
+        try:
+            if not path.exists():
+                continue
+            for entry in json.loads(path.read_text(encoding="utf-8")).get("api_key_vault", []):
+                if entry.get("id") == vault_id:
+                    secret = str(entry.get("secret") or "").strip()
+                    if secret:
+                        return secret
+        except Exception:
+            continue
+    return ""
+
+
 def _search(query, config):
     # Eigene Config mergen (hat Vorrang fuer api_key etc.)
     own = _load_own_config()
     for k, v in own.items():
         if v:  # Nur nicht-leere Werte
             config[k] = v
-    api_key = config.get("api_key", "")
+    api_key = str(config.get("api_key", "") or "").strip()
+    if not api_key or api_key.startswith("api."):
+        # "api.tavily" ist ein Vault-ALIAS — die Aufloesung passiert nur auf
+        # dem Rust-Pfad. Landet der Alias-String hier (lokale config.json,
+        # Direktaufruf), selbst im Vault nachschlagen statt woertlich
+        # "Bearer api.tavily" zu senden (das war der stille 401).
+        api_key = _vault_key("tavily") or ""
     if not api_key:
         return {"success": False, "data": "Tavily API Key nicht konfiguriert. Bitte in den Modul-Settings eintragen."}
 
