@@ -194,7 +194,33 @@ fn workflow_root_has_active_workflows(root: &std::path::Path) -> bool {
         value
             .get("status")
             .and_then(|v| v.as_str())
-            .map(|s| matches!(s.to_ascii_lowercase().as_str(), "running" | "waiting"))
+            .map(|s| {
+                let status = s.to_ascii_lowercase();
+                if matches!(status.as_str(), "running" | "waiting") {
+                    return true;
+                }
+                // Failed-Workflows brauchen den Tick WEITER: die Self-Recovery
+                // (recover_failed_workflows) laeuft IM Tick. Ohne diese Klausel
+                // unterdrueckte die Noop-Optimierung den Tick, sobald der letzte
+                // Workflow failte — und die Recovery konnte nie anspringen
+                // (so blieb am 08.07. das Tagesvideo aus). 24h-Fenster deckt
+                // recover_failed_max_age_hours (12h) mit Puffer ab; aeltere
+                // Leichen halten den Tick nicht ewig wach.
+                if status == "failed" {
+                    return value
+                        .get("updated_at")
+                        .and_then(|v| v.as_str())
+                        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                        .map(|dt| {
+                            chrono::Utc::now()
+                                .signed_duration_since(dt.with_timezone(&chrono::Utc))
+                                .num_hours()
+                                < 24
+                        })
+                        .unwrap_or(false);
+                }
+                false
+            })
             .unwrap_or(false)
     })
 }
