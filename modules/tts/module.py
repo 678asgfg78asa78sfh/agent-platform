@@ -55,7 +55,7 @@ MODULE = {
         "minimax_api_key": {"type": "password", "label": "MiniMax API Key", "default": ""},
         "minimax_api_base": {"type": "string", "label": "MiniMax API Base", "default": "https://api.minimax.io"},
         "minimax_tts_model": {"type": "string", "label": "MiniMax TTS Modell", "default": "speech-2.8-turbo"},
-        "minimax_voice_id": {"type": "string", "label": "MiniMax Voice ID", "default": "German_Trustworth_Man"},
+        "minimax_voice_id": {"type": "select", "label": "MiniMax Stimme (Deutsch)", "default": "German_FriendlyMan", "options": ["German_FriendlyMan", "German_SweetLady", "German_PlayfulMan"]},
     },
     "tools": [
         {

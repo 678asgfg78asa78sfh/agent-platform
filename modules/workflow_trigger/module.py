@@ -65,7 +65,7 @@ MODULE = {
         "quality_best_effort_upload": {"type": "bool", "label": "Best-effort Videos trotzdem hochladen", "default": False},
         "require_tts": {"type": "bool", "label": "Vor Produktion TTS erzwingen", "default": True},
         "allow_silent_audio": {"type": "bool", "label": "Stummes Audio nur explizit erlauben", "default": False},
-        "default_tts_provider": {"type": "string", "label": "TTS Provider", "default": "xai"},
+        "default_tts_provider": {"type": "select", "label": "TTS Provider", "default": "minimax", "options": ["minimax", "piper", "xai", "qwen"]},
         "default_tts_voice": {"type": "string", "label": "TTS Stimme (leer = Provider-Default)", "default": ""},
         "default_tts_language": {"type": "string", "label": "TTS Sprache", "default": "de"},
         "default_tts_fast": {"type": "bool", "label": "TTS schnell", "default": True},
