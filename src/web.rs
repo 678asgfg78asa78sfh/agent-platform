@@ -4441,7 +4441,14 @@ async fn workflow_cancel(
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
     let wf_id = body["workflow_id"].as_str().unwrap_or("").trim().to_string();
-    if !wf_id.starts_with("wf-") || wf_id.len() > 80 {
+    // Strikte Charset-Pruefung: die Id landet in Log-/Audit-Zeilen —
+    // Steuerzeichen oder Injection-Payloads haben dort nichts verloren.
+    let wf_id_ok = wf_id.starts_with("wf-")
+        && wf_id.len() <= 80
+        && wf_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !wf_id_ok {
         return Json(serde_json::json!({"ok": false, "error": "workflow_id fehlt/ungueltig"}));
     }
     let reason = body["reason"]
