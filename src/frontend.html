@@ -6242,8 +6242,10 @@ function updateModTypInfo() {
 ge('mod-typ').addEventListener('change', function() {
   updateModTypInfo();
   renderSettingsFields(this.value, {});
-  /* Link-Grid folgt dem Typ: LLM-Personas sehen ihn, Tool-Module nicht */
-  populateLinkGrid(ge('mod-id').value || '', []);
+  /* Link-Grid folgt dem Typ: LLM-Personas sehen ihn, Tool-Module nicht.
+     Aktuelle Auswahl mitnehmen — sonst wuerde ein Typ-Wechsel die
+     bestehenden Links beim Save stillschweigend leeren. */
+  populateLinkGrid(ge('mod-id').value || '', getSelectedLinks());
   /* Auto-fill ID wenn leer */
   if (!ge('mod-id').value) {
     var count = appConfig ? appConfig.module.filter(function(m) { return m.typ === this.value; }.bind(this)).length : 0;

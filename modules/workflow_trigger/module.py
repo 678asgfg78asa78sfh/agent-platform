@@ -213,7 +213,7 @@ def deepdive_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
-            "animate_scenes": payload.get("animate_scenes"),
+            "animate_scenes": None if payload.get("animate_scenes") is None else bool_param(payload.get("animate_scenes"), False),
             "tts_voice": first_text(payload, "tts_voice", "voice", "voice_id") or str(config.get("default_tts_voice") or ""),
             "tts_language": first_text(payload, "tts_language", "language", "lang", "sprache") or str(config.get("default_tts_language") or "de"),
             "tts_fast": bool_param(payload.get("tts_fast"), cfg_bool(config, "default_tts_fast", True)),
@@ -320,7 +320,7 @@ def video_from_report(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
-            "animate_scenes": payload.get("animate_scenes"),
+            "animate_scenes": None if payload.get("animate_scenes") is None else bool_param(payload.get("animate_scenes"), False),
             "tts_voice": first_text(payload, "tts_voice", "voice", "voice_id") or str(config.get("default_tts_voice") or ""),
             "tts_language": first_text(payload, "tts_language", "language", "lang", "sprache") or str(config.get("default_tts_language") or "de"),
             "tts_fast": bool_param(payload.get("tts_fast"), cfg_bool(config, "default_tts_fast", True)),
@@ -494,7 +494,7 @@ def repair_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             "require_tts": bool_param(payload.get("require_tts"), cfg_bool(config, "require_tts", True)),
             "allow_silent_audio": bool_param(payload.get("allow_silent_audio"), cfg_bool(config, "allow_silent_audio", False)),
             "tts_provider": first_text(payload, "tts_provider", "provider") or str(config.get("default_tts_provider") or "xai"),
-            "animate_scenes": payload.get("animate_scenes"),
+            "animate_scenes": None if payload.get("animate_scenes") is None else bool_param(payload.get("animate_scenes"), False),
             "tts_voice": first_text(payload, "tts_voice", "voice", "voice_id") or str(config.get("default_tts_voice") or ""),
             "tts_language": first_text(payload, "tts_language", "language", "lang", "sprache") or str(config.get("default_tts_language") or "de"),
             "tts_fast": bool_param(payload.get("tts_fast"), cfg_bool(config, "default_tts_fast", True)),
@@ -1614,7 +1614,7 @@ def start_render_task(
     if audio_path:
         params["audio_path"] = audio_path
     if wf.get("options", {}).get("animate_scenes") is not None:
-        params["animate_scenes"] = bool(wf["options"]["animate_scenes"])
+        params["animate_scenes"] = wf["options"]["animate_scenes"]
 
     render_task = enqueue_direct_task(
         config,
