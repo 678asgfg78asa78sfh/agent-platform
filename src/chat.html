@@ -840,7 +840,23 @@ function showVideoForm() {
     + '<select id="vf-language" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;font-family:var(--font);font-size:12px;">'
     + '<option value="de" selected>Deutsch</option><option value="en">Englisch</option><option value="es">Spanisch</option><option value="fr">Franzoesisch</option>'
     + '</select></div></div>'
-    + '<div style="display:flex;gap:14px;font-size:11px;color:var(--text);">'
+    + '<div style="display:flex;gap:10px;">'
+    + '<div style="flex:1;"><label style="font-size:10px;color:var(--text-dim);">STIMME</label>'
+    + '<select id="vf-voice" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;font-family:var(--font);font-size:12px;">'
+    + '<option value="" selected>Standard (Konfiguration)</option>'
+    + '<option value="minimax:German_FriendlyMan">MiniMax &mdash; FriendlyMan</option>'
+    + '<option value="minimax:German_SweetLady">MiniMax &mdash; SweetLady</option>'
+    + '<option value="minimax:German_PlayfulMan">MiniMax &mdash; PlayfulMan</option>'
+    + '<option value="piper:">Piper (lokal, gratis)</option>'
+    + '</select></div>'
+    + '<div style="flex:1;"><label style="font-size:10px;color:var(--text-dim);">NACH DEM RENDER</label>'
+    + '<select id="vf-upload" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px;font-family:var(--font);font-size:12px;">'
+    + '<option value="none" selected>Nicht hochladen (nur Datei)</option>'
+    + '<option value="unlisted">YouTube: nicht gelistet</option>'
+    + '<option value="public">YouTube: &ouml;ffentlich</option>'
+    + '</select></div></div>'
+    + '<div style="display:flex;gap:14px;font-size:11px;color:var(--text);flex-wrap:wrap;">'
+    + '<label style="display:flex;gap:5px;align-items:center;cursor:pointer;" title="Die 2 wichtigsten Szenenbilder werden per KI animiert (~1$ pro Video)"><input type="checkbox" id="vf-animate" checked> Szenen animieren</label>'
     + '<label style="display:flex;gap:5px;align-items:center;cursor:pointer;"><input type="checkbox" id="vf-shorts"> Shorts schneiden</label>'
     + '<label style="display:flex;gap:5px;align-items:center;cursor:pointer;" title="Schneller Testlauf: 720p, ohne TTS-Kosten"><input type="checkbox" id="vf-preview"> Preview-Testlauf</label>'
     + '</div>'
@@ -858,14 +874,27 @@ function showVideoForm() {
     apiFetch('/api/video/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        modul: modulId,
-        query: query,
-        target_minutes: parseFloat(ge('vf-minutes').value),
-        language: ge('vf-language').value,
-        shorts: ge('vf-shorts').checked,
-        preview: ge('vf-preview').checked
-      })
+      body: JSON.stringify((function(){
+        var b = {
+          modul: modulId,
+          query: query,
+          target_minutes: parseFloat(ge('vf-minutes').value),
+          language: ge('vf-language').value,
+          shorts: ge('vf-shorts').checked,
+          preview: ge('vf-preview').checked,
+          animate_scenes: ge('vf-animate').checked
+        };
+        var up = ge('vf-upload').value;
+        b.auto_upload = (up !== 'none');
+        if (up !== 'none') b.upload_privacy = up;
+        var v = ge('vf-voice').value;
+        if (v) {
+          var parts = v.split(':');
+          b.tts_provider = parts[0];
+          if (parts[1]) b.tts_voice = parts[1];
+        }
+        return b;
+      })())
     }).then(function(r) { return r.json(); }).then(function(d) {
       var m = ge('video-form-modal');
       if (m) m.remove();
@@ -1482,9 +1511,20 @@ function loadModcfg(){
   ]).then(function(res){
     box.innerHTML='';
     try{ renderAutopilotSection(res[0]||{}); }catch(e){}
-    var hdr = document.createElement('div'); hdr.style.cssText='font-family:var(--display);font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1.2px;margin:2px 2px 7px;'; hdr.textContent='Module — Einstellungen';
+    var mods = (res[1] && res[1].modules) || [];
+    /* Video-Produktion zuerst — das sind die Regler, die man wirklich sucht */
+    var PROD = ['workflow_trigger','tts','video_pipeline','youtube_upload','factcheck','image_gen','content_planner'];
+    var prodMods = [], restMods = [];
+    mods.forEach(function(m){ (PROD.indexOf(m.name)>=0 ? prodMods : restMods).push(m); });
+    prodMods.sort(function(a,b){ return PROD.indexOf(a.name)-PROD.indexOf(b.name); });
+    if (prodMods.length) {
+      var ph = document.createElement('div'); ph.style.cssText='font-family:var(--display);font-size:10px;color:var(--cyan);text-transform:uppercase;letter-spacing:1.2px;margin:2px 2px 7px;'; ph.textContent='\uD83C\uDFAC Video-Produktion';
+      box.appendChild(ph);
+      renderModuleList(prodMods);
+    }
+    var hdr = document.createElement('div'); hdr.style.cssText='font-family:var(--display);font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1.2px;margin:10px 2px 7px;'; hdr.textContent='Weitere Module';
     box.appendChild(hdr);
-    renderModuleList((res[1] && res[1].modules) || []);
+    renderModuleList(restMods);
   }).catch(function(){ box.innerHTML='<div style="padding:10px;color:var(--red);font-size:11px;">Laden fehlgeschlagen.</div>'; });
 }
 

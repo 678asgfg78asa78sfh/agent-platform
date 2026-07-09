@@ -4472,6 +4472,29 @@ async fn video_start(
     if minutes > 0.0 {
         params["target_minutes"] = serde_json::json!(minutes);
     }
+    // Produktions-Optionen aus dem Chat-Dialog — nur setzen wenn explizit
+    // mitgeschickt, sonst gelten die Workflow-/Modul-Defaults.
+    if let Some(b) = body["auto_upload"].as_bool() {
+        params["auto_upload"] = serde_json::json!(b);
+    }
+    if let Some(pv) = body["upload_privacy"].as_str() {
+        if matches!(pv, "private" | "unlisted" | "public") {
+            params["upload_privacy"] = serde_json::json!(pv);
+        }
+    }
+    if let Some(v) = body["tts_voice"].as_str() {
+        if !v.trim().is_empty() {
+            params["tts_voice"] = serde_json::json!(v.trim());
+        }
+    }
+    if let Some(pr) = body["tts_provider"].as_str() {
+        if !pr.trim().is_empty() {
+            params["tts_provider"] = serde_json::json!(pr.trim());
+        }
+    }
+    if let Some(a) = body["animate_scenes"].as_bool() {
+        params["animate_scenes"] = serde_json::json!(a);
+    }
     if preview {
         params["require_tts"] = serde_json::json!(false);
         params["allow_silent_audio"] = serde_json::json!(true);

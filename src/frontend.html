@@ -1966,10 +1966,31 @@ function populateLinkPresets() {
   row.appendChild(clear);
 }
 
+/* Nur LLM-getriebene Personas nutzen verlinkte Module (der LLM-Loop sieht
+   deren Tools). Ein editor/tavily/tts-Tool-Modul hat keinen LLM-Loop —
+   der Link-Grid dort war reine Verwirrung ("Module waehlen Module"). */
+var LLM_LOOP_TYPES = ['chat', 'llm_worker', 'taskloop', 'cron', 'deepdive', 'KevinChat'];
+function typUsesLinks(typ) {
+  return LLM_LOOP_TYPES.indexOf(String(typ || '')) >= 0;
+}
+
 function populateLinkGrid(currentModuleId, linkedModules) {
   var grid = ge('mod-link-grid');
   grid.innerHTML = '';
   if (!appConfig || !appConfig.module) return;
+  var section = ge('mod-link-section');
+  var typ = (ge('mod-typ') && ge('mod-typ').value) || '';
+  if (section) {
+    if (!typUsesLinks(typ)) {
+      section.style.display = 'none';
+      /* Bestehende Links beim Save unangetastet lassen — verstecktes Grid
+         darf keine Config stillschweigend leeren */
+      grid.dataset.hiddenLinks = JSON.stringify(linkedModules || []);
+      return;
+    }
+    delete grid.dataset.hiddenLinks;
+    section.style.display = '';
+  }
   populateLinkPresets();
   var filter = ge('mod-link-filter');
   if (filter) filter.value = '';
@@ -2001,7 +2022,11 @@ function populateLinkGrid(currentModuleId, linkedModules) {
 }
 
 function getSelectedLinks() {
-  var chips = ge('mod-link-grid').querySelectorAll('[data-module-id]');
+  var grid = ge('mod-link-grid');
+  if (grid.dataset.hiddenLinks) {
+    try { return JSON.parse(grid.dataset.hiddenLinks); } catch (e) { return []; }
+  }
+  var chips = grid.querySelectorAll('[data-module-id]');
   var links = [];
   chips.forEach(function(chip) {
     if (chip.dataset.linked === '1') {
@@ -6199,7 +6224,9 @@ function updateModTypInfo() {
   var enhancerAssignSec = ge('mod-enhancer-assignment');
   if (enhancerAssignSec) enhancerAssignSec.style.display = (typ === 'enhancer') ? 'block' : 'none';
   var linkSec = ge('mod-link-section');
-  if (linkSec) linkSec.style.display = (typ === 'enhancer') ? 'none' : 'block';
+  /* Links nur fuer LLM-Personas — Tool-Module (editor, tavily, tts, ...)
+     haben keinen LLM-Loop, der verlinkte Tools nutzen koennte */
+  if (linkSec) linkSec.style.display = (typ === 'enhancer' || !typUsesLinks(typ)) ? 'none' : 'block';
   var permSec = ge('mod-perm-section');
   if (permSec) permSec.style.display = (typ === 'enhancer') ? 'none' : 'flex';
   var derivedSec = ge('mod-derived-perms');
@@ -6215,6 +6242,8 @@ function updateModTypInfo() {
 ge('mod-typ').addEventListener('change', function() {
   updateModTypInfo();
   renderSettingsFields(this.value, {});
+  /* Link-Grid folgt dem Typ: LLM-Personas sehen ihn, Tool-Module nicht */
+  populateLinkGrid(ge('mod-id').value || '', []);
   /* Auto-fill ID wenn leer */
   if (!ge('mod-id').value) {
     var count = appConfig ? appConfig.module.filter(function(m) { return m.typ === this.value; }.bind(this)).length : 0;
