@@ -1913,6 +1913,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/home/{modul_id}", axum::routing::get(list_home))
         .route("/api/media/{modul_id}", axum::routing::get(list_media))
         .route("/api/video/start", axum::routing::post(video_start))
+        .route("/api/workflow/cancel", axum::routing::post(workflow_cancel))
         .route("/api/image/start", axum::routing::post(image_start))
         .route(
             "/api/planner/proposals",
@@ -4435,6 +4436,49 @@ async fn icon_192() -> impl IntoResponse {
 /// das Formular liefert strukturierte Parameter, wir enqueuen den
 /// workflow_trigger-Toolcall direkt in die Task-Queue. Kein Tool-Listing,
 /// keine Prompt-Interpretation, deterministischer Einstieg.
+async fn workflow_cancel(
+    State(s): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let wf_id = body["workflow_id"].as_str().unwrap_or("").trim().to_string();
+    if !wf_id.starts_with("wf-") || wf_id.len() > 80 {
+        return Json(serde_json::json!({"ok": false, "error": "workflow_id fehlt/ungueltig"}));
+    }
+    let reason = body["reason"]
+        .as_str()
+        .unwrap_or("Vom User im Chat abgebrochen")
+        .chars()
+        .take(200)
+        .collect::<String>();
+    let workflow_modul = {
+        let cfg = s.config.read().await;
+        cfg.module
+            .iter()
+            .find(|m| m.typ == "workflow_trigger")
+            .map(|m| m.id.clone())
+            .unwrap_or_else(|| "workflow_trigger.default".into())
+    };
+    let params = serde_json::json!({"workflow_id": wf_id, "reason": reason});
+    let aufgabe = crate::types::Aufgabe::direct(
+        "workflow_trigger.cancel",
+        vec![params.to_string()],
+        &workflow_modul,
+        "web:workflow_cancel",
+        None,
+        None,
+    );
+    if let Err(e) = s.pipeline.speichern(&aufgabe) {
+        return Json(serde_json::json!({"ok": false, "error": format!("Task anlegen fehlgeschlagen: {e}")}));
+    }
+    s.pipeline.log(
+        &workflow_modul,
+        Some(&aufgabe.id),
+        LogTyp::Warning,
+        &format!("Workflow-Abbruch per UI angefordert: {}", wf_id),
+    );
+    Json(serde_json::json!({"ok": true, "task_id": aufgabe.id}))
+}
+
 async fn video_start(
     State(s): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,

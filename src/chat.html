@@ -1166,6 +1166,16 @@ function flowRow(nodes) {
   return '<div style="display:flex;align-items:stretch;gap:3px;flex-wrap:wrap;margin:3px 0;">'
     + nodes.join('<span style="color:var(--text-dim);font-size:12px;align-self:center;">→</span>') + '</div>';
 }
+function cancelWorkflow(id) {
+  if (!confirm('Laufende Video-Produktion wirklich abbrechen?')) return;
+  apiFetch('/api/workflow/cancel', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({workflow_id: id})})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      appendMsg('assistant', d.ok ? ('\u2715 Abbruch angefordert fuer ' + id.slice(0,20) + '\u2026 (greift beim naechsten Tick)') : ('Abbruch fehlgeschlagen: ' + (d.error||'?')));
+      setTimeout(loadPipeline, 2000);
+    }).catch(function(e){ alert('Fehler: ' + e); });
+}
 function loadPipeline() {
   var box = ge('pipeline-flow');
   Promise.all([
@@ -1191,7 +1201,10 @@ function renderFlow(wf, ps, cs) {
   ]);
   var themes = (ps.interests || []).map(function(t) { return '<span style="font-size:8px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:1px 5px;color:var(--text-dim);">' + esc(t) + '</span>'; }).join(' ');
   html += '<div style="display:flex;gap:3px;flex-wrap:wrap;margin:3px 0 8px;">' + themes + '</div>';
-  html += '<div style="font-size:9px;color:var(--text-dim);margin:2px 0;">VIDEO-PIPELINE' + (active ? ' &middot; ' + esc((active.title || '').slice(0, 42)) : ' &middot; (idle)') + '</div>';
+  var cancelBtn = (active && (active.status === 'running' || active.status === 'waiting'))
+    ? ' <button onclick="cancelWorkflow(\'' + esc(active.id) + '\')" style="background:none;border:1px solid var(--red);color:var(--red);border-radius:5px;padding:1px 8px;font-size:9px;cursor:pointer;font-family:var(--font);margin-left:6px;">\u2715 Abbrechen</button>'
+    : '';
+  html += '<div style="font-size:9px;color:var(--text-dim);margin:2px 0;display:flex;align-items:center;">VIDEO-PIPELINE' + (active ? ' &middot; ' + esc((active.title || '').slice(0, 42)) : ' &middot; (idle)') + cancelBtn + '</div>';
   var curIdx = active ? (PIPE_ORDER[active.stage] !== undefined ? PIPE_ORDER[active.stage] : -1) : -1;
   var allDone = active && active.status === 'success';
   html += flowRow(PIPE_STAGES.map(function(stg, i) {

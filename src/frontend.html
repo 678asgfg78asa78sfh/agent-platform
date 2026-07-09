@@ -2302,9 +2302,42 @@ function renderSettingsFields(typName, currentValues) {
     return;
   }
   container.innerHTML = '';
+  /* Bei vielen Feldern: Suchfilter + Prefix-Gruppen (quality_, fact_check_,
+     recover_, ...) — 40 flache Felder waren nicht mehr scanbar */
+  if (fields.length > 10) {
+    var filterRow = document.createElement('div');
+    filterRow.innerHTML = '<input type="text" id="ms-field-filter" placeholder="Einstellung suchen\u2026" style="width:100%;margin-bottom:8px;padding:6px 10px;font-size:11px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);" />';
+    container.appendChild(filterRow);
+    filterRow.querySelector('input').addEventListener('input', function() {
+      var q = this.value.toLowerCase();
+      container.querySelectorAll('.form-row[data-skey]').forEach(function(r) {
+        r.style.display = (!q || r.dataset.skey.indexOf(q) >= 0) ? '' : 'none';
+      });
+      container.querySelectorAll('.ms-group-head').forEach(function(h) { h.style.display = q ? 'none' : ''; });
+    });
+    var counts = {};
+    fields.forEach(function(f) { var g = f.key.split('_')[0]; counts[g] = (counts[g] || 0) + 1; });
+    fields = fields.slice().sort(function(a, b) {
+      var ga = a.key.split('_')[0], gb = b.key.split('_')[0];
+      var wa = counts[ga] >= 3 ? ga : 'zzz', wb = counts[gb] >= 3 ? gb : 'zzz';
+      return wa === wb ? 0 : (wa < wb ? -1 : 1);
+    });
+    fields._groups = counts;
+  }
+  var _lastGroup = null;
   fields.forEach(function(field) {
+    var g = field.key.split('_')[0];
+    if (fields._groups && fields._groups[g] >= 3 && g !== _lastGroup) {
+      _lastGroup = g;
+      var head = document.createElement('div');
+      head.className = 'ms-group-head';
+      head.style.cssText = 'font-size:9px;color:var(--cyan);text-transform:uppercase;letter-spacing:1.2px;margin:10px 0 4px;border-bottom:1px solid var(--border);padding-bottom:2px;';
+      head.textContent = g.replace(/-/g, ' ');
+      container.appendChild(head);
+    }
     var row = document.createElement('div');
     row.className = 'form-row';
+    row.dataset.skey = (field.key + ' ' + field.label).toLowerCase();
     var val = currentValues[field.key];
     if (field.type === 'checkbox') {
       var checked = (val !== undefined && val !== null) ? val : (field.defaultVal !== undefined ? field.defaultVal : false);
