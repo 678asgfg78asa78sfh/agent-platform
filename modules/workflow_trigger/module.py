@@ -894,6 +894,12 @@ def recover_factcheck_failed_from_artifacts(wf: dict[str, Any], config: dict[str
         if begin_self_recovery(wf, config, "Faktencheck-Report ist freigabefaehig; Workflow wird fortgesetzt"):
             continue_after_factcheck_passed(wf, config, assets=assets, reason="self_recovery")
         return
+    proceed_after = bool_param(wf.get("options", {}).get("quality_proceed_after_repairs"), cfg_bool(config, "quality_proceed_after_repairs", True))
+    proceed_min = int_param(wf.get("options", {}).get("quality_proceed_min_score"), cfg_int(config, "quality_proceed_min_score", 70), 0, 100)
+    if proceed_after and not report.get("blocking_issues") and score >= proceed_min:
+        if begin_self_recovery(wf, config, f"Faktencheck best effort (score={score}, 0 Blocker); Workflow wird fortgesetzt"):
+            continue_after_factcheck_passed(wf, config, assets=assets, reason="best_effort_recovery")
+        return
 
     quality = quality_state(wf)
     repairs_used = int_param(quality.get("factcheck_repair_count"), 0, 0, 100)
@@ -1147,6 +1153,19 @@ def advance_fact_check_assets(wf: dict[str, Any], config: dict[str, Any]) -> Non
                 "Faktencheck blockiert (" + factcheck_summary(report) + ") — Auto-Reparatur " + str(repairs_used + 1) + " gestartet",
             ))
             start_repair_task(wf, config, assets, report_for_repair, scope="factcheck")
+            return
+        # Best-Effort-Ausweg (wie im Quality-Gate): Reparaturen erschoepft,
+        # aber NULL harte Blocker und Score >= proceed_min -> weiterlaufen
+        # lassen statt das Tagesvideo an 2 Warn-Punkten sterben zu lassen
+        # (09.07.: score=70 bei 0 Blockern gegen min_score=72 = kein Video).
+        proceed_after = bool_param(wf.get("options", {}).get("quality_proceed_after_repairs"), cfg_bool(config, "quality_proceed_after_repairs", True))
+        proceed_min = int_param(wf.get("options", {}).get("quality_proceed_min_score"), cfg_int(config, "quality_proceed_min_score", 70), 0, 100)
+        if proceed_after and not report.get("blocking_issues") and score >= proceed_min:
+            wf.setdefault("events", []).append(event(
+                "factcheck_best_effort",
+                f"Faktencheck unter Zielscore ({score} < Ziel), aber 0 Blocker und >= {proceed_min}: best effort weiter",
+            ))
+            continue_after_factcheck_passed(wf, config, assets=assets, reason="best_effort")
             return
         wf["stage"] = "fact_check_failed"
         save_synthesis(wf, config, status="fact_check_failed", assets=assets)
