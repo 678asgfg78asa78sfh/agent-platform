@@ -51,6 +51,9 @@ MODULE = {
     "description": "Autonome Redaktions-Pipeline: Interessen-Themen, Video-Vorschlaege (Queue), Dedup gegen behandelte Themen. Fuettert die Video-Pipeline.",
     "version": "1.0",
     "settings": {
+        "performance_median_floor": {"type": "number", "label": "Mindest-Signal fuer Performance-Vergleich (Fruehphasen-Schutz)", "default": 20},
+        "performance_window_days": {"type": "number", "label": "Performance-Feedback Fenster Tage", "default": 30},
+        "performance_boost_max": {"type": "number", "label": "Max Score-Boost/Malus aus YouTube-Performance", "default": 20},
         "similarity_cooldown_days": {"type": "number", "label": "Aehnlichkeits-Cooldown Tage (0=aus)", "default": 7},
         "similarity_block_strength": {"type": "number", "label": "Cooldown-Staerke Prozent (100=voller Block)", "default": 100},
         "demand_lift_score": {"type": "number", "label": "Ab diesem Score halbiert sich der Cooldown (Demand-Lift)", "default": 88},
@@ -290,7 +293,7 @@ def _sim_tokens(text: str) -> set[str]:
     und 'Roboter'/'humanoide Robots' sollen sich treffen."""
     import re as _re
     text = str(text or "").lower()
-    for a, b in (("ä","a"),("ö","o"),("ü","u"),("ß","ss")):
+    for a, b in (("ä","a"),("ö","o"),("ü","u"),("ß","ss"),("ae","a"),("oe","o"),("ue","u")):
         text = text.replace(a, b)
     out = set()
     for w in _re.findall(r"[a-z0-9]+", text):
@@ -357,6 +360,64 @@ def similarity_penalty(topic: str, score: int, config: dict[str, Any]) -> tuple[
     return min(worst, 1.0), worst_ref
 
 
+def performance_adjust(topic: str, config: dict[str, Any]) -> tuple[int, str]:
+    """Lernt aus echten YouTube-Zahlen (performance.json von youtube_upload):
+    Themen aehnlich zu Ueberperformern bekommen Boost, aehnlich zu Flops
+    Malus. Engagement zaehlt staerker als reine Views."""
+    import math
+    from datetime import datetime, timezone
+    window = int_param(config.get("performance_window_days"), 30, 3, 365)
+    boost_max = int_param(config.get("performance_boost_max"), 20, 0, 50)
+    if boost_max <= 0:
+        return 0, ""
+    home = Path(str(config.get("home_dir") or "agent-data/home/content_planner.default"))
+    perf_files = sorted(home.parent.glob("youtube_upload*/performance.json"))
+    if not perf_files:
+        return 0, ""
+    try:
+        data = json.loads(perf_files[0].read_text(encoding="utf-8"))
+    except Exception:
+        return 0, ""
+    now = int(time.time())
+    vids = []
+    for v in data.get("videos") or []:
+        try:
+            ts = int(datetime.fromisoformat(str(v.get("published_at")).replace("Z", "+00:00")).timestamp())
+        except Exception:
+            continue
+        age_d = (now - ts) / 86400.0
+        if age_d > window:
+            continue
+        signal = int(v.get("views") or 0) + 10 * int(v.get("likes") or 0) + 25 * int(v.get("comments") or 0)
+        vids.append((v, age_d, signal))
+    if len(vids) < 3:
+        return 0, ""  # zu wenig Datenpunkte fuer ein faires Urteil
+    signals = sorted(x[2] for x in vids)
+    # Floor gegen Fruehphasen-Rauschen: solange fast alles bei 0-5 Views
+    # liegt, macht ein roher Median jeden 4-Views-Flop zum "Ueberperformer".
+    median = max(int_param(config.get("performance_median_floor"), 20, 1, 100000),
+                 signals[len(signals) // 2])
+    best, worst, why = 0.0, 0.0, ""
+    for v, age_d, signal in vids:
+        sim = _topic_similarity(topic, str(v.get("title") or ""))
+        if sim < 0.3:
+            continue
+        ratio = (signal + 1) / median
+        # log2: doppelte Median-Performance = +1/3 vom Max, 8x = voll
+        raw = max(-1.0, min(1.0, math.log2(max(ratio, 0.01)) / 3.0))
+        adj = sim * raw * boost_max * (1.0 - age_d / window)
+        if adj > best:
+            best = adj
+        if adj < worst:
+            worst = adj
+            why = str(v.get("title") or "")[:60]
+        elif adj == best and adj > 0:
+            why = str(v.get("title") or "")[:60]
+    total = int(round(best + worst))
+    total = max(-boost_max, min(boost_max, total))
+    return total, why
+
+
 def list_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     q = queue_list(config)
     status_f = str(payload.get("status") or "").strip().lower()
@@ -368,11 +429,16 @@ def list_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
     for p in items:
         if p.get("status") in ("next", "proposed", "queued"):
             base = int_param(p.get("score"), 0, 0, 100)
-            pen, ref = similarity_penalty((p.get("title") or "") + " " + (p.get("query") or ""), base, config)
-            p["effective_score"] = int(round(base * (1.0 - pen)))
+            topic_text = (p.get("title") or "") + " " + (p.get("query") or "")
+            pen, ref = similarity_penalty(topic_text, base, config)
+            perf, perf_ref = performance_adjust(topic_text, config)
+            p["effective_score"] = max(0, min(100, int(round(base * (1.0 - pen))) + perf))
             p["cooldown_pct"] = int(round(pen * 100))
+            p["performance_adjust"] = perf
             if ref:
                 p["cooldown_wegen"] = ref
+            if perf and perf_ref:
+                p["performance_wegen"] = perf_ref
         else:
             p["effective_score"] = int_param(p.get("score"), 0, 0, 100)
             p["cooldown_pct"] = 0

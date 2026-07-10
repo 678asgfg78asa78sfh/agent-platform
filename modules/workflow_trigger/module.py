@@ -35,6 +35,7 @@ MODULE = {
         "default_render_timeout_s": {"type": "number", "label": "Render Task Timeout", "default": 3600},
         "tick_limit": {"type": "number", "label": "Workflows pro Tick", "default": 12},
         "daily_video_guarantee": {"type": "bool", "label": "Tagesvideo-Garantie: bei Fehlschlag naechstes Thema produzieren", "default": True},
+        "upload_shorts": {"type": "bool", "label": "Fertige Shorts automatisch hochladen", "default": True},
         "daily_guarantee_max_attempts": {"type": "number", "label": "Max Themen-Versuche pro Tag", "default": 3},
         "recover_failed_workflows": {"type": "bool", "label": "Reparierbare fehlgeschlagene Workflows automatisch fortsetzen", "default": True},
         "recover_failed_max_attempts": {"type": "number", "label": "Max Self-Recovery Versuche pro Workflow", "default": 2},
@@ -673,6 +674,17 @@ def tick(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             changed += 1
             save_workflow(wf, config)
         processed.append(workflow_summary(wf, config))
+    # YouTube-Performance-Sync (max alle 6h): fuettert performance.json,
+    # aus der der content_planner Themen-Boost/Malus ableitet.
+    try:
+        marker = workflows_dir(config) / ".yt_stats_synced"
+        stale = (not marker.exists()) or (time.time() - marker.stat().st_mtime > 6 * 3600)
+        if stale:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(now_iso(), encoding="utf-8")
+            call_module_tool(config, "youtube_upload", "youtube_upload.stats", ["{}"], timeout=90)
+    except Exception:
+        pass
     guarantee = None
     try:
         guarantee = ensure_daily_video(config)
@@ -1984,6 +1996,44 @@ def advance_make_shorts(wf: dict[str, Any], config: dict[str, Any]) -> None:
         wf.setdefault("artifacts", {})["shorts_manifest"] = shorts_result["manifest"]
     if shorts_result.get("output_dir"):
         wf.setdefault("artifacts", {})["shorts_output_dir"] = shorts_result["output_dir"]
+    # Shorts hochladen (bisher wurden sie nur geschnitten und lagen rum):
+    # vertikale Clips <60s werden von YouTube automatisch als Shorts gefuehrt.
+    if bool_param(wf.get("options", {}).get("auto_upload"), False) and cfg_bool(config, "upload_shorts", True):
+        clips: list[str] = []
+        try:
+            man = shorts_result.get("manifest")
+            if man and Path(str(man)).exists():
+                mdata = json.loads(Path(str(man)).read_text(encoding="utf-8"))
+                raw = mdata.get("clips") or mdata.get("shorts") or []
+                clips = [str(c.get("path") or c.get("file") or "") for c in raw if isinstance(c, dict)]
+        except Exception:
+            clips = []
+        if not any(clips) and shorts_result.get("output_dir"):
+            try:
+                clips = [str(x) for x in sorted(Path(str(shorts_result["output_dir"])).glob("*.mp4"))]
+            except Exception:
+                clips = []
+        clips = [c for c in clips if c and Path(c).exists()][:3]
+        main_url = str((wf.get("artifacts") or {}).get("youtube_url") or "").strip()
+        privacy = str(wf.get("options", {}).get("upload_privacy") or "public")
+        base_title = str(wf.get("title") or "Fathom Short").strip()
+        for i, clip in enumerate(clips):
+            up = {
+                "video_path": clip,
+                "privacy": privacy,
+                "title": (base_title[:80] + f" #Shorts" if len(clips) == 1 else base_title[:74] + f" ({i+1}) #Shorts"),
+                "description": (f"Das ganze Video: {main_url}" if main_url else ""),
+                "auto_meta": False,
+            }
+            enqueue_direct_task(
+                config, "youtube_upload.default", "youtube_upload.video",
+                [json.dumps(up, ensure_ascii=False)], created_by="workflow_trigger",
+                timeout_s=900, back_route=wf.get("options", {}).get("chat_route") or None,
+                parent_id=wf.get("parent_task_id") or None,
+                workflow_id=wf.get("id"), workflow_stage="upload_shorts",
+            )
+        if clips:
+            wf.setdefault("events", []).append(event("shorts_upload_started", f"{len(clips)} Short(s) zum Upload eingereiht"))
     wf["stage"] = "done"
     wf["status"] = "success"
     wf["updated_at"] = now_iso()

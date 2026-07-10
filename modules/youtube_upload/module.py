@@ -62,6 +62,11 @@ MODULE = {
             "params": ["query_json"],
         },
         {
+            "name": "youtube_upload.stats",
+            "description": "Holt Views/Likes/Kommentare der letzten Kanal-Videos (Data API) und speichert performance.json fuers Themen-Feedback. JSON {limit?: 25}.",
+            "params": ["query_json"],
+        },
+        {
             "name": "youtube_upload.status",
             "description": "Prueft die OAuth-Credentials und zeigt den verbundenen Kanal (Name, Abos, Videos).",
             "params": [],
@@ -76,6 +81,8 @@ def handle_tool(tool_name: str, params: Any, config: dict[str, Any]) -> dict[str
             return fail("youtube_upload ist deaktiviert.")
         if tool_name == "youtube_upload.video":
             return upload_video(params, config)
+        if tool_name == "youtube_upload.stats":
+            return channel_stats(params, config)
         if tool_name == "youtube_upload.status":
             return status(config)
         return fail(f"Unbekanntes Tool: {tool_name}")
@@ -196,6 +203,53 @@ def add_to_playlist(token: str, video_id: str, playlist_id: str, timeout: int) -
     })
     with urllib.request.urlopen(req, timeout=timeout):
         pass
+
+
+def _api_get(token: str, url: str, timeout: int = 30) -> dict[str, Any]:
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", errors="replace"))
+
+
+def channel_stats(params: Any, config: dict[str, Any]) -> dict[str, Any]:
+    """Performance-Feedback-Basis: Views/Likes/Comments der letzten Uploads.
+    Ergebnis wird als performance.json im Modul-Home persistiert — der
+    content_planner liest es und lernt daraus, welche Themenfelder ziehen."""
+    payload = parse_payload(params)
+    limit = int_param(payload.get("limit"), 25, 1, 50)
+    token = access_token(config)
+    ch = _api_get(token, "https://www.googleapis.com/youtube/v3/channels?part=contentDetails&mine=true")
+    items = ch.get("items") or []
+    if not items:
+        return fail("Kein Kanal fuer diese Credentials gefunden.")
+    uploads = items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
+    pl = _api_get(token, f"https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&playlistId={uploads}&maxResults={limit}")
+    ids = [i["contentDetails"]["videoId"] for i in pl.get("items") or []]
+    if not ids:
+        return ok({"videos": [], "note": "Keine Uploads gefunden."})
+    vs = _api_get(token, "https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet,contentDetails&id=" + ",".join(ids))
+    videos = []
+    for v in vs.get("items") or []:
+        st = v.get("statistics") or {}
+        sn = v.get("snippet") or {}
+        videos.append({
+            "video_id": v.get("id"),
+            "title": sn.get("title"),
+            "published_at": sn.get("publishedAt"),
+            "duration": (v.get("contentDetails") or {}).get("duration"),
+            "views": int(st.get("viewCount") or 0),
+            "likes": int(st.get("likeCount") or 0),
+            "comments": int(st.get("commentCount") or 0),
+        })
+    videos.sort(key=lambda x: x.get("published_at") or "", reverse=True)
+    out = {"synced_at": int(time.time()), "videos": videos}
+    home = Path(str(config.get("home_dir") or "agent-data/home/youtube_upload.default"))
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "performance.json").write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception as exc:
+        out["persist_error"] = str(exc)
+    return ok(out)
 
 
 def status(config: dict[str, Any]) -> dict[str, Any]:
