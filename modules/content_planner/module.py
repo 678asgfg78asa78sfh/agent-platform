@@ -51,6 +51,9 @@ MODULE = {
     "description": "Autonome Redaktions-Pipeline: Interessen-Themen, Video-Vorschlaege (Queue), Dedup gegen behandelte Themen. Fuettert die Video-Pipeline.",
     "version": "1.0",
     "settings": {
+        "similarity_cooldown_days": {"type": "number", "label": "Aehnlichkeits-Cooldown Tage (0=aus)", "default": 7},
+        "similarity_block_strength": {"type": "number", "label": "Cooldown-Staerke Prozent (100=voller Block)", "default": 100},
+        "demand_lift_score": {"type": "number", "label": "Ab diesem Score halbiert sich der Cooldown (Demand-Lift)", "default": 88},
         "enabled": {"type": "bool", "label": "Aktiv", "default": True},
         "max_queue": {"type": "number", "label": "Max aktive Vorschlaege", "default": 30},
         "max_per_theme": {"type": "number", "label": "Max aktive Vorschlaege pro Thema (Vielfalt)", "default": 2},
@@ -107,12 +110,26 @@ def interests_list(config: dict[str, Any]) -> list[dict[str, Any]]:
     return data
 
 
-def covered_list(config: dict[str, Any]) -> list[str]:
+def covered_raw(config: dict[str, Any]) -> list[Any]:
+    """covered.json roh (Strings legacy, Dicts mit ts) — NUR hierueber
+    schreiben, sonst gehen die Zeitstempel beim Roundtrip verloren."""
     data = load(config, "covered.json", None)
-    if data is None:
-        data = list(DEFAULT_COVERED)
+    if not isinstance(data, list):
+        data = []
         save(config, "covered.json", data)
     return data
+
+
+def covered_list(config: dict[str, Any]) -> list[str]:
+    """Kompatibel: nur die Themen-Strings (fuer Dedup/Anzeige)."""
+    out = []
+    for item in covered_raw(config):
+        if isinstance(item, dict):
+            out.append(str(item.get("topic") or ""))
+        else:
+            out.append(str(item))
+    return [t for t in out if t]
+
 
 
 def queue_list(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -264,6 +281,82 @@ def save_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
                "titles": added, "skipped": skipped[:6]})
 
 
+_SIM_STOP = {"der","die","das","und","oder","von","mit","fuer","für","the","and","for","von","aus","wie","was","wer","2026","2025","2027","neue","neuer","neues","jahr","test","grosse","große"}
+
+
+def _sim_tokens(text: str) -> set[str]:
+    """Leichte Normalisierung fuer Themen-Vergleich: Umlaute, lowercase,
+    Suffixe (-en/-er/-e/-s) kappen, Stopwoerter raus. 'Fabriken'/'Fabrikhalle'
+    und 'Roboter'/'humanoide Robots' sollen sich treffen."""
+    import re as _re
+    text = str(text or "").lower()
+    for a, b in (("ä","a"),("ö","o"),("ü","u"),("ß","ss")):
+        text = text.replace(a, b)
+    out = set()
+    for w in _re.findall(r"[a-z0-9]+", text):
+        if len(w) < 3 or w in _SIM_STOP:
+            continue
+        if len(w) > 5:
+            for suf in ("en","er","es","e","s","n"):
+                if w.endswith(suf):
+                    w = w[: -len(suf)]
+                    break
+        out.add(w)
+    return out
+
+
+def _topic_similarity(a: str, b: str) -> float:
+    """Overlap-Koeffizient (Schnitt / kleinere Menge), 0..1."""
+    ta, tb = _sim_tokens(a), _sim_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    return inter / min(len(ta), len(tb))
+
+
+def covered_entries(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """covered.json normalisiert: Legacy-Strings (ohne Zeit) -> ts=0."""
+    out = []
+    for item in covered_raw(config):
+        if isinstance(item, dict):
+            out.append({"topic": str(item.get("topic") or ""), "ts": int_param(item.get("ts"), 0, 0, 2**62)})
+        else:
+            out.append({"topic": str(item), "ts": 0})
+    return out
+
+
+def similarity_penalty(topic: str, score: int, config: dict[str, Any]) -> tuple[float, str]:
+    """Einstellbarer Aehnlichkeits-Cooldown: startet bei (strength * similarity)
+    und faellt LINEAR ueber similarity_cooldown_days auf 0. Themen mit sehr
+    hohem Demand (score >= demand_lift_score) zahlen nur die halbe Strafe."""
+    days = int_param(config.get("similarity_cooldown_days"), 7, 0, 90)
+    if days <= 0:
+        return 0.0, ""
+    strength = int_param(config.get("similarity_block_strength"), 100, 0, 100) / 100.0
+    lift_score = int_param(config.get("demand_lift_score"), 88, 0, 100)
+    now = int(time.time())
+    worst = 0.0
+    worst_ref = ""
+    for entry in covered_entries(config):
+        ts = entry["ts"]
+        if ts <= 0:
+            continue
+        age_days = max(0.0, (now - ts) / 86400.0)
+        if age_days >= days:
+            continue
+        sim = _topic_similarity(topic, entry["topic"])
+        if sim < 0.3:
+            continue
+        decay = 1.0 - (age_days / days)  # linear: frisch=1.0 -> nach `days`=0
+        pen = sim * decay * strength
+        if pen > worst:
+            worst = pen
+            worst_ref = entry["topic"][:60]
+    if worst > 0 and score >= lift_score:
+        worst *= 0.5  # Demand-Lift: grosses Thema darf frueher wieder ran
+    return min(worst, 1.0), worst_ref
+
+
 def list_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     q = queue_list(config)
     status_f = str(payload.get("status") or "").strip().lower()
@@ -272,7 +365,18 @@ def list_proposals(payload: dict[str, Any], config: dict[str, Any]) -> dict[str,
     # (now/approved) als erledigt, zuletzt verworfene. Schon gemachte Themen
     # konkurrieren NICHT mehr im Vote — sie stehen unten als ✓ produziert.
     group = {"next": 0, "proposed": 0, "queued": 0, "now": 1, "approved": 1, "rejected": 2}
-    items.sort(key=lambda p: (group.get(p.get("status"), 1), -int(p.get("score", 0))))
+    for p in items:
+        if p.get("status") in ("next", "proposed", "queued"):
+            base = int_param(p.get("score"), 0, 0, 100)
+            pen, ref = similarity_penalty((p.get("title") or "") + " " + (p.get("query") or ""), base, config)
+            p["effective_score"] = int(round(base * (1.0 - pen)))
+            p["cooldown_pct"] = int(round(pen * 100))
+            if ref:
+                p["cooldown_wegen"] = ref
+        else:
+            p["effective_score"] = int_param(p.get("score"), 0, 0, 100)
+            p["cooldown_pct"] = 0
+    items.sort(key=lambda p: (group.get(p.get("status"), 1), -int(p.get("effective_score", 0))))
     limit = int_param(payload.get("limit"), 30, 1, 200)
     return ok({"count": len(items), "proposals": items[:limit]})
 
@@ -295,9 +399,9 @@ def decide(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         item["status"] = "next"
     else:  # now | approve -> wird produziert, gilt als behandelt
         item["status"] = "now" if action == "now" else "approved"
-        cov = covered_list(config)
+        cov = covered_raw(config)
         topic = (item.get("title") or "") + " " + (item.get("query") or "")
-        cov.append(topic.strip())
+        cov.append({"topic": topic.strip(), "ts": int(time.time())})
         save(config, "covered.json", cov)
     save(config, "queue.json", q)
     return ok({"id": pid, "status": item["status"], "query": item.get("query"),
@@ -330,14 +434,14 @@ def interests(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]
 
 def covered(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     action = str(payload.get("action") or "get").strip().lower()
-    data = covered_list(config)
     if action == "add":
         topic = str(payload.get("topic") or "").strip()
+        raw = covered_raw(config)
         if topic:
-            data.append(topic)
-            save(config, "covered.json", data)
-        return ok({"covered": data, "added": topic})
-    return ok({"covered": data})
+            raw.append({"topic": topic, "ts": int(time.time())})
+            save(config, "covered.json", raw)
+        return ok({"covered": covered_list(config), "added": topic})
+    return ok({"covered": covered_list(config)})
 
 
 def status(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
