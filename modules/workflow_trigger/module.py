@@ -1427,7 +1427,50 @@ def proceed_to_audio_or_render(wf: dict[str, Any], config: dict[str, Any], asset
     mark_failed(wf, "Kein audio_path vorhanden und TTS ist nicht konfiguriert/erlaubt. Produktion wird nicht stumm gerendert.")
 
 
+SENTENCE_END = (".", "!", "?", "\u2026", '"', "\u201c", "\u2019", "'")
+
+
+def sanitize_shorts(assets: dict[str, Any]) -> list[str]:
+    """Repariert/entfernt kaputte Shorts-Metadaten VOR dem Review.
+
+    Der Normalizer liefert gelegentlich mitten im Wort abgeschnittene Hooks
+    ('ein neuer Robote', 'so die Anal') — das Review wertete das als Blocker
+    und toetete damit das HAUPTVIDEO (09./10.07.). Hooks werden auf den
+    letzten vollstaendigen Satz getrimmt; ist nichts Brauchbares uebrig,
+    fliegt nur der Short raus, nie das Video."""
+    notes: list[str] = []
+    shorts = assets.get("shorts")
+    if not isinstance(shorts, list):
+        return notes
+    kept = []
+    for sh in shorts:
+        if not isinstance(sh, dict):
+            continue
+        hook = str(sh.get("hook") or "").strip()
+        if hook and not hook.endswith(SENTENCE_END):
+            cut = max(hook.rfind(p) for p in (".", "!", "?"))
+            if cut >= 20:
+                sh["hook"] = hook[: cut + 1]
+                notes.append("Short-Hook auf letzten ganzen Satz getrimmt")
+            else:
+                notes.append(f"Short verworfen (Hook abgeschnitten): {hook[:48]}")
+                continue
+        kept.append(sh)
+    if len(kept) != len(shorts) or notes:
+        assets["shorts"] = kept
+    return notes
+
+
 def start_review_task(wf: dict[str, Any], config: dict[str, Any], assets: dict[str, Any], reason: str = "") -> None:
+    notes = sanitize_shorts(assets)
+    if notes:
+        wf.setdefault("events", []).append(event("shorts_sanitized", "; ".join(notes)[:280]))
+        va = wf.get("artifacts", {}).get("video_assets")
+        if va:
+            try:
+                write_json(Path(va), assets)
+            except Exception:
+                pass
     local_review = local_asset_review(wf, assets, config)
     workflow_dir = Path(wf["workflow_dir"])
     quality = quality_state(wf)
@@ -1543,6 +1586,26 @@ def advance_review_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
             "quality_proceed_best_effort",
             f"Nach {repairs_used} Reparaturen best-effort gerendert (score={score}, decision={decision}; "
             f"{upload_note}); offen: {review_summary(review)[:200]}",
+        ))
+        proceed_after_assets_approved(wf, config, assets=assets)
+        return
+
+    # Shorts-only-Blocker: wenn JEDER Blocker nur die Shorts betrifft, sind
+    # Skript+Szenen freigabefaehig — Shorts entfernen, Hauptvideo weiter.
+    issues = review.get("blocking_issues") or []
+    if issues and all("short" in json.dumps(i, ensure_ascii=False).lower() for i in issues):
+        assets = dict(assets)
+        assets["shorts"] = []
+        va = wf.get("artifacts", {}).get("video_assets")
+        if va:
+            try:
+                write_json(Path(va), assets)
+            except Exception:
+                pass
+        wf.setdefault("options", {})["auto_shorts"] = False
+        wf.setdefault("events", []).append(event(
+            "shorts_dropped_proceed",
+            f"Alle Review-Blocker betreffen nur Shorts — Shorts entfernt, Hauptvideo laeuft weiter (score={score})",
         ))
         proceed_after_assets_approved(wf, config, assets=assets)
         return
