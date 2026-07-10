@@ -34,6 +34,8 @@ MODULE = {
         "default_task_timeout_s": {"type": "number", "label": "LLM Task Timeout", "default": 3600},
         "default_render_timeout_s": {"type": "number", "label": "Render Task Timeout", "default": 3600},
         "tick_limit": {"type": "number", "label": "Workflows pro Tick", "default": 12},
+        "daily_video_guarantee": {"type": "bool", "label": "Tagesvideo-Garantie: bei Fehlschlag naechstes Thema produzieren", "default": True},
+        "daily_guarantee_max_attempts": {"type": "number", "label": "Max Themen-Versuche pro Tag", "default": 3},
         "recover_failed_workflows": {"type": "bool", "label": "Reparierbare fehlgeschlagene Workflows automatisch fortsetzen", "default": True},
         "recover_failed_max_attempts": {"type": "number", "label": "Max Self-Recovery Versuche pro Workflow", "default": 2},
         "recover_failed_max_age_hours": {"type": "number", "label": "Max Alter fuer automatische Failed-Recovery", "default": 12},
@@ -540,6 +542,115 @@ def repair_video(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def call_module_tool(config: dict[str, Any], module_name: str, tool: str, params_list: list[str], timeout: int = 60) -> dict[str, Any]:
+    """Ruft ein anderes Python-Modul direkt via stdio-Protokoll auf (gleiche
+    Mechanik wie prepare_deepdive_context). Persona-Settings + home_dir werden
+    aus agent-data/config.json uebernommen, damit das Modul dieselben Daten
+    sieht wie seine echte Instanz."""
+    module_path = project_root(config) / "modules" / module_name / "module.py"
+    if not module_path.exists():
+        return {"success": False, "data": f"Modul fehlt: {module_name}"}
+    mod_config: dict[str, Any] = {"project_root": str(project_root(config)), "python_timeout_s": timeout}
+    try:
+        all_cfg = json.loads((project_root(config) / "agent-data" / "config.json").read_text(encoding="utf-8"))
+        inst = next((m for m in all_cfg.get("module", []) if m.get("typ") == module_name), None)
+        if inst:
+            mod_config.update({k: v for k, v in (inst.get("settings") or {}).items() if v is not None})
+            mod_config["home_dir"] = str(project_root(config) / "agent-data" / "home" / inst["id"])
+    except Exception:
+        pass
+    req = {"action": "handle_tool", "tool": tool, "params": params_list, "config": mod_config}
+    try:
+        proc = subprocess.run(
+            [sys.executable or "python3", str(module_path)],
+            input=json.dumps(req, ensure_ascii=False), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False,
+        )
+        return json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except Exception as exc:
+        return {"success": False, "data": f"{module_name} Aufruf fehlgeschlagen: {exc}"}
+
+
+def normalized_topic(text: str) -> str:
+    return " ".join(str(text or "").lower().split())[:160]
+
+
+def ensure_daily_video(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Tagesvideo-Garantie: ist der heutige Produktionsversuch tot und kein
+    Erfolg da, wird das NAECHSTE Planner-Thema automatisch gestartet — bis
+    max_attempts erreicht ist. Ein blockiertes Thema darf den Tag nicht mehr
+    kosten; es kostet nur noch einen Themenwechsel."""
+    if not cfg_bool(config, "daily_video_guarantee", True):
+        return None
+    max_attempts = cfg_int(config, "daily_guarantee_max_attempts", 3, 1, 6)
+    today = time.strftime("%Y%m%d", time.gmtime())
+    try:
+        wfs = load_workflows(config, None, 60, include_done=True, include_failed=True, failed_max_age_hours=30.0)
+    except Exception:
+        return None
+    todays = [w for w in wfs if str(w.get("id") or "").startswith(f"wf-{today}T")]
+    if not todays:
+        return None  # Autopilot hat heute noch nicht gefeuert — nichts zu garantieren
+    if any(w.get("status") in ("running", "waiting") for w in todays):
+        return None
+    if any(w.get("status") == "success" for w in todays):
+        return None
+    if len(todays) >= max_attempts:
+        marker = workflows_dir(config) / f".guarantee_exhausted_{today}"
+        if not marker.exists():
+            try:
+                marker.write_text(now_iso(), encoding="utf-8")
+            except Exception:
+                pass
+            return {"action": "exhausted", "attempts": len(todays),
+                    "detail": f"Tagesvideo-Garantie: {len(todays)} Themen fehlgeschlagen, Budget erschoepft"}
+        return None
+
+    tried = {normalized_topic((w.get("options") or {}).get("query") or w.get("query") or w.get("title")) for w in todays}
+    res = call_module_tool(config, "content_planner", "content_planner.proposals", [json.dumps({"limit": 30})])
+    proposals = []
+    if res.get("success"):
+        data = res.get("data")
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                data = {}
+        proposals = (data or {}).get("proposals") or []
+    now_ts = int(time.time())
+    candidate = None
+    for item in proposals:
+        if str(item.get("status") or "") not in ("next", "proposed", "queued"):
+            continue
+        if int_param(item.get("snoozed_until"), 0, 0, 2**62) > now_ts:
+            continue
+        if normalized_topic(item.get("query") or item.get("title")) in tried:
+            continue
+        candidate = item
+        break
+    if not candidate:
+        return {"action": "no_candidate", "attempts": len(todays),
+                "detail": "Tagesvideo-Garantie: kein unverbrauchtes Planner-Thema verfuegbar"}
+
+    call_module_tool(config, "content_planner", "content_planner.decide",
+                     [json.dumps({"id": candidate.get("id"), "action": "now"})])
+    last = todays[-1]
+    opts = last.get("options") or {}
+    payload: dict[str, Any] = {
+        "query": candidate.get("query") or candidate.get("title"),
+        "title": candidate.get("title") or "",
+    }
+    for key in ("language", "target_minutes", "auto_upload", "upload_privacy", "auto_shorts",
+                "shorts_count", "chat_route", "animate_scenes", "tts_provider", "tts_voice"):
+        if opts.get(key) is not None:
+            payload[key] = opts[key]
+    started = deepdive_video([json.dumps(payload, ensure_ascii=False)], config)
+    return {"action": "started_fallback", "attempts": len(todays) + 1,
+            "topic": payload["query"],
+            "detail": f"Tagesvideo-Garantie: Thema-Versuch {len(todays) + 1}/{max_attempts} gestartet",
+            "result_ok": bool(started.get("success"))}
+
+
 def tick(params: Any, config: dict[str, Any]) -> dict[str, Any]:
     payload = parse_payload(params)
     wanted = first_text(payload, "workflow_id", "id")
@@ -562,6 +673,11 @@ def tick(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             changed += 1
             save_workflow(wf, config)
         processed.append(workflow_summary(wf, config))
+    guarantee = None
+    try:
+        guarantee = ensure_daily_video(config)
+    except Exception as exc:
+        guarantee = {"action": "error", "detail": f"Garantie-Check fehlgeschlagen: {exc}"}
     health = None
     if cfg_bool(config, "production_health_enabled", True):
         health = compute_production_health(
@@ -570,7 +686,8 @@ def tick(params: Any, config: dict[str, Any]) -> dict[str, Any]:
             require_upload=cfg_bool(config, "production_health_require_upload", True),
             write=True,
         )
-    return ok({"processed": len(processed), "changed": changed, "health": health, "workflows": processed})
+    return ok({"processed": len(processed), "changed": changed, "health": health,
+               "daily_guarantee": guarantee, "workflows": processed})
 
 
 def process_workflow(wf: dict[str, Any], config: dict[str, Any]) -> None:
