@@ -1577,11 +1577,16 @@ def advance_review_assets(wf: dict[str, Any], config: dict[str, Any]) -> None:
     proceed_after = bool_param(wf.get("options", {}).get("quality_proceed_after_repairs"), cfg_bool(config, "quality_proceed_after_repairs", True))
     proceed_min = int_param(wf.get("options", {}).get("quality_proceed_min_score"), cfg_int(config, "quality_proceed_min_score", 70), 0, 100)
     if proceed_after and decision != "reject" and score >= proceed_min:
-        if not cfg_bool(config, "quality_best_effort_upload", False):
+        # Guter Score (>= quality_min_score, default 78) laedt auch im
+        # Best-Effort hoch — Tagesvideo-Prinzip: ein 85er-Video gehoert auf
+        # den Kanal, nicht auf die Festplatte. Nur die 70-77-Grauzone
+        # bleibt Upload-manuell (bzw. quality_best_effort_upload=true).
+        min_score = int_param(wf.get("options", {}).get("quality_min_score"), cfg_int(config, "quality_min_score", 78), 0, 100)
+        if cfg_bool(config, "quality_best_effort_upload", False) or score >= min_score:
+            upload_note = "Auto-Upload aktiv"
+        else:
             wf.setdefault("options", {})["auto_upload"] = False
             upload_note = "Auto-Upload AUS (manuell pruefen)"
-        else:
-            upload_note = "Auto-Upload aktiv"
         wf.setdefault("events", []).append(event(
             "quality_proceed_best_effort",
             f"Nach {repairs_used} Reparaturen best-effort gerendert (score={score}, decision={decision}; "
